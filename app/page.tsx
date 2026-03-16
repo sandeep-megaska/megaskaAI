@@ -13,7 +13,6 @@ type GenerationItem = {
   media_type: MediaType;
   aspect_ratio: AspectRatio;
   asset_url: string;
-  thumbnail_url: string | null;
   created_at: string;
 };
 
@@ -55,7 +54,7 @@ export default function Home() {
 
       const { data, error } = await supabase
         .from("generations")
-        .select("id, prompt, media_type, aspect_ratio, asset_url, thumbnail_url, created_at")
+        .select("id, prompt, media_type, aspect_ratio, asset_url, created_at")
         .order("created_at", { ascending: false })
         .limit(12);
 
@@ -213,7 +212,7 @@ export default function Home() {
                   {item.asset_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={item.thumbnail_url ?? item.asset_url}
+                      src={item.asset_url}
                       alt={item.prompt}
                       className="h-full w-full object-cover"
                     />
