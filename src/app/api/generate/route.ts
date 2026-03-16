@@ -15,6 +15,7 @@ const supabase =
 type GenerateRequest = {
   type: 'image' | 'video';
   prompt: string;
+  aspect_ratio?: '1:1' | '16:9' | '9:16';
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
     return Response.json({ success: false, error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  const { type, prompt } = body;
+  const { type, prompt, aspect_ratio } = body;
 
   if (!type || !prompt || !['image', 'video'].includes(type)) {
     return Response.json(
@@ -123,8 +124,20 @@ export async function POST(request: Request) {
     }
 
     const { data: publicData } = supabase.storage.from('brand-assets').getPublicUrl(filePath);
+    const asset_url = publicData.publicUrl;
 
-    return Response.json({ success: true, url: publicData.publicUrl });
+    const { error: insertError } = await supabase.from('generations').insert({
+      prompt,
+      media_type: type === 'image' ? 'Image' : 'Video',
+      aspect_ratio: aspect_ratio ?? '1:1',
+      asset_url,
+    });
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    return Response.json({ success: true, asset_url });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error.';
     return Response.json({ success: false, error: message }, { status: 500 });
