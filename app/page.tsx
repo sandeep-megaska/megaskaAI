@@ -34,6 +34,7 @@ export default function Home() {
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
   const [galleryState, setGalleryState] = useState<"idle" | "loading" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -87,19 +88,64 @@ export default function Home() {
   }, [isGenerating]);
 
   async function handleGenerate() {
-    if (!prompt.trim() || isGenerating) {
-      return;
-    }
+  if (!prompt.trim() || isGenerating) {
+    return;
+  }
 
+  try {
     setIsGenerating(true);
     setLoadingMessageIndex(0);
+    setError(null);
 
-    await new Promise((resolve) => {
-      window.setTimeout(resolve, 2600);
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: mediaType === "Image" ? "image" : "video",
+        prompt,
+        aspect_ratio: aspectRatio,
+      }),
     });
 
+    const text = await res.text();
+    console.log("RAW API RESPONSE:", text);
+
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Server returned non-JSON response: ${text}`);
+    }
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || "Generation failed");
+    }
+
+    if (supabase) {
+      const { data: refreshedData, error: refreshError } = await supabase
+        .from("generations")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(12);
+
+      if (refreshError) {
+        console.error("Gallery refresh error:", refreshError);
+      } else {
+        setGalleryItems((refreshedData ?? []) as GenerationItem[]);
+        setGalleryState("idle");
+      }
+    }
+
+    setPrompt("");
+  } catch (err) {
+    console.error("Frontend generate error:", err);
+    setError(err instanceof Error ? err.message : "Something went wrong");
+  } finally {
     setIsGenerating(false);
   }
+}
 
   return (
     <main className="min-h-screen bg-[#09090b] px-6 py-10 text-zinc-100 md:px-12">
@@ -176,6 +222,11 @@ export default function Home() {
               <Sparkles className="h-4 w-4" />
               {isGenerating ? loadingMessages[loadingMessageIndex] : "Generate"}
             </button>
+            {error && (
+  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+    {error}
+  </div>
+)}
           </div>
         </section>
 
@@ -216,11 +267,21 @@ export default function Home() {
                 >
                   <div className="aspect-video overflow-hidden bg-zinc-900">
                     {src ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={src} alt={item.prompt} className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>
-                    )}
+  type === "Video" ? (
+    <video
+      src={src}
+      controls
+      className="h-full w-full object-cover"
+    />
+  ) : (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={item.prompt} className="h-full w-full object-cover" />
+  )
+) : (
+  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+    No preview
+  </div>
+)}
                   </div>
                   <div className="space-y-3 p-4">
                     <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>

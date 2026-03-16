@@ -5,7 +5,9 @@ import { randomUUID } from "node:crypto";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const genAiApiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+const genAiApiKey =
+  process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -25,56 +27,99 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function POST(request: Request) {
   try {
-    if (!ai) {
-      return Response.json({ success: false, error: "Missing GEMINI_API_KEY" }, { status: 500 });
-    }
+    console.log("[generate] route hit");
 
-    if (!supabase) {
+    if (!genAiApiKey) {
+      console.error("[generate] missing Google key");
       return Response.json(
         {
           success: false,
-          error: "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY",
+          error: "Missing GOOGLE_API_KEY / GEMINI_API_KEY",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!supabaseUrl) {
+      console.error("[generate] missing supabase url");
+      return Response.json(
+        {
+          success: false,
+          error: "Missing NEXT_PUBLIC_SUPABASE_URL",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!supabaseServiceRoleKey) {
+      console.error("[generate] missing service role key");
+      return Response.json(
+        {
+          success: false,
+          error: "Missing SUPABASE_SERVICE_ROLE_KEY",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!ai || !supabase) {
+      console.error("[generate] ai or supabase client not created");
+      return Response.json(
+        {
+          success: false,
+          error: "Failed to initialize AI or Supabase client",
         },
         { status: 500 }
       );
     }
 
     let body: GenerateRequest;
+
     try {
       body = await request.json();
     } catch {
-      return Response.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
-    }
-
-    const { type, prompt, aspect_ratio = "1:1" } = body;
-
-    if (!type || !prompt || !["image", "video"].includes(type)) {
       return Response.json(
-        { success: false, error: "Body must include valid type and prompt" },
+        { success: false, error: "Invalid JSON body" },
         { status: 400 }
       );
     }
 
-    console.log("[generate] started", { type, aspect_ratio, prompt });
+    const { type, prompt, aspect_ratio = "1:1" } = body;
+
+    console.log("[generate] request body", { type, prompt, aspect_ratio });
+
+    if (!type || !prompt || !["image", "video"].includes(type)) {
+      return Response.json(
+        { success: false, error: "Invalid type or prompt" },
+        { status: 400 }
+      );
+    }
 
     let fileBuffer: Buffer;
     let contentType: string;
     let extension: string;
 
     if (type === "image") {
-      // Replace old shut-down model with active Nano Banana 2 model
+      console.log("[generate] calling image model");
+
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: prompt,
       });
 
       const parts = response?.candidates?.[0]?.content?.parts ?? [];
+      console.log("[generate] image parts count", parts.length);
+
       const imagePart = parts.find((part: any) => part.inlineData?.data);
 
       if (!imagePart?.inlineData?.data) {
-        console.error("[generate] image response had no inline image data", JSON.stringify(parts, null, 2));
+        console.error("[generate] no image data", JSON.stringify(parts, null, 2));
         return Response.json(
-          { success: false, error: "Model returned no image data." },
+          {
+            success: false,
+            error: "Model returned no image bytes",
+            debug_parts: parts,
+          },
           { status: 500 }
         );
       }
@@ -86,7 +131,14 @@ export async function POST(request: Request) {
         : contentType.includes("webp")
         ? "webp"
         : "png";
+
+      console.log("[generate] image generated", {
+        contentType,
+        size: fileBuffer.length,
+      });
     } else {
+      console.log("[generate] starting video generation");
+
       let operation = await ai.models.generateVideos({
         model: "veo-3.1-generate-preview",
         prompt,
@@ -101,13 +153,17 @@ export async function POST(request: Request) {
       while (!operation.done) {
         await sleep(10000);
         operation = await ai.operations.getVideosOperation({ operation });
-        console.log("[generate] polling veo", { done: operation.done });
+        console.log("[generate] polling video", { done: operation.done });
       }
 
       const videoFile = operation?.response?.generatedVideos?.[0]?.video;
+
       if (!videoFile) {
-        console.error("[generate] no video in final operation", JSON.stringify(operation, null, 2));
-        return Response.json({ success: false, error: "No video returned." }, { status: 500 });
+        console.error("[generate] no video file", JSON.stringify(operation, null, 2));
+        return Response.json(
+          { success: false, error: "No video returned from Veo" },
+          { status: 500 }
+        );
       }
 
       await ai.files.download({
@@ -119,9 +175,15 @@ export async function POST(request: Request) {
       fileBuffer = Buffer.from(await fs.readFile("/tmp/generated-video.mp4"));
       contentType = "video/mp4";
       extension = "mp4";
+
+      console.log("[generate] video downloaded", {
+        contentType,
+        size: fileBuffer.length,
+      });
     }
 
     const filePath = `${type}/${randomUUID()}.${extension}`;
+    console.log("[generate] uploading to supabase", { filePath });
 
     const { error: uploadError } = await supabase.storage
       .from("brand-assets")
@@ -131,14 +193,21 @@ export async function POST(request: Request) {
       });
 
     if (uploadError) {
-      console.error("[generate] upload error", uploadError);
+      console.error("[generate] upload failed", uploadError);
       return Response.json(
-        { success: false, error: `Supabase upload failed: ${uploadError.message}` },
+        {
+          success: false,
+          error: `Supabase upload failed: ${uploadError.message}`,
+        },
         { status: 500 }
       );
     }
 
-    const { data: publicData } = supabase.storage.from("brand-assets").getPublicUrl(filePath);
+    const { data: publicData } = supabase.storage
+      .from("brand-assets")
+      .getPublicUrl(filePath);
+
+    console.log("[generate] public url", publicData.publicUrl);
 
     const { error: insertError } = await supabase.from("generations").insert({
       prompt,
@@ -148,19 +217,25 @@ export async function POST(request: Request) {
     });
 
     if (insertError) {
-      console.error("[generate] db insert error", insertError);
+      console.error("[generate] db insert failed", insertError);
       return Response.json(
-        { success: false, error: `DB insert failed: ${insertError.message}` },
+        {
+          success: false,
+          error: `DB insert failed: ${insertError.message}`,
+          asset_url: publicData.publicUrl,
+        },
         { status: 500 }
       );
     }
+
+    console.log("[generate] success");
 
     return Response.json({
       success: true,
       asset_url: publicData.publicUrl,
     });
   } catch (error) {
-    console.error("[generate] unhandled error", error);
+    console.error("[generate] unhandled", error);
     return Response.json(
       {
         success: false,
