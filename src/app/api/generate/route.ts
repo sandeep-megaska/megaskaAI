@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const genAiApiKey = process.env.GOOGLE_API_KEY;
+const genAiApiKey = process.env.GEMINI_API_KEY;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -26,10 +26,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function POST(request: Request) {
   try {
     if (!ai) {
-      return Response.json(
-        { success: false, error: "Missing GEMINI_API_KEY" },
-        { status: 500 }
-      );
+      return Response.json({ success: false, error: "Missing GEMINI_API_KEY" }, { status: 500 });
     }
 
     if (!supabase) {
@@ -43,38 +40,31 @@ export async function POST(request: Request) {
     }
 
     let body: GenerateRequest;
-
     try {
       body = await request.json();
     } catch {
-      return Response.json(
-        { success: false, error: "Invalid JSON body" },
-        { status: 400 }
-      );
+      return Response.json({ success: false, error: "Invalid JSON body" }, { status: 400 });
     }
 
     const { type, prompt, aspect_ratio = "1:1" } = body;
 
     if (!type || !prompt || !["image", "video"].includes(type)) {
       return Response.json(
-        {
-          success: false,
-          error: "Body must include valid 'type' and 'prompt'",
-        },
+        { success: false, error: "Body must include valid type and prompt" },
         { status: 400 }
       );
     }
 
-    console.log("[generate] request received", { type, aspect_ratio });
+    console.log("[generate] started", { type, aspect_ratio, prompt });
 
     let fileBuffer: Buffer;
     let contentType: string;
     let extension: string;
 
     if (type === "image") {
-      // Nano Banana Pro / Gemini-native image generation
+      // Replace old shut-down model with active Nano Banana 2 model
       const response = await ai.models.generateContent({
-        model: "gemini-3-pro-image-preview",
+        model: "gemini-3.1-flash-image-preview",
         contents: prompt,
       });
 
@@ -82,9 +72,9 @@ export async function POST(request: Request) {
       const imagePart = parts.find((part: any) => part.inlineData?.data);
 
       if (!imagePart?.inlineData?.data) {
-        console.error("[generate] image response parts:", JSON.stringify(parts, null, 2));
+        console.error("[generate] image response had no inline image data", JSON.stringify(parts, null, 2));
         return Response.json(
-          { success: false, error: "No image data returned from Gemini image model." },
+          { success: false, error: "Model returned no image data." },
           { status: 500 }
         );
       }
@@ -97,36 +87,27 @@ export async function POST(request: Request) {
         ? "webp"
         : "png";
     } else {
-      // Veo video generation
       let operation = await ai.models.generateVideos({
         model: "veo-3.1-generate-preview",
         prompt,
         config:
-          aspect_ratio === "9:16"
-            ? { aspectRatio: "9:16" }
-            : aspect_ratio === "16:9"
+          aspect_ratio === "16:9"
             ? { aspectRatio: "16:9" }
+            : aspect_ratio === "9:16"
+            ? { aspectRatio: "9:16" }
             : undefined,
       });
 
-      console.log("[generate] veo started");
-
       while (!operation.done) {
         await sleep(10000);
-        operation = await ai.operations.getVideosOperation({
-          operation,
-        });
-        console.log("[generate] veo polling", { done: operation.done });
+        operation = await ai.operations.getVideosOperation({ operation });
+        console.log("[generate] polling veo", { done: operation.done });
       }
 
       const videoFile = operation?.response?.generatedVideos?.[0]?.video;
-
       if (!videoFile) {
-        console.error("[generate] final veo operation:", JSON.stringify(operation, null, 2));
-        return Response.json(
-          { success: false, error: "No video returned from Veo." },
-          { status: 500 }
-        );
+        console.error("[generate] no video in final operation", JSON.stringify(operation, null, 2));
+        return Response.json({ success: false, error: "No video returned." }, { status: 500 });
       }
 
       await ai.files.download({
@@ -150,16 +131,14 @@ export async function POST(request: Request) {
       });
 
     if (uploadError) {
-      console.error("[generate] supabase upload error", uploadError);
+      console.error("[generate] upload error", uploadError);
       return Response.json(
         { success: false, error: `Supabase upload failed: ${uploadError.message}` },
         { status: 500 }
       );
     }
 
-    const { data: publicData } = supabase.storage
-      .from("brand-assets")
-      .getPublicUrl(filePath);
+    const { data: publicData } = supabase.storage.from("brand-assets").getPublicUrl(filePath);
 
     const { error: insertError } = await supabase.from("generations").insert({
       prompt,
@@ -169,7 +148,7 @@ export async function POST(request: Request) {
     });
 
     if (insertError) {
-      console.error("[generate] DB insert error", insertError);
+      console.error("[generate] db insert error", insertError);
       return Response.json(
         { success: false, error: `DB insert failed: ${insertError.message}` },
         { status: 500 }
