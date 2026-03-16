@@ -79,10 +79,11 @@ export async function POST(request: Request) {
         },
       });
 
-      while (!operation.done) {
-        await sleep(5000);
-        operation = (await aiClient.operations.get({ operation })) as typeof operation;
-      }
+     while (!operation.done) {
+  await sleep(5000);
+  // Pass the operation.name string directly to the get() method
+  operation = (await aiClient.operations.get(operation.name)) as typeof operation;
+}
 
       const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
 
