@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const genAiApiKey = process.env.GEMINI_API_KEY;
+const genAiApiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
