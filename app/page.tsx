@@ -10,9 +10,11 @@ type AspectRatio = "1:1" | "16:9" | "9:16";
 type GenerationItem = {
   id: string;
   prompt: string;
-  media_type: MediaType;
+  media_type?: MediaType;
+  type?: MediaType;
   aspect_ratio: AspectRatio;
-  asset_url: string;
+  asset_url?: string;
+  url?: string;
   created_at: string;
 };
 
@@ -54,7 +56,7 @@ export default function Home() {
 
       const { data, error } = await supabase
         .from("generations")
-        .select("id, prompt, media_type, aspect_ratio, asset_url, created_at")
+        .select("*")
         .order("created_at", { ascending: false })
         .limit(12);
 
@@ -203,41 +205,42 @@ export default function Home() {
           )}
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {galleryItems.map((item) => (
-              <article
-                key={item.id}
-                className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60 backdrop-blur"
-              >
-                <div className="aspect-video overflow-hidden bg-zinc-900">
-                  {item.asset_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={item.asset_url}
-                      alt={item.prompt}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>
-                  )}
-                </div>
-                <div className="space-y-3 p-4">
-                  <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>
-                  <div className="flex items-center justify-between text-xs text-zinc-400">
-                    <span>{item.media_type}</span>
-                    <span>{item.aspect_ratio}</span>
+            {galleryItems.map((item) => {
+              const type = item.media_type || item.type;
+              const src = item.asset_url || item.url;
+
+              return (
+                <article
+                  key={item.id}
+                  className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60 backdrop-blur"
+                >
+                  <div className="aspect-video overflow-hidden bg-zinc-900">
+                    {src ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={src} alt={item.prompt} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>
+                    )}
                   </div>
-                  <a
-                    href={item.asset_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md border border-white/15 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/5"
-                  >
-                    <Download className="h-4 w-4" />
-                    Download
-                  </a>
-                </div>
-              </article>
-            ))}
+                  <div className="space-y-3 p-4">
+                    <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>
+                    <div className="flex items-center justify-between text-xs text-zinc-400">
+                      <span>{type}</span>
+                      <span>{item.aspect_ratio}</span>
+                    </div>
+                    <a
+                      href={src}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-md border border-white/15 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/5"
+                    >
+                      <Download className="h-4 w-4" />
+                      Download
+                    </a>
+                  </div>
+                </article>
+              );
+            })}
           </div>
 
           {!galleryItems.length && galleryState === "idle" && supabase && (
