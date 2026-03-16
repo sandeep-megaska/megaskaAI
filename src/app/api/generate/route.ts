@@ -23,13 +23,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function POST(request: Request) {
   if (!aiClient || !supabase) {
     return Response.json(
-      { success: false, error: 'Missing GEMINI_API_KEY or Supabase environment variables.' },
+      { success: false, error: 'Missing API keys or environment variables.' },
       { status: 500 },
     );
   }
 
   let body: GenerateRequest;
-
   try {
     body = (await request.json()) as GenerateRequest;
   } catch {
@@ -37,6 +36,7 @@ export async function POST(request: Request) {
   }
 
   const { type, prompt, aspect_ratio } = body;
+  console.log("DEBUG: Starting generation for:", { type, prompt });
 
   if (!type || !prompt || !['image', 'video'].includes(type)) {
     return Response.json(
@@ -54,93 +54,61 @@ export async function POST(request: Request) {
       const imageResult = await aiClient.models.generateImages({
         model: 'gemini-3-pro-image-preview',
         prompt,
-        config: {
-          numberOfImages: 1,
-          outputMimeType: 'image/png',
-        },
+        config: { numberOfImages: 1, outputMimeType: 'image/png' },
       });
+      console.log("DEBUG: Image generated, now uploading to Supabase...");
 
       const generatedImage = imageResult.generatedImages?.[0]?.image;
-      const imageBytes = generatedImage?.imageBytes;
+      if (!generatedImage?.imageBytes) throw new Error('Image generation failed.');
 
-      if (!imageBytes) {
-        throw new Error('Image generation did not return image bytes.');
-      }
-
-      fileBuffer = Buffer.from(imageBytes, 'base64');
-      contentType = generatedImage?.mimeType ?? 'image/png';
+      fileBuffer = Buffer.from(generatedImage.imageBytes, 'base64');
+      contentType = 'image/png';
       extension = 'png';
     } else {
       let operation = await aiClient.models.generateVideos({
         model: 'veo-3.1-generate-preview',
         prompt,
-        config: {
-          numberOfVideos: 1,
-        },
       });
 
-     while (!operation.done) {
-  await sleep(5000);
-  // Pass the operation.name string directly to the get() method
-  operation = (await aiClient.operations.get(operation.name)) as typeof operation;
-}
+      console.log("DEBUG: Video generation started, polling...");
+      while (!operation.done) {
+        await sleep(5000);
+        if (!operation.name) throw new Error("Operation name is missing.");
+        operation = (await aiClient.operations.get(operation.name as any)) as typeof operation;
+        console.log("DEBUG: Polling Veo... done:", operation.done);
+      }
 
       const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+      if (!generatedVideo?.uri) throw new Error('Video generation failed.');
 
-      if (!generatedVideo) {
-        throw new Error('Video generation finished without a video result.');
-      }
-
-      if (generatedVideo.videoBytes) {
-        fileBuffer = Buffer.from(generatedVideo.videoBytes, 'base64');
-        contentType = generatedVideo.mimeType ?? 'video/mp4';
-      } else if (generatedVideo.uri) {
-        const downloadResponse = await fetch(generatedVideo.uri);
-
-        if (!downloadResponse.ok) {
-          throw new Error(`Failed to download generated video from URI: ${downloadResponse.status}`);
-        }
-
-        const arrayBuffer = await downloadResponse.arrayBuffer();
-        fileBuffer = Buffer.from(arrayBuffer);
-        contentType = generatedVideo.mimeType ?? downloadResponse.headers.get('content-type') ?? 'video/mp4';
-      } else {
-        throw new Error('Video generation did not return video bytes or URI.');
-      }
-
-      extension = contentType.includes('webm') ? 'webm' : 'mp4';
+      const downloadResponse = await fetch(generatedVideo.uri);
+      const arrayBuffer = await downloadResponse.arrayBuffer();
+      fileBuffer = Buffer.from(arrayBuffer);
+      contentType = 'video/mp4';
+      extension = 'mp4';
     }
 
     const filePath = `${type}/${randomUUID()}.${extension}`;
-
     const { error: uploadError } = await supabase.storage
       .from('brand-assets')
-      .upload(filePath, fileBuffer, {
-        contentType,
-        upsert: false,
-      });
+      .upload(filePath, fileBuffer, { contentType, upsert: false });
 
-    if (uploadError) {
-      throw uploadError;
-    }
+    if (uploadError) throw uploadError;
 
     const { data: publicData } = supabase.storage.from('brand-assets').getPublicUrl(filePath);
-    const asset_url = publicData.publicUrl;
-
+    
     const { error: insertError } = await supabase.from('generations').insert({
       prompt,
       media_type: type === 'image' ? 'Image' : 'Video',
       aspect_ratio: aspect_ratio ?? '1:1',
-      asset_url,
+      asset_url: publicData.publicUrl,
     });
 
-    if (insertError) {
-      throw insertError;
-    }
+    if (insertError) throw insertError;
 
-    return Response.json({ success: true, asset_url });
+    return Response.json({ success: true, asset_url: publicData.publicUrl });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error.';
-    return Response.json({ success: false, error: message }, { status: 500 });
+    console.error("GENERATION_ERROR:", error);
+    return Response.json({ success: false, error: error instanceof Error ? error.message : 'Unknown error.' }, { status: 500 });
   }
 }
