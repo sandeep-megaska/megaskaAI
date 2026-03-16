@@ -4,7 +4,12 @@ import { randomUUID } from "node:crypto";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
+export async function GET() {
+  return Response.json({
+    ok: true,
+    message: "generate route is live",
+  });
+}
 const genAiApiKey =
   process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 
