@@ -173,7 +173,7 @@ export default function Home() {
   <div className="flex items-center gap-3">
     {/* Logo */}
     <img
-      src="/megaska-logo.png" // place logo in /public
+      src="/logo megaska.png" // place logo in /public
       alt="Megaska"
       className="h-10 w-auto object-contain"
     />
