@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
+import { findBackendById, getDefaultBackendForType, type AIBackendType } from "@/lib/ai-backends";
 import { applyDeterministicOverlay, type OverlayConfig } from "@/lib/overlay-image";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
@@ -14,12 +15,10 @@ type GeneratePayload = {
   aspect_ratio?: "1:1" | "16:9" | "9:16";
   model_id?: string | null;
   preset_id?: string | null;
+  ai_backend_id?: string | null;
   overlay?: OverlayConfig;
   reference_urls?: string[];
 };
-
-const IMAGE_MODEL = process.env.GOOGLE_IMAGE_MODEL ?? "imagen-4.0-generate-001";
-const VIDEO_MODEL = process.env.GOOGLE_VIDEO_MODEL ?? "veo-2.0-generate-001";
 
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -94,6 +93,17 @@ export async function POST(request: Request) {
       return asJson(400, { success: false, error: "Type must be 'image' or 'video'." });
     }
 
+    const requestedBackend = findBackendById(payload.ai_backend_id);
+    if (payload.ai_backend_id && !requestedBackend) {
+      return asJson(400, { success: false, error: "Unknown ai_backend_id." });
+    }
+
+    const backend = requestedBackend ?? getDefaultBackendForType(type as AIBackendType);
+
+    if (backend.type !== type) {
+      return asJson(400, { success: false, error: `Backend '${backend.id}' supports ${backend.type} only.` });
+    }
+
     const supabase = getSupabaseAdminClient();
 
     const [modelResult, presetResult] = await Promise.all([
@@ -113,6 +123,8 @@ export async function POST(request: Request) {
       promptLength: prompt.length,
       modelId: payload.model_id,
       presetId: payload.preset_id,
+      backendId: backend.id,
+      backendModel: backend.model,
       referenceCount: referenceUrls.length,
     });
 
@@ -128,7 +140,7 @@ export async function POST(request: Request) {
           : finalPrompt;
 
       const imageResponse = await ai.models.generateImages({
-        model: IMAGE_MODEL,
+        model: backend.model,
         prompt: promptWithReferences,
         config: {
           numberOfImages: 1,
@@ -150,7 +162,7 @@ export async function POST(request: Request) {
       }
     } else {
       let operation = await ai.models.generateVideos({
-        model: VIDEO_MODEL,
+        model: backend.model,
         source: { prompt: finalPrompt },
         config: {
           numberOfVideos: 1,
@@ -208,7 +220,7 @@ export async function POST(request: Request) {
       url: publicUrl,
       model_id: payload.model_id ?? null,
       preset_id: payload.preset_id ?? null,
-      overlay_json: overlay,
+      overlay_json: { ...overlay, ai_backend_id: backend.id, ai_model: backend.model },
       reference_urls: referenceUrls,
       generation_kind: type,
     });
@@ -220,6 +232,7 @@ export async function POST(request: Request) {
 
     console.log("[generate] success", {
       type,
+      backend: backend.id,
       path: filePath,
       elapsedMs: Date.now() - startedAt,
     });
@@ -230,6 +243,8 @@ export async function POST(request: Request) {
       prompt,
       final_prompt: finalPrompt,
       aspect_ratio: aspectRatio,
+      ai_backend_id: backend.id,
+      ai_model: backend.model,
       url: publicUrl,
       path: filePath,
     });
