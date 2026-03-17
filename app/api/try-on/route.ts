@@ -60,7 +60,7 @@ export async function POST(request: Request) {
 
     const { data: garment, error: garmentError } = await supabase
       .from("garment_library")
-      .select("*, garment_assets(*)")
+      .select("*, garment_assets!garment_assets_garment_id_fkey(*)")
       .eq("id", garmentId)
       .single();
 
