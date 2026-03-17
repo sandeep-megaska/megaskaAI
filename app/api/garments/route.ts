@@ -32,7 +32,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from("garment_library")
-      .select("*, garment_assets(*)")
+      .select("*, garment_assets!garment_assets_garment_id_fkey(*)")
       .order("created_at", { ascending: false });
 
     if (status && status !== "all") query = query.eq("status", status);
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from("garment_library")
       .insert(payload)
-      .select("*, garment_assets(*)")
+      .select("*, garment_assets!garment_assets_garment_id_fkey(*)")
       .single();
 
     if (error) {
