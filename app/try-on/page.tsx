@@ -4,7 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 
 type Model = { id: string; model_code: string; display_name: string };
 type GarmentAsset = { id: string; public_url: string; asset_type: string };
-type Garment = { id: string; garment_code: string; display_name: string; status: string; garment_assets?: GarmentAsset[] };
+type Garment = {
+  id: string;
+  garment_code: string;
+  display_name: string;
+  status: string;
+  readiness_score?: number;
+  readiness_status?: string;
+  reference_summary?: { missing?: string[] };
+  garment_assets?: GarmentAsset[];
+};
 type TryOnJob = {
   id: string;
   status: string;
@@ -12,6 +21,14 @@ type TryOnJob = {
   error_message?: string | null;
   garment_library?: { display_name: string; garment_code: string } | null;
   model_library?: { display_name: string; model_code: string } | null;
+};
+
+type TryOnResultMeta = {
+  tryonJobId?: string;
+  generationId?: string;
+  warnings?: string[];
+  readiness?: { readinessStatus?: string; readinessScore?: number; referenceSummary?: { missing?: string[] } };
+  selectedReferences?: { selectedAssetIds?: string[]; primaryFrontAssetId?: string | null; primaryBackAssetId?: string | null; detailAssetIds?: string[] };
 };
 
 const initialConstraints = {
@@ -45,16 +62,13 @@ export default function TryOnPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string>("");
+  const [resultMeta, setResultMeta] = useState<TryOnResultMeta>({});
+  const [reviewState, setReviewState] = useState({ overall_rating: "usable", garment_fidelity_rating: "usable", subject_rating: "usable", pose_background_rating: "usable", issue_tags: "", review_notes: "" });
 
   const selectedGarment = useMemo(() => garments.find((item) => item.id === garmentId) ?? null, [garments, garmentId]);
 
   async function loadAll() {
-    const [modelsRes, garmentsRes, jobsRes] = await Promise.all([
-      fetch("/api/models"),
-      fetch("/api/garments"),
-      fetch("/api/try-on"),
-    ]);
-
+    const [modelsRes, garmentsRes, jobsRes] = await Promise.all([fetch("/api/models"), fetch("/api/garments"), fetch("/api/try-on")]);
     const [modelsJson, garmentsJson, jobsJson] = await Promise.all([modelsRes.json(), garmentsRes.json(), jobsRes.json()]);
     setModels(modelsJson.data ?? []);
     setGarments(garmentsJson.data ?? []);
@@ -62,10 +76,7 @@ export default function TryOnPage() {
   }
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void loadAll();
-    }, 0);
-
+    const timer = setTimeout(() => void loadAll(), 0);
     return () => clearTimeout(timer);
   }, []);
 
@@ -85,6 +96,7 @@ export default function TryOnPage() {
     setSubmitting(true);
     setError(null);
     setResultUrl("");
+    setResultMeta({});
 
     const res = await fetch("/api/try-on", {
       method: "POST",
@@ -105,11 +117,35 @@ export default function TryOnPage() {
     const json = await res.json();
     if (!res.ok) setError(json.error ?? "Try-on failed.");
     if (res.ok) {
-      setResultUrl(json.data?.output_url ?? "");
+      setResultUrl(json.data?.output_url ?? json.outputUrl ?? "");
+      setResultMeta({
+        tryonJobId: json.tryonJobId ?? json.data?.tryon_job_id,
+        generationId: json.generationId ?? json.data?.generation_id,
+        warnings: json.warnings ?? json.data?.warnings ?? [],
+        readiness: json.readiness ?? json.data?.readiness,
+        selectedReferences: json.selectedReferences ?? json.data?.selected_references,
+      });
       await loadAll();
     }
-
     setSubmitting(false);
+  }
+
+  async function saveReview() {
+    if (!resultMeta.tryonJobId) return;
+    await fetch("/api/try-on/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tryon_job_id: resultMeta.tryonJobId,
+        generation_id: resultMeta.generationId ?? null,
+        overall_rating: reviewState.overall_rating,
+        garment_fidelity_rating: reviewState.garment_fidelity_rating,
+        subject_rating: reviewState.subject_rating,
+        pose_background_rating: reviewState.pose_background_rating,
+        issue_tags: reviewState.issue_tags.split(",").map((value) => value.trim()).filter(Boolean),
+        review_notes: reviewState.review_notes,
+      }),
+    });
   }
 
   return (
@@ -119,7 +155,6 @@ export default function TryOnPage() {
           <h1 className="text-3xl font-semibold">Try-On Studio (Beta)</h1>
           <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Beta workflow: results are directional and require QA before publication.</p>
         </header>
-
         {error && <div className="rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</div>}
 
         <section className="grid gap-4 lg:grid-cols-3">
@@ -139,11 +174,13 @@ export default function TryOnPage() {
           <article className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-sm font-semibold">2. Garment</h2>
             <select value={garmentId} onChange={(event) => setGarmentId(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="">Select garment</option>{garments.map((garment) => <option key={garment.id} value={garment.id}>{garment.garment_code} — {garment.display_name}</option>)}</select>
-            <div className="grid grid-cols-3 gap-2">
-              {(selectedGarment?.garment_assets ?? []).slice(0, 6).map((asset) => (
-                <img key={asset.id} src={asset.public_url} alt={asset.asset_type} className="h-20 w-full rounded object-cover" />
-              ))}
-            </div>
+            {selectedGarment && (
+              <div className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
+                <p>Readiness: {selectedGarment.readiness_status ?? "reference_incomplete"} ({selectedGarment.readiness_score ?? 0})</p>
+                {!!selectedGarment.reference_summary?.missing?.length && <p className="text-amber-300">Reference pack is incomplete; try-on fidelity may be limited. Missing: {selectedGarment.reference_summary.missing.join(", ")}</p>}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-2">{(selectedGarment?.garment_assets ?? []).slice(0, 6).map((asset) => <img key={asset.id} src={asset.public_url} alt={asset.asset_type} className="h-20 w-full rounded object-cover" />)}</div>
           </article>
 
           <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
@@ -160,25 +197,44 @@ export default function TryOnPage() {
           <h2 className="mb-2 text-sm font-semibold">Structured Constraints</h2>
           <div className="grid gap-2 md:grid-cols-3">
             {Object.entries(constraints).map(([key, value]) => typeof value === "boolean" ? (
-              <label key={key} className="flex items-center justify-between rounded border border-white/10 bg-zinc-950/70 px-2 py-1 text-xs">
-                <span>{key}</span>
-                <input type="checkbox" checked={value} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.checked }))} />
-              </label>
+              <label key={key} className="flex items-center justify-between rounded border border-white/10 bg-zinc-950/70 px-2 py-1 text-xs"><span>{key}</span><input type="checkbox" checked={value} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.checked }))} /></label>
             ) : (
-              <label key={key} className="space-y-1 text-xs">
-                <span>{key}</span>
-                <input value={String(value)} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-950 p-1" />
-              </label>
+              <label key={key} className="space-y-1 text-xs"><span>{key}</span><input value={String(value)} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-950 p-1" /></label>
             ))}
           </div>
           <button type="button" disabled={submitting} onClick={submitTryOn} className="mt-3 rounded bg-indigo-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{submitting ? "Submitting..." : "Submit try-on job"}</button>
         </section>
 
         <section className="grid gap-4 lg:grid-cols-2">
-          <article className="rounded-lg border border-white/10 bg-zinc-900/40 p-4">
+          <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="mb-2 text-sm font-semibold">4. Output</h2>
             {resultUrl ? <img src={resultUrl} alt="try-on result" className="max-h-96 w-full rounded object-cover" /> : <p className="text-xs text-zinc-400">No generated output yet.</p>}
+            {!!resultMeta.warnings?.length && <p className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{resultMeta.warnings.join(" | ")}</p>}
+            {resultMeta.selectedReferences && (
+              <details className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
+                <summary>Reference selection debug</summary>
+                <p>Front: {resultMeta.selectedReferences.primaryFrontAssetId ?? "none"}</p>
+                <p>Back: {resultMeta.selectedReferences.primaryBackAssetId ?? "none"}</p>
+                <p>Details: {(resultMeta.selectedReferences.detailAssetIds ?? []).join(", ") || "none"}</p>
+                <p>Selected assets: {(resultMeta.selectedReferences.selectedAssetIds ?? []).join(", ") || "none"}</p>
+              </details>
+            )}
+
+            {resultMeta.tryonJobId && (
+              <div className="space-y-2 rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
+                <p className="font-medium">Internal output review</p>
+                {(["overall_rating", "garment_fidelity_rating", "subject_rating", "pose_background_rating"] as const).map((field) => (
+                  <select key={field} value={reviewState[field]} onChange={(event) => setReviewState((current) => ({ ...current, [field]: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-900 p-1">
+                    <option value="approved">approved</option><option value="usable">usable</option><option value="poor">poor</option><option value="rejected">rejected</option>
+                  </select>
+                ))}
+                <input value={reviewState.issue_tags} onChange={(event) => setReviewState((current) => ({ ...current, issue_tags: event.target.value }))} placeholder="issue tags comma-separated" className="w-full rounded border border-white/10 bg-zinc-900 p-1" />
+                <textarea value={reviewState.review_notes} onChange={(event) => setReviewState((current) => ({ ...current, review_notes: event.target.value }))} placeholder="review notes" className="w-full rounded border border-white/10 bg-zinc-900 p-1" rows={2} />
+                <button type="button" onClick={saveReview} className="rounded border border-white/20 px-2 py-1">Save review</button>
+              </div>
+            )}
           </article>
+
           <article className="rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="mb-2 text-sm font-semibold">Latest Jobs</h2>
             <div className="space-y-2">
