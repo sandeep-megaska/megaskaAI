@@ -232,9 +232,9 @@ export default function Home() {
         <div className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
           Credits
         </div>
-        <div className="text-sm font-semibold text-white">
-          {credits ?? 0}
-        </div>
+       <div className="text-sm font-semibold text-white">
+  {credits?.balance ?? 0}
+</div>
       </div>
     </div>
   </div>
