@@ -24,8 +24,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return json(400, { success: false, error: "Missing file field. Use 'files' or 'file'." });
     }
 
-    const { data: existingAssets } = await supabase.from("model_assets").select("id,is_primary").eq("model_id", id);
+    const { data: existingAssets } = await supabase
+      .from("model_assets")
+      .select("id,is_primary,sort_order")
+      .eq("model_id", id);
+
     const hasPrimary = Boolean(existingAssets?.some((asset) => asset.is_primary));
+    const nextSortOrder = (existingAssets ?? []).reduce((max, asset) => Math.max(max, asset.sort_order ?? -1), -1) + 1;
 
     const createdAssets = [];
 
@@ -54,7 +59,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           asset_url: publicUrlData.publicUrl,
           storage_path: filePath,
           is_primary: isPrimary,
-          sort_order: index,
+          sort_order: nextSortOrder + index,
         })
         .select("*")
         .single();
@@ -67,7 +72,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       createdAssets.push(data);
     }
 
-    return json(201, { success: true, data: createdAssets });
+    const { data: refreshedAssets, error: refreshedError } = await supabase
+      .from("model_assets")
+      .select("id,asset_url,storage_path,is_primary,sort_order")
+      .eq("model_id", id)
+      .order("is_primary", { ascending: false })
+      .order("sort_order", { ascending: true });
+
+    if (refreshedError) {
+      return json(500, { success: false, error: refreshedError.message });
+    }
+
+    return json(201, {
+      success: true,
+      data: createdAssets,
+      assets: refreshedAssets ?? [],
+      asset_count: (refreshedAssets ?? []).length,
+    });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }
