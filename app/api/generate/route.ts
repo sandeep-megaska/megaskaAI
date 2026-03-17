@@ -1,0 +1,214 @@
+import { GoogleGenAI } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
+type GenerationType = "image" | "video";
+
+type GeneratePayload = {
+  prompt?: string;
+  type?: GenerationType;
+  aspect_ratio?: "1:1" | "16:9" | "9:16";
+};
+
+const IMAGE_MODEL = process.env.GOOGLE_IMAGE_MODEL ?? "imagen-4.0-generate-001";
+const VIDEO_MODEL = process.env.GOOGLE_VIDEO_MODEL ?? "veo-2.0-generate-001";
+
+function asJson(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
+function fileExtensionForMime(mimeType: string, type: GenerationType) {
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return "jpg";
+  if (mimeType.includes("webp")) return "webp";
+  if (mimeType.includes("gif")) return "gif";
+  if (mimeType.includes("mp4")) return "mp4";
+  if (mimeType.includes("webm")) return "webm";
+  return type === "video" ? "mp4" : "png";
+}
+
+function sanitizeForPath(input: string) {
+  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 48) || "asset";
+}
+
+async function resolveVideoBytes(video: { videoBytes?: string; uri?: string; mimeType?: string }) {
+  if (video.videoBytes) {
+    return Buffer.from(video.videoBytes, "base64");
+  }
+
+  if (!video.uri) {
+    return null;
+  }
+
+  const response = await fetch(video.uri);
+  if (!response.ok) {
+    throw new Error(`Unable to download generated video from URI (${response.status})`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+export async function GET() {
+  return NextResponse.json({ ok: true, message: "generate route is live" });
+}
+
+export async function POST(request: Request) {
+  const startedAt = Date.now();
+
+  try {
+    const googleApiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseBucket = process.env.SUPABASE_STORAGE_BUCKET ?? "generations";
+
+    if (!googleApiKey) {
+      return asJson(500, { success: false, error: "Missing GOOGLE_API_KEY or GEMINI_API_KEY." });
+    }
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return asJson(500, {
+        success: false,
+        error: "Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.",
+      });
+    }
+
+    let payload: GeneratePayload;
+
+    try {
+      payload = (await request.json()) as GeneratePayload;
+    } catch {
+      return asJson(400, { success: false, error: "Invalid JSON body." });
+    }
+
+    const prompt = payload.prompt?.trim();
+    const type = payload.type;
+    const aspectRatio = payload.aspect_ratio ?? "1:1";
+
+    if (!prompt) {
+      return asJson(400, { success: false, error: "Prompt is required." });
+    }
+
+    if (type !== "image" && type !== "video") {
+      return asJson(400, { success: false, error: "Type must be 'image' or 'video'." });
+    }
+
+    console.log("[generate] request", { type, aspectRatio, promptLength: prompt.length });
+
+    const ai = new GoogleGenAI({ apiKey: googleApiKey });
+
+    let bytes: Buffer;
+    let mimeType: string;
+
+    if (type === "image") {
+      const imageResponse = await ai.models.generateImages({
+        model: IMAGE_MODEL,
+        prompt,
+        config: {
+          numberOfImages: 1,
+          aspectRatio,
+        },
+      });
+
+      const image = imageResponse.generatedImages?.[0]?.image;
+      if (!image?.imageBytes) {
+        return asJson(502, { success: false, error: "Image generation returned no image bytes." });
+      }
+
+      bytes = Buffer.from(image.imageBytes, "base64");
+      mimeType = image.mimeType ?? "image/png";
+    } else {
+      let operation = await ai.models.generateVideos({
+        model: VIDEO_MODEL,
+        source: { prompt },
+        config: {
+          numberOfVideos: 1,
+          aspectRatio,
+        },
+      });
+
+      let pollCount = 0;
+      while (!operation.done && pollCount < 60) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        operation = await ai.operations.getVideosOperation({ operation });
+        pollCount += 1;
+      }
+
+      if (!operation.done) {
+        return asJson(504, { success: false, error: "Video generation timed out before completion." });
+      }
+
+      const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+      if (!generatedVideo) {
+        return asJson(502, { success: false, error: "Video generation returned no video output." });
+      }
+
+      const downloaded = await resolveVideoBytes(generatedVideo);
+      if (!downloaded) {
+        return asJson(502, { success: false, error: "Unable to resolve generated video bytes." });
+      }
+
+      bytes = downloaded;
+      mimeType = generatedVideo.mimeType ?? "video/mp4";
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    const ext = fileExtensionForMime(mimeType, type);
+    const fileName = `${Date.now()}-${sanitizeForPath(prompt)}.${ext}`;
+    const filePath = `${type}/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(supabaseBucket)
+      .upload(filePath, bytes, { contentType: mimeType, upsert: false });
+
+    if (uploadError) {
+      console.error("[generate] upload error", uploadError);
+      return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
+    }
+
+    const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
+    const publicUrl = publicData.publicUrl;
+
+    const { error: insertError } = await supabase.from("generations").insert({
+      prompt,
+      type: type === "video" ? "Video" : "Image",
+      media_type: type === "video" ? "Video" : "Image",
+      aspect_ratio: aspectRatio,
+      asset_url: publicUrl,
+      url: publicUrl,
+    });
+
+    if (insertError) {
+      console.error("[generate] db insert error", insertError);
+      return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
+    }
+
+    console.log("[generate] success", {
+      type,
+      path: filePath,
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    return asJson(200, {
+      success: true,
+      type,
+      prompt,
+      aspect_ratio: aspectRatio,
+      url: publicUrl,
+      path: filePath,
+    });
+  } catch (error) {
+    console.error("[generate] unhandled error", error);
+
+    return asJson(500, {
+      success: false,
+      error: error instanceof Error ? error.message : "Unexpected server error.",
+    });
+  }
+}
