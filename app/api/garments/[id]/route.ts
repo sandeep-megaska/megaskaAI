@@ -41,7 +41,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .from("garment_library")
       .update(updates)
       .eq("id", id)
-      .select("*, garment_assets(*)")
+      .select("*, garment_assets!garment_assets_garment_id_fkey(*)")
       .single();
 
     if (error) {
