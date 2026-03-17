@@ -8,6 +8,11 @@ export async function persistTryOnLineage(input: {
   selectedPrimaryBackAssetId: string | null;
   selectedDetailAssetIds: string[];
   selectedReferenceBundle: Record<string, unknown>;
+  workflowMode: string;
+  fidelityLevel: string;
+  hardPreservationRules: Record<string, unknown>;
+  forbiddenTransformations: string[];
+  readinessGateResult: Record<string, unknown>;
   orchestrationDebug: Record<string, unknown>;
 }) {
   const supabase = getSupabaseAdminClient();
@@ -21,6 +26,11 @@ export async function persistTryOnLineage(input: {
       selected_primary_back_asset_id: input.selectedPrimaryBackAssetId,
       selected_detail_asset_ids: input.selectedDetailAssetIds,
       selected_reference_bundle: input.selectedReferenceBundle,
+      workflow_mode: input.workflowMode,
+      fidelity_level: input.fidelityLevel,
+      hard_preservation_rules: input.hardPreservationRules,
+      forbidden_transformations: input.forbiddenTransformations,
+      readiness_gate_result: input.readinessGateResult,
       orchestration_debug: input.orchestrationDebug,
     })
     .eq("id", input.tryonJobId);

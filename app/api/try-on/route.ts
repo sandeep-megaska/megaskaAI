@@ -6,7 +6,11 @@ import { buildConstraintProfile } from "@/lib/tryon/buildConstraintProfile";
 import { computeGarmentReadiness } from "@/lib/tryon/computeGarmentReadiness";
 import { selectGarmentReferencePack } from "@/lib/tryon/selectGarmentReferencePack";
 import { persistTryOnLineage } from "@/lib/tryon/persistTryOnLineage";
-import { GarmentAssetRecord } from "@/lib/tryon/types";
+import { GarmentAssetRecord, WorkflowMode } from "@/lib/tryon/types";
+import { buildWorkflowProfile } from "@/lib/tryon/buildWorkflowProfile";
+import { buildHardPreservationRules } from "@/lib/tryon/buildHardPreservationRules";
+import { buildForbiddenTransformations } from "@/lib/tryon/buildForbiddenTransformations";
+import { evaluateCatalogReadinessGate } from "@/lib/tryon/evaluateCatalogReadinessGate";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -56,7 +60,22 @@ export async function POST(request: Request) {
 
     const sourceMode = modelId ? "model_library" : "manual_upload";
     const constraints = typeof body.constraints === "object" && body.constraints ? body.constraints : {};
-    const constraintProfile = buildConstraintProfile(constraints);
+    const workflowProfile = buildWorkflowProfile({
+      workflowMode: body.workflow_mode,
+      fidelityLevel: body.fidelity_level,
+      preferredOutputStyle: body.preferred_output_style,
+      prompt: body.prompt,
+    });
+
+    const normalizedConstraints = {
+      ...constraints,
+      allow_pose_change: workflowProfile.shouldAllowPoseVariation,
+      allow_background_change: workflowProfile.shouldAllowBackgroundVariation,
+      allow_styling_variation: workflowProfile.shouldAllowSceneStyling,
+      composition_mode: workflowProfile.preferredOutputStyle === "lifestyle" ? "campaign" : workflowProfile.preferredOutputStyle,
+    };
+
+    const constraintProfile = buildConstraintProfile(normalizedConstraints);
 
     const { data: garment, error: garmentError } = await supabase
       .from("garment_library")
@@ -98,6 +117,60 @@ export async function POST(request: Request) {
       model = modelData;
     }
 
+    const selectedReferences = selectGarmentReferencePack({
+      assets: garmentAssets,
+      primaryFrontAssetId: garment.primary_front_asset_id,
+      primaryBackAssetId: garment.primary_back_asset_id,
+      constraintProfile,
+      workflowProfile,
+    });
+
+    const readinessGate = evaluateCatalogReadinessGate({
+      readinessSummary: readiness.referenceSummary,
+      workflowProfile,
+    });
+
+    let effectiveWorkflowMode: WorkflowMode = workflowProfile.workflowMode;
+    if (workflowProfile.workflowMode === "catalog_fidelity" && readinessGate.fallbackMode === "standard_tryon") {
+      effectiveWorkflowMode = "standard_tryon";
+      warnings.push("Catalog fidelity could not be fully honored; workflow degraded to standard_tryon.");
+    }
+
+    if (!readinessGate.allowed) {
+      warnings.push(...readinessGate.reasons);
+    } else if (readinessGate.severity === "warn") {
+      warnings.push(...readinessGate.reasons);
+    }
+
+    const selectedAssetMap = new Map(garmentAssets.map((asset) => [asset.id, asset]));
+    const selectedAssets = selectedReferences.selectedAssetIds
+      .map((assetId) => selectedAssetMap.get(assetId))
+      .filter((asset): asset is GarmentAssetRecord => Boolean(asset));
+
+    if (!selectedAssets.length) {
+      throw new Error("Unable to assemble garment reference pack for try-on.");
+    }
+
+    const hardPreservationRules = buildHardPreservationRules({
+      workflowProfile: { ...workflowProfile, workflowMode: effectiveWorkflowMode },
+      constraintProfile,
+      garment: {
+        category: garment.category,
+        displayName: garment.display_name,
+        silhouetteNotes: garment.silhouette_notes,
+        coverageNotes: garment.coverage_notes,
+      },
+      selectedAssets,
+    });
+
+    const forbiddenTransformations = buildForbiddenTransformations({
+      garmentCategory: garment.category,
+      garmentName: garment.display_name,
+      workflowProfile: { ...workflowProfile, workflowMode: effectiveWorkflowMode },
+      hardPreservationRules,
+      readinessMissing: selectedReferences.missingIdentityCriticalReferences,
+    });
+
     const { data: createdJob, error: jobInsertError } = await supabase
       .from("tryon_jobs")
       .insert({
@@ -112,7 +185,10 @@ export async function POST(request: Request) {
         engine_mode: body.engine_mode ?? null,
         prompt: body.prompt ?? null,
         negative_prompt: body.negative_prompt ?? null,
-        constraints,
+        constraints: normalizedConstraints,
+        workflow_mode: effectiveWorkflowMode,
+        fidelity_level: workflowProfile.fidelityLevel,
+        preferred_output_style: workflowProfile.preferredOutputStyle,
       })
       .select("id")
       .single();
@@ -122,22 +198,6 @@ export async function POST(request: Request) {
     jobId = createdJob.id;
 
     await supabase.from("tryon_jobs").update({ status: "running" }).eq("id", jobId);
-
-    const selectedReferences = selectGarmentReferencePack({
-      assets: garmentAssets,
-      primaryFrontAssetId: garment.primary_front_asset_id,
-      primaryBackAssetId: garment.primary_back_asset_id,
-      constraintProfile,
-    });
-
-    const selectedAssetMap = new Map(garmentAssets.map((asset) => [asset.id, asset]));
-    const selectedAssets = selectedReferences.selectedAssetIds
-      .map((assetId) => selectedAssetMap.get(assetId))
-      .filter((asset): asset is GarmentAssetRecord => Boolean(asset));
-
-    if (!selectedAssets.length) {
-      throw new Error("Unable to assemble garment reference pack for try-on.");
-    }
 
     const compiled = compileTryOnPrompt({
       subject: {
@@ -159,25 +219,34 @@ export async function POST(request: Request) {
         coverageNotes: garment.coverage_notes,
         assetUrls: selectedAssets.map((item) => item.public_url),
       },
-      constraints,
+      constraints: normalizedConstraints,
       constraintProfile,
       referenceBundle: selectedReferences.bundle,
+      workflowProfile: { ...workflowProfile, workflowMode: effectiveWorkflowMode },
+      hardPreservationRules,
+      forbiddenTransformations,
       prompt: body.prompt ?? null,
       negativePrompt: body.negative_prompt ?? null,
       engineMode: body.engine_mode ?? null,
     });
 
     await persistTryOnLineage({
-      tryonJobId: jobId!,
+      tryonJobId: jobId,
       selectedSubjectMode: sourceMode,
       selectedGarmentAssetIds: selectedReferences.selectedAssetIds,
       selectedPrimaryFrontAssetId: selectedReferences.primaryFrontAssetId,
       selectedPrimaryBackAssetId: selectedReferences.primaryBackAssetId,
       selectedDetailAssetIds: selectedReferences.detailAssetIds,
       selectedReferenceBundle: selectedReferences.bundle,
+      workflowMode: effectiveWorkflowMode,
+      fidelityLevel: workflowProfile.fidelityLevel,
+      hardPreservationRules,
+      forbiddenTransformations,
+      readinessGateResult: readinessGate,
       orchestrationDebug: {
         referenceSelection: selectedReferences.debug,
         promptCompiler: compiled.debug,
+        workflowProfile,
         readiness,
       },
     });
@@ -191,6 +260,12 @@ export async function POST(request: Request) {
       prompt: compiled.prompt,
       negativePrompt: compiled.negativePrompt,
       aspectRatio: body.aspect_ratio,
+      adapterPayload: {
+        workflowProfile,
+        hardPreservationRules,
+        forbiddenTransformations,
+        selectedReferences,
+      },
     });
 
     const ext = fileExtensionForMime(tryOnOutput.mimeType);
@@ -223,8 +298,11 @@ export async function POST(request: Request) {
           workflow: "try_on_beta",
           backend: tryOnOutput.backendId,
           backend_model: tryOnOutput.backendModel,
-          constraints,
+          constraints: normalizedConstraints,
           readiness,
+          readiness_gate: readinessGate,
+          workflow_profile: workflowProfile,
+          forbidden_transformations: forbiddenTransformations,
           selected_reference_ids: selectedReferences.selectedAssetIds,
         },
         generation_kind: "image",
@@ -283,23 +361,37 @@ export async function POST(request: Request) {
         instruction_bundle: compiled.instructionBundle,
         warnings,
         readiness,
+        workflow_profile: workflowProfile,
+        readiness_gate: readinessGate,
         selected_references: {
           selected_asset_ids: selectedReferences.selectedAssetIds,
           primary_front_asset_id: selectedReferences.primaryFrontAssetId,
           primary_back_asset_id: selectedReferences.primaryBackAssetId,
           detail_asset_ids: selectedReferences.detailAssetIds,
+          category_defining_asset_ids: selectedReferences.categoryDefiningAssetIds,
+          construction_detail_asset_ids: selectedReferences.constructionDetailAssetIds,
+          silhouette_critical_asset_ids: selectedReferences.silhouetteCriticalAssetIds,
+          print_critical_asset_ids: selectedReferences.printCriticalAssetIds,
+          missing_identity_critical_references: selectedReferences.missingIdentityCriticalReferences,
         },
       },
-      tryonJobId: jobId!,
+      tryonJobId: jobId,
       generationId: generation.id,
       outputUrl: publicData.publicUrl,
       warnings,
       readiness,
+      workflowProfile,
+      readinessGate: readinessGate,
       selectedReferences: {
         selectedAssetIds: selectedReferences.selectedAssetIds,
         primaryFrontAssetId: selectedReferences.primaryFrontAssetId,
         primaryBackAssetId: selectedReferences.primaryBackAssetId,
         detailAssetIds: selectedReferences.detailAssetIds,
+        categoryDefiningAssetIds: selectedReferences.categoryDefiningAssetIds,
+        constructionDetailAssetIds: selectedReferences.constructionDetailAssetIds,
+        silhouetteCriticalAssetIds: selectedReferences.silhouetteCriticalAssetIds,
+        printCriticalAssetIds: selectedReferences.printCriticalAssetIds,
+        missingIdentityCriticalReferences: selectedReferences.missingIdentityCriticalReferences,
       },
     });
   } catch (error) {

@@ -6,6 +6,7 @@ export type RunTryOnInput = {
   prompt: string;
   negativePrompt?: string;
   aspectRatio?: "1:1" | "16:9" | "9:16";
+  adapterPayload?: Record<string, unknown>;
 };
 
 export type RunTryOnResult = {
