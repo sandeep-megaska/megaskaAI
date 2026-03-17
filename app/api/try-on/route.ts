@@ -15,6 +15,7 @@ import { computePrintReadiness } from "@/lib/tryon/computePrintReadiness";
 import { buildPrintPreservationRules } from "@/lib/tryon/buildPrintPreservationRules";
 import { buildPrintForbiddenTransformations } from "@/lib/tryon/buildPrintForbiddenTransformations";
 import { evaluatePrintGate } from "@/lib/tryon/evaluatePrintGate";
+import { ProviderUnavailableError } from "@/lib/ai/providerErrors";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -388,6 +389,8 @@ export async function POST(request: Request) {
       tryonJobId: jobId!,
       generationId: generation.id,
       outputUrl: publicData.publicUrl,
+      backend: tryOnOutput.backendId,
+      backendModel: tryOnOutput.backendModel,
       warnings,
       readiness,
       printReadiness,
@@ -412,6 +415,8 @@ export async function POST(request: Request) {
         generation_id: generation.id,
         status: "completed",
         output_url: publicData.publicUrl,
+        backend: tryOnOutput.backendId,
+        backend_model: tryOnOutput.backendModel,
         instruction_bundle: compiled.instructionBundle,
         warnings,
         readiness,
@@ -422,14 +427,37 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    const isProviderUnavailable = error instanceof ProviderUnavailableError;
+    const errorMessage = error instanceof Error ? error.message : "Unexpected try-on server error.";
+
     if (jobId) {
-      await supabase.from("tryon_jobs").update({ status: "failed", error_message: error instanceof Error ? error.message : "Unexpected try-on server error." }).eq("id", jobId);
+      const updatePayload: Record<string, unknown> = {
+        status: "failed",
+        error_message: errorMessage,
+      };
+      if (isProviderUnavailable) {
+        updatePayload.orchestration_debug = {
+          provider_error: { code: error.errorCode, message: error.message, meta: error.meta },
+        };
+      }
+
+      await supabase.from("tryon_jobs").update(updatePayload).eq("id", jobId);
+    }
+
+    if (isProviderUnavailable) {
+      console.error("[try-on] provider unavailable", error.meta);
+      return json(503, {
+        success: false,
+        tryon_job_id: jobId,
+        error_code: error.errorCode,
+        error: error.message,
+      });
     }
 
     return json(500, {
       success: false,
       tryon_job_id: jobId,
-      error: error instanceof Error ? error.message : "Unexpected try-on server error.",
+      error: errorMessage,
     });
   }
 }

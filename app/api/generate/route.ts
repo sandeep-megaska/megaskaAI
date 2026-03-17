@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { findBackendById, getDefaultBackendForType, type AIBackendType } from "@/lib/ai-backends";
 import { applyOverlayToImage, type OverlayConfig } from "@/lib/overlay-image";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { mapGeminiProviderError, ProviderUnavailableError } from "@/lib/ai/providerErrors";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -173,14 +174,31 @@ export async function POST(request: Request) {
           ? `${finalPrompt}\n\nModel reference image URLs:\n${allReferenceUrls.map((url) => `- ${url}`).join("\n")}`
           : finalPrompt;
 
-      const imageResponse = await ai.models.generateImages({
-        model: backend.model,
-        prompt: promptWithReferences,
-        config: {
-          numberOfImages: 1,
-          aspectRatio,
-        },
-      });
+      let imageResponse;
+      for (let attempt = 0; attempt < (backend.id === "nano-banana-pro" ? 2 : 1); attempt += 1) {
+        try {
+          imageResponse = await ai.models.generateImages({
+            model: backend.model,
+            prompt: promptWithReferences,
+            config: {
+              numberOfImages: 1,
+              aspectRatio,
+            },
+          });
+          break;
+        } catch (error) {
+          const message = String((error as { message?: string })?.message ?? "").toUpperCase();
+          if (backend.id === "nano-banana-pro" && attempt === 0 && (message.includes("UNAVAILABLE") || message.includes("503"))) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            continue;
+          }
+          mapGeminiProviderError(error);
+        }
+      }
+
+      if (!imageResponse) {
+        return asJson(502, { success: false, error: "Image generation failed before a response was returned." });
+      }
 
       const image = imageResponse.generatedImages?.[0]?.image;
       if (!image?.imageBytes) {
@@ -196,14 +214,23 @@ export async function POST(request: Request) {
         mimeType = overlayResult.contentType;
       }
     } else {
-      let operation = await ai.models.generateVideos({
-        model: backend.model,
-        source: { prompt: finalPrompt },
-        config: {
-          numberOfVideos: 1,
-          aspectRatio,
-        },
-      });
+      let operation;
+      try {
+        operation = await ai.models.generateVideos({
+          model: backend.model,
+          source: { prompt: finalPrompt },
+          config: {
+            numberOfVideos: 1,
+            aspectRatio,
+          },
+        });
+      } catch (error) {
+        mapGeminiProviderError(error);
+      }
+
+      if (!operation) {
+        return asJson(502, { success: false, error: "Video generation failed before an operation was returned." });
+      }
 
       let pollCount = 0;
       while (!operation.done && pollCount < 60) {
@@ -247,6 +274,9 @@ export async function POST(request: Request) {
     const publicUrl = publicData.publicUrl;
 
     const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
+    const generationMeta = hasOverlay
+      ? { ...overlay, ai_backend_id: backend.id, ai_model: backend.model }
+      : { ai_backend_id: backend.id, ai_model: backend.model };
 
     const { error: insertError } = await supabase.from("generations").insert({
       prompt,
@@ -257,7 +287,7 @@ export async function POST(request: Request) {
       url: publicUrl,
       model_id: payload.model_id ?? null,
       preset_id: payload.preset_id ?? null,
-      overlay_json: hasOverlay ? { ...overlay, ai_backend_id: backend.id, ai_model: backend.model } : null,
+      overlay_json: generationMeta,
       reference_urls: allReferenceUrls,
       generation_kind: type,
     });
@@ -287,6 +317,14 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("[generate] unhandled error", error);
+
+    if (error instanceof ProviderUnavailableError) {
+      return asJson(503, {
+        success: false,
+        error_code: error.errorCode,
+        error: error.message,
+      });
+    }
 
     return asJson(500, {
       success: false,
