@@ -24,3 +24,24 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+<label className="group flex cursor-pointer flex-col items-center justify-center rounded-xl border border-white/10 bg-zinc-950/70 px-6 py-8 text-center transition-all hover:border-cyan-400/40 hover:bg-zinc-900/80">
+
+  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400/10 text-cyan-300 group-hover:bg-cyan-400/20">
+    📁
+  </div>
+
+  <p className="text-sm font-medium text-white">
+    Upload Person Image
+  </p>
+
+  <p className="mt-1 text-xs text-zinc-400">
+    Click or drag & drop
+  </p>
+
+  <input
+    type="file"
+    accept="image/*"
+    className="hidden"
+    onChange={(e) => uploadReferenceFiles(e.target.files)}
+  />
+</label>
