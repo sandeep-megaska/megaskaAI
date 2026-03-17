@@ -20,6 +20,13 @@ type GeneratePayload = {
   reference_urls?: string[];
 };
 
+type ModelContext = {
+  id: string;
+  prompt_anchor?: string | null;
+  negative_prompt?: string | null;
+  model_assets?: { asset_url: string; is_primary?: boolean | null; sort_order?: number | null }[];
+};
+
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
@@ -83,7 +90,6 @@ export async function POST(request: Request) {
     const type = payload.type ?? "image";
     const aspectRatio = payload.aspect_ratio ?? "1:1";
     const overlay = payload.overlay ?? {};
-    const referenceUrls = payload.reference_urls ?? [];
 
     if (!prompt) {
       return asJson(400, { success: false, error: "Prompt is required." });
@@ -107,13 +113,39 @@ export async function POST(request: Request) {
     const supabase = getSupabaseAdminClient();
 
     const [modelResult, presetResult] = await Promise.all([
-      payload.model_id ? supabase.from("model_library").select("id,prompt_anchor").eq("id", payload.model_id).maybeSingle() : Promise.resolve({ data: null, error: null }),
+      payload.model_id
+        ? supabase
+            .from("model_library")
+            .select("id,prompt_anchor,negative_prompt,model_assets(asset_url,is_primary,sort_order)")
+            .eq("id", payload.model_id)
+            .maybeSingle<ModelContext>()
+        : Promise.resolve({ data: null, error: null }),
       payload.preset_id
         ? supabase.from("brand_presets").select("id,prompt_template").eq("id", payload.preset_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
     ]);
 
-    const finalPrompt = [presetResult.data?.prompt_template, modelResult.data?.prompt_anchor, prompt]
+    if (modelResult.error) {
+      console.error("[generate] model lookup error", modelResult.error);
+      return asJson(400, { success: false, error: modelResult.error.message });
+    }
+
+    const modelAssetUrls = (modelResult.data?.model_assets ?? [])
+      .sort((a, b) => {
+        if ((a.is_primary ? 1 : 0) !== (b.is_primary ? 1 : 0)) return a.is_primary ? -1 : 1;
+        return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      })
+      .map((asset) => asset.asset_url)
+      .filter(Boolean);
+
+    const allReferenceUrls = [...modelAssetUrls, ...(payload.reference_urls ?? [])];
+
+    const finalPrompt = [
+      presetResult.data?.prompt_template,
+      modelResult.data?.prompt_anchor,
+      modelResult.data?.negative_prompt ? `Avoid: ${modelResult.data.negative_prompt}` : null,
+      prompt,
+    ]
       .filter(Boolean)
       .join("\n\n");
 
@@ -122,10 +154,11 @@ export async function POST(request: Request) {
       aspectRatio,
       promptLength: prompt.length,
       modelId: payload.model_id,
+      modelAssets: modelAssetUrls.length,
       presetId: payload.preset_id,
       backendId: backend.id,
       backendModel: backend.model,
-      referenceCount: referenceUrls.length,
+      referenceCount: allReferenceUrls.length,
     });
 
     const ai = new GoogleGenAI({ apiKey: googleApiKey });
@@ -134,9 +167,10 @@ export async function POST(request: Request) {
     let mimeType: string;
 
     if (type === "image") {
+      // TODO: Replace URL-based guidance with native multi-image input when the selected backend path supports stable reference-image injection.
       const promptWithReferences =
-        referenceUrls.length > 0
-          ? `${finalPrompt}\n\nReference image URLs:\n${referenceUrls.map((url) => `- ${url}`).join("\n")}`
+        allReferenceUrls.length > 0
+          ? `${finalPrompt}\n\nModel reference image URLs:\n${allReferenceUrls.map((url) => `- ${url}`).join("\n")}`
           : finalPrompt;
 
       const imageResponse = await ai.models.generateImages({
@@ -224,7 +258,7 @@ export async function POST(request: Request) {
       model_id: payload.model_id ?? null,
       preset_id: payload.preset_id ?? null,
       overlay_json: hasOverlay ? { ...overlay, ai_backend_id: backend.id, ai_model: backend.model } : null,
-      reference_urls: referenceUrls,
+      reference_urls: allReferenceUrls,
       generation_kind: type,
     });
 
