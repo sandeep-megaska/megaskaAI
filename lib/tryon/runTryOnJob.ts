@@ -1,12 +1,31 @@
 import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
 import { runGoogleImageTryOn } from "@/lib/tryon/adapters/googleImageAdapter";
+import { runGeminiNanoBananaProTryOn } from "@/lib/tryon/adapters/geminiNanoBananaPro";
+
+export type TryOnAdapterPayload = {
+  subject?: Record<string, unknown>;
+  garment?: Record<string, unknown>;
+  selectedReferences?: {
+    bundle?: {
+      silhouetteReferences?: string[];
+      detailReferences?: string[];
+      fabricPrintReferences?: string[];
+    };
+  } & Record<string, unknown>;
+  compiledPrompt?: string;
+  negativePrompt?: string;
+  workflowProfile?: Record<string, unknown>;
+  hardPreservationRules?: Record<string, unknown>;
+  printPreservationRules?: Record<string, unknown>;
+  forbiddenTransformations?: string[];
+} & Record<string, unknown>;
 
 export type RunTryOnInput = {
   backendId?: string | null;
   prompt: string;
   negativePrompt?: string;
   aspectRatio?: "1:1" | "16:9" | "9:16";
-  adapterPayload?: Record<string, unknown>;
+  adapterPayload?: TryOnAdapterPayload;
 };
 
 export type RunTryOnResult = {
@@ -23,12 +42,18 @@ export async function runTryOnJob(input: RunTryOnInput): Promise<RunTryOnResult>
     throw new Error("Try-on currently supports image backends only.");
   }
 
-  const output = await runGoogleImageTryOn({
+  const adapterInput = {
     model: backend.model,
     prompt: input.prompt,
     negativePrompt: input.negativePrompt,
     aspectRatio: input.aspectRatio,
-  });
+    adapterPayload: input.adapterPayload,
+  };
+
+  const output =
+    backend.id === "nano-banana-pro"
+      ? await runGeminiNanoBananaProTryOn(adapterInput)
+      : await runGoogleImageTryOn(adapterInput);
 
   return {
     bytes: output.bytes,

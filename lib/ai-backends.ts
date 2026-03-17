@@ -9,10 +9,16 @@ export type AIBackend = {
 
 export const AI_BACKENDS: AIBackend[] = [
   {
-    id: "nano-banana",
-    name: "Nano Banana (Fast Image)",
+    id: "nano-banana-pro",
+    name: "Nano Banana Pro",
     type: "image",
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3-pro-image-preview",
+  },
+  {
+    id: "nano-banana",
+    name: "Nano Banana",
+    type: "image",
+    model: "gemini-2.5-flash-image",
   },
   {
     id: "imagen",

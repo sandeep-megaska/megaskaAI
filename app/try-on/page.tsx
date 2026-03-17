@@ -17,6 +17,8 @@ type Garment = {
   print_reference_summary?: { missing?: string[] };
   garment_assets?: GarmentAsset[];
 };
+type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
+
 type TryOnJob = {
   id: string;
   status: string;
@@ -29,6 +31,8 @@ type TryOnJob = {
 type TryOnResultMeta = {
   tryonJobId?: string;
   generationId?: string;
+  backend?: string;
+  backendModel?: string;
   warnings?: string[];
   readiness?: {
     readinessStatus?: string;
@@ -90,6 +94,7 @@ export default function TryOnPage() {
   const [models, setModels] = useState<Model[]>([]);
   const [garments, setGarments] = useState<Garment[]>([]);
   const [jobs, setJobs] = useState<TryOnJob[]>([]);
+  const [backends, setBackends] = useState<AIBackend[]>([]);
 
   const [sourceMode, setSourceMode] = useState<SourceMode>("model_library");
   const [modelId, setModelId] = useState("");
@@ -100,7 +105,7 @@ export default function TryOnPage() {
   const [fidelityLevel, setFidelityLevel] = useState<FidelityLevel>("strict");
   const [preferredOutputStyle, setPreferredOutputStyle] = useState<PreferredOutputStyle>("catalog");
 
-  const [backend, setBackend] = useState("imagen");
+  const [backend, setBackend] = useState("");
   const [printLockEnabled, setPrintLockEnabled] = useState(true);
   const [printFidelityLevel, setPrintFidelityLevel] = useState<FidelityLevel>("strict");
   const [engineMode] = useState("fidelity");
@@ -153,21 +158,26 @@ export default function TryOnPage() {
   }, [workflowMode, preferredOutputStyle]);
 
   async function loadAll() {
-    const [modelsRes, garmentsRes, jobsRes] = await Promise.all([
+    const [modelsRes, garmentsRes, jobsRes, backendsRes] = await Promise.all([
       fetch("/api/models"),
       fetch("/api/garments"),
       fetch("/api/try-on"),
+      fetch("/api/ai/backends"),
     ]);
 
-    const [modelsJson, garmentsJson, jobsJson] = await Promise.all([
+    const [modelsJson, garmentsJson, jobsJson, backendsJson] = await Promise.all([
       modelsRes.json(),
       garmentsRes.json(),
       jobsRes.json(),
+      backendsRes.json(),
     ]);
+
+    const imageBackends = (backendsJson.data ?? []).filter((item: AIBackend) => item.type === "image");
 
     setModels(modelsJson.data ?? []);
     setGarments(garmentsJson.data ?? []);
     setJobs(jobsJson.data ?? []);
+    setBackends(imageBackends);
   }
 
   useEffect(() => {
@@ -182,6 +192,12 @@ export default function TryOnPage() {
       setModelId("");
     }
   }, [sourceMode]);
+
+  useEffect(() => {
+    if (backends.length && !backends.some((item) => item.id === backend)) {
+      setBackend(backends[0].id);
+    }
+  }, [backends, backend]);
 
   async function uploadPerson(file: File | null) {
     if (!file) return;
@@ -269,6 +285,8 @@ export default function TryOnPage() {
       setResultMeta({
         tryonJobId: json.tryonJobId ?? json.data?.tryon_job_id,
         generationId: json.generationId ?? json.data?.generation_id,
+        backend: json.backend ?? json.data?.backend,
+        backendModel: json.backendModel ?? json.data?.backend_model,
         warnings: json.warnings ?? json.data?.warnings ?? [],
         readiness: json.readiness ?? json.data?.readiness,
         selectedReferences: json.selectedReferences ?? json.data?.selected_references,
@@ -461,8 +479,9 @@ export default function TryOnPage() {
             )}
 
             <select value={backend} onChange={(event) => setBackend(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs">
-              <option value="imagen">Imagen</option>
-              <option value="nano-banana">Nano Banana</option>
+              {backends.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
             </select>
 
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="scene prompt (optional)" className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" rows={2} />
@@ -494,6 +513,8 @@ export default function TryOnPage() {
               <p>Fidelity level used: {resultMeta.workflowProfile?.fidelityLevel ?? "n/a"}</p>
               <p>Readiness gate: {resultMeta.readinessGate?.severity ?? "n/a"}</p>
               <p>Print gate: {resultMeta.printGate?.severity ?? "n/a"}</p>
+              <p>Backend: {resultMeta.backend ?? "n/a"}</p>
+              <p>Model: {resultMeta.backendModel ?? "n/a"}</p>
             </div>
 
             <details className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
