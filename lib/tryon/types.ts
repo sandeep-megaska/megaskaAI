@@ -1,5 +1,9 @@
 export type TryOnConstraintMap = Record<string, string | boolean | null | undefined>;
 
+export type WorkflowMode = "standard_tryon" | "catalog_fidelity";
+export type FidelityLevel = "balanced" | "strict" | "hard_lock";
+export type PreferredOutputStyle = "catalog" | "studio" | "lifestyle";
+
 export type ConstraintProfile = {
   preservePrint: boolean;
   preserveNeckline: boolean;
@@ -16,6 +20,39 @@ export type ConstraintProfile = {
   preservationPriority: string[];
   compositionIntent: "catalog" | "campaign" | "social";
   rawConstraints: TryOnConstraintMap;
+};
+
+export type WorkflowProfile = {
+  workflowMode: WorkflowMode;
+  fidelityLevel: FidelityLevel;
+  preferredOutputStyle: PreferredOutputStyle;
+  creativeFreedom: "low" | "medium" | "high";
+  shouldUseCatalogRules: boolean;
+  shouldAllowSceneStyling: boolean;
+  shouldAllowPoseVariation: boolean;
+  shouldAllowBackgroundVariation: boolean;
+};
+
+export type HardPreservationRules = {
+  preserveGarmentCategory: boolean;
+  preserveSilhouette: boolean;
+  preserveNeckline: boolean;
+  preserveSleeveShape: boolean;
+  preserveHemLength: boolean;
+  preserveCoverage: boolean;
+  preservePrintPlacement: boolean;
+  preserveColorFamily: boolean;
+  preserveBustConstruction: boolean;
+  preserveWaistConstruction: boolean;
+  preserveSkirtPresence: boolean;
+};
+
+export type CatalogReadinessGateResult = {
+  allowed: boolean;
+  severity: "ok" | "warn" | "block";
+  reasons: string[];
+  missingCritical: string[];
+  fallbackMode: WorkflowMode | null;
 };
 
 export type GarmentAssetRecord = {

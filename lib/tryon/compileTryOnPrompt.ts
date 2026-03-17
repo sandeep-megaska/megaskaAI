@@ -1,4 +1,10 @@
-import { ConstraintProfile, GarmentReferenceBundle, TryOnConstraintMap } from "@/lib/tryon/types";
+import {
+  ConstraintProfile,
+  GarmentReferenceBundle,
+  HardPreservationRules,
+  TryOnConstraintMap,
+  WorkflowProfile,
+} from "@/lib/tryon/types";
 
 export type TryOnSubject = {
   sourceMode: "model_library" | "manual_upload";
@@ -28,12 +34,14 @@ export type CompiledTryOnInstruction = {
   sections: {
     role: string;
     subject: string;
-    garmentTruth: string;
-    preservation: string;
-    variation: string;
-    scene: string;
-    negatives: string;
+    garmentIdentity: string;
+    hardPreservation: string;
+    forbidden: string;
+    composition: string;
+    negative: string;
   };
+  hardPreservationRules: HardPreservationRules;
+  forbiddenTransformations: string[];
   instructionBundle: {
     betaNotice: string;
     sourceMode: string;
@@ -44,8 +52,9 @@ export type CompiledTryOnInstruction = {
   };
   debug: {
     preservationPriority: string[];
+    workflowMode: string;
+    fidelityLevel: string;
     appliedRules: string[];
-    omittedRules: string[];
   };
 };
 
@@ -55,85 +64,78 @@ export function compileTryOnPrompt(input: {
   constraints: TryOnConstraintMap;
   constraintProfile?: ConstraintProfile;
   referenceBundle?: GarmentReferenceBundle;
+  workflowProfile: WorkflowProfile;
+  hardPreservationRules: HardPreservationRules;
+  forbiddenTransformations: string[];
   prompt?: string | null;
   negativePrompt?: string | null;
   engineMode?: string | null;
 }): CompiledTryOnInstruction {
   const profile = input.constraintProfile;
   const appliedRules: string[] = [];
-  const omittedRules: string[] = [];
 
-  const role = "You are generating a Megaska swimwear beta try-on result for internal product review. Preserve garment truth over stylistic novelty.";
+  const role = input.workflowProfile.workflowMode === "catalog_fidelity"
+    ? "You are generating a Megaska catalog-fidelity try-on. Recreate the exact selected garment identity on the target subject."
+    : "You are generating a Megaska swimwear beta try-on result for internal product review.";
 
   const subject = input.subject.sourceMode === "model_library"
     ? `Use approved model library subject: ${input.subject.modelName ?? "Unnamed Model"}.`
     : `Use manual subject reference from: ${input.subject.personAssetUrl ?? "(not provided)"}.`;
 
-  const garmentTruth = [
-    `Garment truth: ${input.garment.displayName} (${input.garment.garmentCode}).`,
-    input.garment.category ? `Category: ${input.garment.category}.` : null,
-    input.garment.colorway ? `Colorway target: ${input.garment.colorway}.` : null,
-    input.garment.printType ? `Print type target: ${input.garment.printType}.` : null,
-    input.garment.description ? `Description: ${input.garment.description}.` : null,
-    input.garment.fabricNotes ? `Fabric notes: ${input.garment.fabricNotes}.` : null,
-    input.garment.silhouetteNotes ? `Silhouette notes: ${input.garment.silhouetteNotes}.` : null,
-    input.garment.coverageNotes ? `Coverage notes: ${input.garment.coverageNotes}.` : null,
+  const garmentIdentity = [
+    `Garment identity target: ${input.garment.displayName} (${input.garment.garmentCode}).`,
+    input.garment.category ? `Category must remain: ${input.garment.category}.` : null,
+    input.garment.colorway ? `Color family target: ${input.garment.colorway}.` : null,
+    input.garment.printType ? `Print family target: ${input.garment.printType}.` : null,
+    input.garment.silhouetteNotes ? `Silhouette: ${input.garment.silhouetteNotes}.` : null,
+    input.garment.coverageNotes ? `Coverage: ${input.garment.coverageNotes}.` : null,
     `Reference URLs:\n${input.garment.assetUrls.map((url) => `- ${url}`).join("\n")}`,
   ].filter(Boolean).join("\n");
 
-  const preservation = [
-    `Preservation priorities: ${(profile?.preservationPriority ?? ["silhouette", "construction", "colorway"]).join(", ")}.`,
-    profile?.preservePrint ? "Preserve print placement and scale as closely as references allow." : null,
-    profile?.preserveNeckline ? "Preserve neckline geometry." : null,
-    profile?.preserveSleeveShape ? "Preserve sleeve or strap behavior." : null,
-    profile?.preserveLength ? "Preserve hem and relative garment length." : null,
-    profile?.preserveCoverage ? "Preserve coverage style and cut." : null,
-    profile?.preserveColor ? "Preserve colorway and tone balance." : null,
-  ].filter(Boolean).join("\n");
+  const hardPreservation = Object.entries(input.hardPreservationRules)
+    .map(([key, value]) => `${key}: ${value ? "required" : "flexible"}`)
+    .join("\n");
 
-  if (profile?.allowedVariationLevel === "low") {
-    appliedRules.push("variation_clamped_low");
-  } else {
-    appliedRules.push("variation_flexible");
-  }
+  const forbidden = input.forbiddenTransformations.length
+    ? input.forbiddenTransformations.map((item) => `- ${item}`).join("\n")
+    : "- none";
 
-  const variation = `Allowed creative variation: ${profile?.allowedVariationLevel ?? "low"}. Keep identity and silhouette stable; avoid pixel-perfect claims.`;
-  const scene = input.prompt?.trim()
-    ? `Scene/composition direction: ${input.prompt.trim()}`
-    : `Scene/composition direction: clean ${profile?.compositionIntent ?? "catalog"} presentation with product clarity.`;
+  const composition = input.workflowProfile.shouldUseCatalogRules
+    ? `Default to neutral ${input.workflowProfile.preferredOutputStyle} composition. Minimize styling, pose, and background variation.`
+    : `Composition intent: ${profile?.compositionIntent ?? "catalog"}.`;
 
-  if (input.subject.modelPromptAnchor) {
-    appliedRules.push("model_prompt_anchor_applied");
-  } else {
-    omittedRules.push("model_prompt_anchor_missing");
-  }
-
-  const negatives = [
+  const negative = [
     input.negativePrompt?.trim() || "",
     input.subject.modelNegativePrompt?.trim() || "",
-    "Avoid wrong neckline, wrong print mapping, wrong length, wrong coverage, anatomy distortions, and unrealistic garment seams.",
+    "Do not alter garment class, neckline, sleeve/strap construction, bust construction, hem length, print family, or coverage profile.",
   ].filter(Boolean).join(" ");
 
-  const sections = { role, subject, garmentTruth, preservation, variation, scene, negatives };
+  if (input.workflowProfile.shouldUseCatalogRules) appliedRules.push("catalog_rules_enforced");
+  if (input.workflowProfile.fidelityLevel === "hard_lock") appliedRules.push("hard_lock_enabled");
+
+  const sections = { role, subject, garmentIdentity, hardPreservation, forbidden, composition, negative };
 
   const compiledPrompt = [
     `[ROLE]\n${sections.role}`,
-    `[SUBJECT]\n${sections.subject}${input.subject.modelPromptAnchor ? `\nModel anchor: ${input.subject.modelPromptAnchor}` : ""}`,
-    `[GARMENT_TRUTH]\n${sections.garmentTruth}`,
-    `[PRESERVATION]\n${sections.preservation}`,
-    input.referenceBundle ? `[REFERENCE_BUNDLE]\nSilhouette refs:\n${input.referenceBundle.silhouetteReferences.map((url) => `- ${url}`).join("\n")}\nDetail refs:\n${input.referenceBundle.detailReferences.map((url) => `- ${url}`).join("\n")}` : null,
-    `[ALLOWED_VARIATION]\n${sections.variation}`,
-    `[SCENE]\n${sections.scene}`,
-    `[NEGATIVE_AVOIDANCE]\n${sections.negatives}`,
-    `Engine mode: ${input.engineMode ?? "fidelity"}.`,
-    "This try-on workflow is beta; output should support internal QA review.",
+    `[SUBJECT_REPLACEMENT]\n${sections.subject}${input.subject.modelPromptAnchor ? `\nModel anchor: ${input.subject.modelPromptAnchor}` : ""}`,
+    `[EXACT_GARMENT_IDENTITY]\n${sections.garmentIdentity}`,
+    `[HARD_PRESERVATION_RULES]\n${sections.hardPreservation}`,
+    `[FORBIDDEN_TRANSFORMATIONS]\n${sections.forbidden}`,
+    input.referenceBundle
+      ? `[REFERENCE_BUNDLE]\nSilhouette refs:\n${input.referenceBundle.silhouetteReferences.map((url) => `- ${url}`).join("\n")}\nDetail refs:\n${input.referenceBundle.detailReferences.map((url) => `- ${url}`).join("\n")}`
+      : null,
+    `[COMPOSITION]\n${sections.composition}`,
+    `[NEGATIVE_INSTRUCTIONS]\n${sections.negative}`,
+    `Engine mode: ${input.engineMode ?? "fidelity"}. This strengthens instructions but does not guarantee full provider compliance.`,
   ].filter(Boolean).join("\n\n");
 
   return {
     prompt: compiledPrompt,
     compiledPrompt,
-    negativePrompt: negatives,
+    negativePrompt: negative,
     sections,
+    hardPreservationRules: input.hardPreservationRules,
+    forbiddenTransformations: input.forbiddenTransformations,
     instructionBundle: {
       betaNotice: "Try-On Studio is beta. Always verify garment fidelity before publication.",
       sourceMode: input.subject.sourceMode,
@@ -144,8 +146,9 @@ export function compileTryOnPrompt(input: {
     },
     debug: {
       preservationPriority: profile?.preservationPriority ?? [],
+      workflowMode: input.workflowProfile.workflowMode,
+      fidelityLevel: input.workflowProfile.fidelityLevel,
       appliedRules,
-      omittedRules,
     },
   };
 }
