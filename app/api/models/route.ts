@@ -24,9 +24,15 @@ export async function GET(request: Request) {
     }
 
     const models = (data ?? []).map((item) => {
-      const assets = (item.model_assets ?? []) as { id: string }[];
+      const assets = [...((item.model_assets ?? []) as { id: string; is_primary?: boolean; sort_order?: number | null }[])].sort((a, b) => {
+        if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
+        return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+      });
+
       return {
         ...item,
+        model_assets: assets,
+        assets,
         asset_count: assets.length,
       };
     });
@@ -64,7 +70,7 @@ export async function POST(request: Request) {
         negative_prompt: body.negative_prompt ?? null,
         notes: body.notes ?? null,
       })
-      .select("*")
+      .select("id,model_code,display_name,category,status,prompt_anchor,negative_prompt,notes,created_at")
       .single();
 
     if (error) {
@@ -72,7 +78,15 @@ export async function POST(request: Request) {
       return json(400, { success: false, error: error.message });
     }
 
-    return json(201, { success: true, data });
+    return json(201, {
+      success: true,
+      data: {
+        ...data,
+        model_assets: [],
+        assets: [],
+        asset_count: 0,
+      },
+    });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }
