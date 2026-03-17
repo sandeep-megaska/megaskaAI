@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { findBackendById, getDefaultBackendForType, type AIBackendType } from "@/lib/ai-backends";
-import { applyDeterministicOverlay, type OverlayConfig } from "@/lib/overlay-image";
+import { applyOverlayToImage, type OverlayConfig } from "@/lib/overlay-image";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -156,9 +156,10 @@ export async function POST(request: Request) {
       bytes = Buffer.from(image.imageBytes, "base64");
       mimeType = image.mimeType ?? "image/png";
 
+      const overlayResult = await applyOverlayToImage(bytes, overlay);
+      bytes = overlayResult.buffer;
       if (overlay.headline || overlay.subtext || overlay.cta) {
-        bytes = await applyDeterministicOverlay(bytes, overlay);
-        mimeType = "image/png";
+        mimeType = overlayResult.contentType;
       }
     } else {
       let operation = await ai.models.generateVideos({
@@ -211,6 +212,8 @@ export async function POST(request: Request) {
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const publicUrl = publicData.publicUrl;
 
+    const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
+
     const { error: insertError } = await supabase.from("generations").insert({
       prompt,
       type: type === "video" ? "Video" : "Image",
@@ -220,7 +223,7 @@ export async function POST(request: Request) {
       url: publicUrl,
       model_id: payload.model_id ?? null,
       preset_id: payload.preset_id ?? null,
-      overlay_json: { ...overlay, ai_backend_id: backend.id, ai_model: backend.model },
+      overlay_json: hasOverlay ? { ...overlay, ai_backend_id: backend.id, ai_model: backend.model } : null,
       reference_urls: referenceUrls,
       generation_kind: type,
     });
