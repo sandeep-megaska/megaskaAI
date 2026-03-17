@@ -4,6 +4,7 @@ import { findBackendById, getDefaultBackendForType, type AIBackendType } from "@
 import { applyOverlayToImage, type OverlayConfig } from "@/lib/overlay-image";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { mapGeminiProviderError, ProviderUnavailableError } from "@/lib/ai/providerErrors";
+import { isGeminiImageModel, isImagenModel } from "@/lib/ai/backendFamilies";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -174,8 +175,48 @@ export async function POST(request: Request) {
           ? `${finalPrompt}\n\nModel reference image URLs:\n${allReferenceUrls.map((url) => `- ${url}`).join("\n")}`
           : finalPrompt;
 
-      let imageResponse;
-      for (let attempt = 0; attempt < (backend.id === "nano-banana-pro" ? 2 : 1); attempt += 1) {
+      if (isGeminiImageModel(backend.model)) {
+        let inlineImageData: { data?: string; mimeType?: string } | null = null;
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const response = await ai.models.generateContent({
+              model: backend.model,
+              contents: [{ role: "user", parts: [{ text: promptWithReferences }] }],
+              config: {
+                responseModalities: ["IMAGE"],
+              },
+            });
+
+            inlineImageData =
+              response.candidates?.flatMap((candidate) => candidate.content?.parts ?? []).find((part) => part.inlineData)
+                ?.inlineData ?? null;
+
+            if (inlineImageData?.data) {
+              break;
+            }
+
+            throw new Error("Gemini image generation returned no image bytes.");
+          } catch (error) {
+            const message = String((error as { message?: string })?.message ?? "").toUpperCase();
+            if (attempt === 0 && (message.includes("UNAVAILABLE") || message.includes("503"))) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              continue;
+            }
+
+            mapGeminiProviderError(error);
+          }
+        }
+
+        if (!inlineImageData?.data) {
+          return asJson(502, { success: false, error: "Gemini image generation returned no image bytes." });
+        }
+
+        bytes = Buffer.from(inlineImageData.data, "base64");
+        mimeType = inlineImageData.mimeType ?? "image/png";
+      } else if (isImagenModel(backend.model)) {
+        let imageResponse;
+
         try {
           imageResponse = await ai.models.generateImages({
             model: backend.model,
@@ -185,28 +226,27 @@ export async function POST(request: Request) {
               aspectRatio,
             },
           });
-          break;
         } catch (error) {
-          const message = String((error as { message?: string })?.message ?? "").toUpperCase();
-          if (backend.id === "nano-banana-pro" && attempt === 0 && (message.includes("UNAVAILABLE") || message.includes("503"))) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            continue;
-          }
           mapGeminiProviderError(error);
         }
-      }
 
-      if (!imageResponse) {
-        return asJson(502, { success: false, error: "Image generation failed before a response was returned." });
-      }
+        if (!imageResponse) {
+          return asJson(502, { success: false, error: "Imagen generation failed before a response was returned." });
+        }
 
-      const image = imageResponse.generatedImages?.[0]?.image;
-      if (!image?.imageBytes) {
-        return asJson(502, { success: false, error: "Image generation returned no image bytes." });
-      }
+        const image = imageResponse.generatedImages?.[0]?.image;
+        if (!image?.imageBytes) {
+          return asJson(502, { success: false, error: "Imagen generation returned no image bytes." });
+        }
 
-      bytes = Buffer.from(image.imageBytes, "base64");
-      mimeType = image.mimeType ?? "image/png";
+        bytes = Buffer.from(image.imageBytes, "base64");
+        mimeType = image.mimeType ?? "image/png";
+      } else {
+        return asJson(400, {
+          success: false,
+          error: `Unsupported image backend family for model '${backend.model}'.`,
+        });
+      }
 
       const overlayResult = await applyOverlayToImage(bytes, overlay);
       bytes = overlayResult.buffer;

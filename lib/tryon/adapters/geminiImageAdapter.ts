@@ -52,7 +52,7 @@ function buildPrompt(input: AdapterInput) {
   return parts.join("\n\n");
 }
 
-export async function runGeminiNanoBananaProTryOn(input: AdapterInput): Promise<AdapterOutput> {
+export async function runGeminiImageTryOn(input: AdapterInput): Promise<AdapterOutput> {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new Error("Missing GOOGLE_API_KEY environment variable.");
 
@@ -72,7 +72,7 @@ export async function runGeminiNanoBananaProTryOn(input: AdapterInput): Promise<
 
       const image = response.generatedImages?.[0]?.image;
       if (!image?.imageBytes) {
-        throw new Error("Nano Banana Pro returned no image bytes.");
+        throw new Error("Gemini image try-on returned no image bytes.");
       }
 
       return {
@@ -93,5 +93,5 @@ export async function runGeminiNanoBananaProTryOn(input: AdapterInput): Promise<
     }
   }
 
-  throw new Error("Nano Banana Pro request failed after retry.");
+  throw new Error("Gemini image try-on request failed after retry.");
 }
