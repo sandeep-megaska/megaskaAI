@@ -39,6 +39,7 @@ const mediaTypes: MediaType[] = ["Image", "Video"];
 const aspectRatios: AspectRatio[] = ["1:1", "16:9", "9:16"];
 
 export default function Home() {
+  const pathname = usePathname();
   const [prompt, setPrompt] = useState("");
   const [mediaType, setMediaType] = useState<MediaType>("Image");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
