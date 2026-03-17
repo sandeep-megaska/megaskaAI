@@ -168,44 +168,103 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
-       <header className="flex items-center justify-between border-b border-white/10 pb-6">
-  {/* LEFT: Logo + Brand */}
-  <div className="flex items-center gap-3">
-    {/* Logo */}
-    <img
-      src="/logo_megaska.png" // place logo in /public
-      alt="Megaska"
-      className="h-10 w-auto object-contain"
-    />
+       {/* HEADER */}
+<header className="sticky top-0 z-40 border-b border-white/10 bg-[#07111f]/85 backdrop-blur-xl">
+  <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+    
+    {/* LEFT: LOGO + NAV */}
+    <div className="flex min-w-0 items-center gap-4">
+      
+      {/* LOGO */}
+      <Link href="/" className="flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/20 to-blue-500/20 shadow-[0_8px_30px_rgba(34,211,238,0.12)]">
+          <span className="text-sm font-semibold tracking-[0.18em] text-cyan-300">
+            M
+          </span>
+        </div>
 
-    {/* Brand Text */}
-    <div className="flex flex-col leading-tight">
-      <span className="text-xl font-semibold tracking-tight">
-        Megaska AI
-      </span>
-      <span className="text-xs text-zinc-400 tracking-wide">
-        The Creative Studio
-      </span>
+        <div className="min-w-0">
+          <div className="truncate text-base font-semibold tracking-wide text-white sm:text-lg">
+            Megaska AI
+          </div>
+          <div className="truncate text-xs text-slate-400 sm:text-sm">
+            The Creative Studio
+          </div>
+        </div>
+      </Link>
+
+      {/* DESKTOP NAV */}
+      <nav className="hidden items-center gap-2 pl-4 md:flex">
+        {[
+          { href: "/", label: "Studio" },
+          { href: "/models", label: "Models" },
+          { href: "/garments", label: "Garments" },
+          { href: "/try-on", label: "Try-On" },
+        ].map((item) => {
+          const isActive =
+            item.href === "/"
+              ? pathname === "/"
+              : pathname === item.href || pathname.startsWith(item.href + "/");
+
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-200 ${
+                isActive
+                  ? "bg-cyan-400/15 text-cyan-300 ring-1 ring-cyan-400/25"
+                  : "text-slate-300 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+    </div>
+
+    {/* RIGHT: CREDITS */}
+    <div className="flex items-center gap-3">
+      <div className="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-2 sm:block">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+          Credits
+        </div>
+        <div className="text-sm font-semibold text-white">
+          {credits ?? 0}
+        </div>
+      </div>
     </div>
   </div>
-<div className="flex items-center gap-6">
-  <a
-    href="/"
-    className="text-sm text-zinc-300 hover:text-white"
-  >
-    Studio
-  </a>
 
-  <a
-    href="/models"
-    className="text-sm text-zinc-300 hover:text-white"
-  >
-    Models
-  </a>
-</div>
-  {/* RIGHT: Credits */}
-  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">
-    Credits: 120 credits
+  {/* MOBILE NAV */}
+  <div className="border-t border-white/5 px-4 py-2 md:hidden">
+    <div className="mx-auto flex max-w-7xl gap-2 overflow-x-auto">
+      {[
+        { href: "/", label: "Studio" },
+        { href: "/models", label: "Models" },
+        { href: "/garments", label: "Garments" },
+        { href: "/try-on", label: "Try-On" },
+      ].map((item) => {
+        const isActive =
+          item.href === "/"
+            ? pathname === "/"
+            : pathname === item.href || pathname.startsWith(item.href + "/");
+
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`whitespace-nowrap rounded-xl px-3 py-2 text-sm font-medium transition-all duration-200 ${
+              isActive
+                ? "bg-cyan-400/15 text-cyan-300 ring-1 ring-cyan-400/25"
+                : "bg-white/5 text-slate-300 hover:text-white"
+            }`}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </div>
   </div>
 </header>
 
