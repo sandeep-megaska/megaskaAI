@@ -64,6 +64,10 @@ const emptyForm = {
 };
 
 export default function GarmentsPage() {
+  const ASSET_TYPES = ["front", "back", "detail", "reference"] as const;
+  const DETAIL_ZONES = ["neckline", "sleeve", "strap", "hem", "length", "fabric", "print", "bodice", "waist", "hip", "coverage"] as const;
+  const supportsDetailZone = (value: string) => value === "detail" || value === "reference";
+
   const [items, setItems] = useState<Garment[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -135,7 +139,7 @@ export default function GarmentsPage() {
     for (const file of Array.from(files)) formData.append("files", file);
     formData.set("asset_type", assetType);
     if (assetViewLabel) formData.set("view_label", assetViewLabel);
-    if (assetDetailZone) formData.set("detail_zone", assetDetailZone);
+    if (supportsDetailZone(assetType) && assetDetailZone) formData.set("detail_zone", assetDetailZone);
 
     const res = await fetch(`/api/garments/${selected.id}/assets`, { method: "POST", body: formData });
     const json = await res.json();
@@ -227,9 +231,14 @@ export default function GarmentsPage() {
             <div className="space-y-2 rounded border border-white/10 bg-zinc-950/40 p-3">
               <p className="text-xs font-medium">Upload assets</p>
               <div className="grid gap-2 md:grid-cols-3">
-                <select value={assetType} onChange={(event) => setAssetType(event.target.value)} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="front">front</option><option value="back">back</option><option value="detail">detail</option><option value="reference">reference</option></select>
+                <select value={assetType} onChange={(event) => setAssetType(event.target.value)} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs">{ASSET_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
                 <input value={assetViewLabel} onChange={(event) => setAssetViewLabel(event.target.value)} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="view_label (optional)" />
-                <input value={assetDetailZone} onChange={(event) => setAssetDetailZone(event.target.value)} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="detail_zone (optional)" />
+                {supportsDetailZone(assetType) && (
+                  <select value={assetDetailZone} onChange={(event) => setAssetDetailZone(event.target.value)} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs">
+                    <option value="">detail_zone (optional)</option>
+                    {DETAIL_ZONES.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+                  </select>
+                )}
               </div>
               <input type="file" accept="image/*" multiple disabled={uploading} onChange={(event: ChangeEvent<HTMLInputElement>) => uploadAssets(event.target.files)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" />
             </div>
@@ -238,9 +247,14 @@ export default function GarmentsPage() {
               {(selected.garment_assets ?? []).map((asset) => (
                 <div key={asset.id} className="space-y-1 rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
                   <img src={asset.public_url} alt={asset.asset_type} className="h-24 w-full rounded object-cover" />
-                  <input value={asset.asset_type} onChange={(event) => updateAsset(asset.id, { asset_type: event.target.value })} className="w-full rounded border border-white/10 bg-zinc-900 px-1 py-1" />
+                  <select value={asset.asset_type} onChange={(event) => updateAsset(asset.id, { asset_type: event.target.value })} className="w-full rounded border border-white/10 bg-zinc-900 px-1 py-1">{ASSET_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
                   <input value={asset.view_label ?? ""} onChange={(event) => updateAsset(asset.id, { view_label: event.target.value })} placeholder="view_label" className="w-full rounded border border-white/10 bg-zinc-900 px-1 py-1" />
-                  <input value={asset.detail_zone ?? ""} onChange={(event) => updateAsset(asset.id, { detail_zone: event.target.value })} placeholder="detail_zone" className="w-full rounded border border-white/10 bg-zinc-900 px-1 py-1" />
+                  {supportsDetailZone(asset.asset_type) && (
+                    <select value={asset.detail_zone ?? ""} onChange={(event) => updateAsset(asset.id, { detail_zone: event.target.value || null })} className="w-full rounded border border-white/10 bg-zinc-900 px-1 py-1">
+                      <option value="">detail_zone (optional)</option>
+                      {DETAIL_ZONES.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+                    </select>
+                  )}
                   <div className="grid grid-cols-3 gap-1">
                     <button type="button" onClick={() => setPrimaryAsset(selected, "front", asset.id)} className={`rounded border px-1 py-1 ${selected.primary_front_asset_id === asset.id ? "border-emerald-400 text-emerald-200" : "border-white/20"}`}>Front</button>
                     <button type="button" onClick={() => setPrimaryAsset(selected, "back", asset.id)} className={`rounded border px-1 py-1 ${selected.primary_back_asset_id === asset.id ? "border-emerald-400 text-emerald-200" : "border-white/20"}`}>Back</button>
