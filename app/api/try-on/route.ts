@@ -120,8 +120,12 @@ export async function POST(request: Request) {
     if (jobInsertError || !createdJob) return json(500, { success: false, error: jobInsertError?.message || "Unable to create try-on job." });
 
     jobId = createdJob.id;
+    if (!jobId) {
+      throw new Error("Unable to resolve created try-on job id.");
+    }
+    const ensuredJobId = jobId;
 
-    await supabase.from("tryon_jobs").update({ status: "running" }).eq("id", jobId);
+    await supabase.from("tryon_jobs").update({ status: "running" }).eq("id", ensuredJobId);
 
     const selectedReferences = selectGarmentReferencePack({
       assets: garmentAssets,
@@ -168,7 +172,7 @@ export async function POST(request: Request) {
     });
 
     await persistTryOnLineage({
-      tryonJobId: jobId!,
+      tryonJobId: ensuredJobId,
       selectedSubjectMode: sourceMode,
       selectedGarmentAssetIds: selectedReferences.selectedAssetIds,
       selectedPrimaryFrontAssetId: selectedReferences.primaryFrontAssetId,
@@ -241,25 +245,25 @@ export async function POST(request: Request) {
       prompt: compiled.prompt,
       negative_prompt: compiled.negativePrompt,
       error_message: null,
-    }).eq("id", jobId);
+    }).eq("id", ensuredJobId);
 
     const jobAssets = [
       ...selectedAssets.map((asset) => ({
-        tryon_job_id: jobId,
+        tryon_job_id: ensuredJobId,
         asset_role: "garment_reference",
         file_path: asset.public_url,
         public_url: asset.public_url,
         meta: { asset_id: asset.id, detail_zone: asset.detail_zone ?? null },
       })),
       ...(personAssetUrl ? [{
-        tryon_job_id: jobId,
+        tryon_job_id: ensuredJobId,
         asset_role: "person_reference",
         file_path: personAssetUrl,
         public_url: personAssetUrl,
         meta: {},
       }] : []),
       {
-        tryon_job_id: jobId,
+        tryon_job_id: ensuredJobId,
         asset_role: "output",
         file_path: outputPath,
         public_url: publicData.publicUrl,
@@ -276,7 +280,7 @@ export async function POST(request: Request) {
       success: true,
       ok: true,
       data: {
-        tryon_job_id: jobId,
+        tryon_job_id: ensuredJobId,
         generation_id: generation.id,
         status: "completed",
         output_url: publicData.publicUrl,
@@ -290,7 +294,7 @@ export async function POST(request: Request) {
           detail_asset_ids: selectedReferences.detailAssetIds,
         },
       },
-      tryonJobId: jobId!,
+      tryonJobId: ensuredJobId,
       generationId: generation.id,
       outputUrl: publicData.publicUrl,
       warnings,
