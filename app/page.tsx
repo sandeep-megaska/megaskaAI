@@ -199,7 +199,7 @@ export default function Home() {
           <div className="space-y-3">
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe your creative request..." className="h-32 w-full rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm" />
             <div className="grid gap-3 md:grid-cols-2">
-              <select value={modelId} onChange={(event) => setModelId(event.target.value)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="">Model Library (optional)</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select>
+              <select value={modelId} onChange={(event) => setModelId(event.target.value)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="">Model Library (optional)</option>{models.map((model) => <option key={model.id} value={model.id}>{`${model.model_code} — ${model.display_name}`}</option>)}</select>
               <select value={presetId} onChange={(event) => setPresetId(event.target.value)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="">Preset (optional)</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select>
             </div>
             <div className="grid gap-3 md:grid-cols-2">

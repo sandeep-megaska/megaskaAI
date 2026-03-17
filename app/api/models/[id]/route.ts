@@ -9,9 +9,22 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   try {
     const { id } = await params;
     const supabase = getSupabaseAdminClient();
-    const { data, error } = await supabase.from("model_library").select("*, model_assets(*)").eq("id", id).maybeSingle();
+    const { data, error } = await supabase
+      .from("model_library")
+      .select("*, model_assets(*)")
+      .eq("id", id)
+      .maybeSingle();
+
     if (error) return json(500, { success: false, error: error.message });
-    return json(200, { success: true, data });
+
+    if (!data) return json(404, { success: false, error: "Model not found." });
+
+    const sortedAssets = [...(data.model_assets ?? [])].sort((a, b) => {
+      if ((a.is_primary ? 1 : 0) !== (b.is_primary ? 1 : 0)) return a.is_primary ? -1 : 1;
+      return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+    });
+
+    return json(200, { success: true, data: { ...data, model_assets: sortedAssets } });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }
@@ -23,36 +36,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const body = await request.json();
     const supabase = getSupabaseAdminClient();
 
-    const { data, error } = await supabase
-      .from("model_library")
-      .update({
-        model_code: body.model_code,
-        display_name: body.display_name,
-        category: body.category,
-        status: body.status,
-        prompt_anchor: body.prompt_anchor,
-        negative_prompt: body.negative_prompt,
-        notes: body.notes,
-      })
-      .eq("id", id)
-      .select("*")
-      .single();
+    const updates: Record<string, unknown> = {};
+    const allowedFields = ["model_code", "display_name", "category", "status", "prompt_anchor", "negative_prompt", "notes"];
 
-    if (error) return json(400, { success: false, error: error.message });
+    for (const field of allowedFields) {
+      if (field in body) updates[field] = body[field] ?? null;
+    }
 
-    if (Array.isArray(body.asset_urls)) {
-      await supabase.from("model_assets").delete().eq("model_id", id);
-      const assetUrls = body.asset_urls.filter(Boolean);
-      if (assetUrls.length) {
-        await supabase.from("model_assets").insert(
-          assetUrls.map((url: string, index: number) => ({
-            model_id: id,
-            asset_url: url,
-            is_primary: index === 0,
-            sort_order: index,
-          })),
-        );
-      }
+    const { data, error } = await supabase.from("model_library").update(updates).eq("id", id).select("*").single();
+
+    if (error) {
+      console.error("[models/:id][PATCH] update error", error);
+      return json(400, { success: false, error: error.message });
     }
 
     return json(200, { success: true, data });

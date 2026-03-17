@@ -15,41 +15,59 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const supabase = getSupabaseAdminClient();
 
     const formData = await request.formData();
-    const file = formData.get("file");
+    const allFiles = formData
+      .getAll("files")
+      .concat(formData.get("file") ? [formData.get("file") as FormDataEntryValue] : [])
+      .filter((entry): entry is File => entry instanceof File);
 
-    if (!(file instanceof File)) {
-      return json(400, { success: false, error: "Missing file field." });
+    if (!allFiles.length) {
+      return json(400, { success: false, error: "Missing file field. Use 'files' or 'file'." });
     }
 
-    const bytes = Buffer.from(await file.arrayBuffer());
-    const filePath = `models/${id}/${Date.now()}-${sanitizeFileName(file.name)}`;
+    const { data: existingAssets } = await supabase.from("model_assets").select("id,is_primary").eq("model_id", id);
+    const hasPrimary = Boolean(existingAssets?.some((asset) => asset.is_primary));
 
-    const { error: uploadError } = await supabase.storage.from("brand-assets").upload(filePath, bytes, {
-      contentType: file.type || "application/octet-stream",
-      upsert: false,
-    });
+    const createdAssets = [];
 
-    if (uploadError) {
-      return json(500, { success: false, error: uploadError.message });
+    for (let index = 0; index < allFiles.length; index += 1) {
+      const file = allFiles[index];
+      const bytes = Buffer.from(await file.arrayBuffer());
+      const filePath = `models/${id}/${Date.now()}-${index}-${sanitizeFileName(file.name)}`;
+
+      const { error: uploadError } = await supabase.storage.from("brand-assets").upload(filePath, bytes, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+
+      if (uploadError) {
+        console.error("[models/:id/assets][POST] upload error", uploadError);
+        return json(500, { success: false, error: uploadError.message });
+      }
+
+      const { data: publicUrlData } = supabase.storage.from("brand-assets").getPublicUrl(filePath);
+      const isPrimary = !hasPrimary && index === 0;
+
+      const { data, error: insertError } = await supabase
+        .from("model_assets")
+        .insert({
+          model_id: id,
+          asset_url: publicUrlData.publicUrl,
+          storage_path: filePath,
+          is_primary: isPrimary,
+          sort_order: index,
+        })
+        .select("*")
+        .single();
+
+      if (insertError) {
+        console.error("[models/:id/assets][POST] insert error", insertError);
+        return json(500, { success: false, error: insertError.message });
+      }
+
+      createdAssets.push(data);
     }
 
-    const { data: publicUrlData } = supabase.storage.from("brand-assets").getPublicUrl(filePath);
-
-    const { data, error: insertError } = await supabase
-      .from("model_assets")
-      .insert({
-        model_id: id,
-        asset_url: publicUrlData.publicUrl,
-        storage_path: filePath,
-      })
-      .select("*")
-      .single();
-
-    if (insertError) {
-      return json(500, { success: false, error: insertError.message });
-    }
-
-    return json(201, { success: true, data });
+    return json(201, { success: true, data: createdAssets });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }
