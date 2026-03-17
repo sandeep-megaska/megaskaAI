@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Copy, Download, Sparkles, Wallet } from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 type MediaType = "Image" | "Video";
 type AspectRatio = "1:1" | "16:9" | "9:16";
