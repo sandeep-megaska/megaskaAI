@@ -188,7 +188,21 @@ export default function Home() {
       </span>
     </div>
   </div>
+<div className="flex items-center gap-6">
+  <a
+    href="/"
+    className="text-sm text-zinc-300 hover:text-white"
+  >
+    Studio
+  </a>
 
+  <a
+    href="/models"
+    className="text-sm text-zinc-300 hover:text-white"
+  >
+    Models
+  </a>
+</div>
   {/* RIGHT: Credits */}
   <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">
     Credits: 120 credits
