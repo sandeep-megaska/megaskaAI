@@ -1,6 +1,7 @@
 import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
+import { isGeminiImageModel, isImagenModel } from "@/lib/ai/backendFamilies";
 import { runGoogleImageTryOn } from "@/lib/tryon/adapters/googleImageAdapter";
-import { runGeminiNanoBananaProTryOn } from "@/lib/tryon/adapters/geminiNanoBananaPro";
+import { runGeminiImageTryOn } from "@/lib/tryon/adapters/geminiImageAdapter";
 
 export type TryOnAdapterPayload = {
   subject?: Record<string, unknown>;
@@ -50,10 +51,15 @@ export async function runTryOnJob(input: RunTryOnInput): Promise<RunTryOnResult>
     adapterPayload: input.adapterPayload,
   };
 
-  const output =
-    backend.id === "nano-banana-pro"
-      ? await runGeminiNanoBananaProTryOn(adapterInput)
-      : await runGoogleImageTryOn(adapterInput);
+  let output: Awaited<ReturnType<typeof runGeminiImageTryOn>>;
+
+  if (isGeminiImageModel(backend.model)) {
+    output = await runGeminiImageTryOn(adapterInput);
+  } else if (isImagenModel(backend.model)) {
+    output = await runGoogleImageTryOn(adapterInput);
+  } else {
+    throw new Error(`Unsupported try-on image backend family for model '${backend.model}'.`);
+  }
 
   return {
     bytes: output.bytes,
