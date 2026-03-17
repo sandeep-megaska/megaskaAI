@@ -23,6 +23,16 @@ type ReferenceSummary = {
   missing?: string[];
 };
 
+
+type PrintReferenceSummary = {
+  hasFrontPrintView?: boolean;
+  hasBackPrintView?: boolean;
+  hasClosePrintDetail?: boolean;
+  hasFabricTextureDetail?: boolean;
+  hasDistributionView?: boolean;
+  missing?: string[];
+};
+
 type Garment = {
   id: string;
   garment_code: string;
@@ -44,6 +54,9 @@ type Garment = {
   readiness_score?: number;
   readiness_status?: string;
   reference_summary?: ReferenceSummary;
+  print_readiness_score?: number;
+  print_readiness_status?: string;
+  print_reference_summary?: PrintReferenceSummary;
   garment_assets?: GarmentAsset[];
 };
 
@@ -65,7 +78,7 @@ const emptyForm = {
 
 export default function GarmentsPage() {
   const ASSET_TYPES = ["front", "back", "detail", "reference"] as const;
-  const DETAIL_ZONES = ["neckline", "sleeve", "strap", "hem", "length", "fabric", "print", "bodice", "waist", "hip", "coverage"] as const;
+  const DETAIL_ZONES = ["neckline", "sleeve", "strap", "hem", "length", "fabric", "print", "texture", "bust", "waist", "hip", "coverage"] as const;
   const supportsDetailZone = (value: string) => value === "detail" || value === "reference";
 
   const [items, setItems] = useState<Garment[]>([]);
@@ -213,11 +226,16 @@ export default function GarmentsPage() {
           <section className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-lg font-semibold">{selected.display_name}</h2>
             <div className="rounded border border-white/10 bg-zinc-950/40 p-3 text-xs">
-              <p className="font-medium">Readiness status: {selected.readiness_status ?? "reference_incomplete"}</p>
-              <p className="text-zinc-300">Readiness score: {selected.readiness_score ?? 0}</p>
+              <p className="font-medium">Structure readiness status: {selected.readiness_status ?? "reference_incomplete"}</p>
+              <p className="text-zinc-300">Structure readiness score: {selected.readiness_score ?? 0}</p>
+              <p className="font-medium">Print readiness status: {selected.print_readiness_status ?? "print_reference_weak"}</p>
+              <p className="text-zinc-300">Print readiness score: {selected.print_readiness_score ?? 0}</p>
               <p className="text-zinc-400">Front: {String(selected.reference_summary?.hasFront ?? false)} · Back: {String(selected.reference_summary?.hasBack ?? false)} · Neckline: {String(selected.reference_summary?.hasNeckline ?? false)}</p>
               <p className="text-zinc-400">Sleeve/strap: {String(selected.reference_summary?.hasSleeveOrStrap ?? false)} · Hem: {String(selected.reference_summary?.hasHem ?? false)} · Print/fabric: {String(selected.reference_summary?.hasPrintOrFabric ?? false)}</p>
               <p className="text-amber-300">Missing critical references: {selected.reference_summary?.missing?.join(", ") || "none"}</p>
+              <p className="text-amber-300">Missing print references: {selected.print_reference_summary?.missing?.join(", ") || "none"}</p>
+              <p className="text-zinc-400">Print front: {String(selected.print_reference_summary?.hasFrontPrintView ?? false)} · back: {String(selected.print_reference_summary?.hasBackPrintView ?? false)} · close print: {String(selected.print_reference_summary?.hasClosePrintDetail ?? false)}</p>
+              <p className="text-zinc-400">Texture detail: {String(selected.print_reference_summary?.hasFabricTextureDetail ?? false)} · distribution view: {String(selected.print_reference_summary?.hasDistributionView ?? false)}</p>
               <button type="button" onClick={() => saveGarment(selected)} className="mt-2 rounded border border-white/20 px-2 py-1">Recompute readiness</button>
             </div>
 
