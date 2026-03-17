@@ -24,24 +24,76 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
-<label className="group flex cursor-pointer flex-col items-center justify-center rounded-xl border border-white/10 bg-zinc-950/70 px-6 py-8 text-center transition-all hover:border-cyan-400/40 hover:bg-zinc-900/80">
+@import "tailwindcss";
 
-  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400/10 text-cyan-300 group-hover:bg-cyan-400/20">
-    📁
-  </div>
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
 
-  <p className="text-sm font-medium text-white">
-    Upload Person Image
-  </p>
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
 
-  <p className="mt-1 text-xs text-zinc-400">
-    Click or drag & drop
-  </p>
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
 
-  <input
-    type="file"
-    accept="image/*"
-    className="hidden"
-    onChange={(e) => uploadReferenceFiles(e.target.files)}
-  />
-</label>
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ===== Premium file input styling ===== */
+input[type="file"] {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(9, 9, 11, 0.75);
+  color: #e5e7eb;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+input[type="file"]:hover {
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(24, 24, 27, 0.9);
+}
+
+input[type="file"]:focus {
+  outline: none;
+  border-color: rgba(34, 211, 238, 0.5);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 0.875rem;
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  background: linear-gradient(to bottom right, rgba(34, 211, 238, 0.18), rgba(59, 130, 246, 0.18));
+  color: #cffafe;
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+  border-color: rgba(34, 211, 238, 0.35);
+  background: linear-gradient(to bottom right, rgba(34, 211, 238, 0.28), rgba(59, 130, 246, 0.28));
+  color: #ecfeff;
+}
+
+input[type="file"]::file-selector-button:active {
+  transform: translateY(1px);
+}
