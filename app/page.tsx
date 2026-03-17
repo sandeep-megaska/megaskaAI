@@ -168,12 +168,32 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
-        <header className="flex items-center justify-between">
-          <h1 className="text-3xl font-semibold">MegaSka AI Studio</h1>
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200">
-            <span className="inline-flex items-center gap-2"><Wallet className="h-4 w-4" />Credits: {credits?.balance ?? "--"} {credits?.currency ?? ""}</span>
-          </div>
-        </header>
+       <header className="flex items-center justify-between border-b border-white/10 pb-6">
+  {/* LEFT: Logo + Brand */}
+  <div className="flex items-center gap-3">
+    {/* Logo */}
+    <img
+      src="/megaska-logo.png" // place logo in /public
+      alt="Megaska"
+      className="h-10 w-auto object-contain"
+    />
+
+    {/* Brand Text */}
+    <div className="flex flex-col leading-tight">
+      <span className="text-xl font-semibold tracking-tight">
+        Megaska AI
+      </span>
+      <span className="text-xs text-zinc-400 tracking-wide">
+        The Creative Studio
+      </span>
+    </div>
+  </div>
+
+  {/* RIGHT: Credits */}
+  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-300">
+    Credits: 120 credits
+  </div>
+</header>
 
         <section className="grid gap-6 rounded-xl border border-white/10 bg-zinc-900/50 p-6 lg:grid-cols-2">
           <div className="space-y-3">
