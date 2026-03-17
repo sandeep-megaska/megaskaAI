@@ -13,6 +13,16 @@ type GarmentAsset = {
   detail_zone?: string | null;
 };
 
+type ReferenceSummary = {
+  hasFront?: boolean;
+  hasBack?: boolean;
+  hasNeckline?: boolean;
+  hasSleeveOrStrap?: boolean;
+  hasHem?: boolean;
+  hasPrintOrFabric?: boolean;
+  missing?: string[];
+};
+
 type Garment = {
   id: string;
   garment_code: string;
@@ -31,6 +41,9 @@ type Garment = {
   primary_front_asset_id?: string | null;
   primary_back_asset_id?: string | null;
   primary_detail_asset_id?: string | null;
+  readiness_score?: number;
+  readiness_status?: string;
+  reference_summary?: ReferenceSummary;
   garment_assets?: GarmentAsset[];
 };
 
@@ -78,10 +91,7 @@ export default function GarmentsPage() {
   }
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void load();
-    }, 0);
-
+    const timer = setTimeout(() => void load(), 0);
     return () => clearTimeout(timer);
   }, [statusFilter, categoryFilter]);
 
@@ -114,21 +124,15 @@ export default function GarmentsPage() {
       setError(json.error ?? "Unable to update garment.");
       return;
     }
-
     setItems((current) => current.map((entry) => (entry.id === item.id ? json.data : entry)));
   }
 
   async function uploadAssets(files: FileList | null) {
     if (!selected || !files?.length) return;
-
     setUploading(true);
     setError(null);
     const formData = new FormData();
-
-    for (const file of Array.from(files)) {
-      formData.append("files", file);
-    }
-
+    for (const file of Array.from(files)) formData.append("files", file);
     formData.set("asset_type", assetType);
     if (assetViewLabel) formData.set("view_label", assetViewLabel);
     if (assetDetailZone) formData.set("detail_zone", assetDetailZone);
@@ -151,7 +155,6 @@ export default function GarmentsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-
     const json = await res.json();
     if (res.ok) setItems((current) => current.map((entry) => (entry.id === garment.id ? json.data : entry)));
   }
@@ -173,34 +176,29 @@ export default function GarmentsPage() {
           <h1 className="text-3xl font-semibold">Garment Library</h1>
           <p className="text-sm text-zinc-400">Brand-specific product catalog and reference pack management.</p>
         </header>
-
         {error && <div className="rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</div>}
 
         <section className="grid gap-4 lg:grid-cols-3">
           <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
-            <h2 className="text-sm font-semibold">Create Garment</h2>
-            {Object.entries(form).map(([key, value]) => (
-              key === "description" || key === "notes" || key.endsWith("_notes") ? (
-                <textarea key={key} value={value} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} placeholder={key} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" rows={2} />
-              ) : (
-                <input key={key} value={value} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} placeholder={key} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" />
-              )
-            ))}
-            <button type="button" onClick={createGarment} disabled={creating} className="w-full rounded border border-white/20 px-3 py-2 text-xs">{creating ? "Creating..." : "Create Garment"}</button>
+            <h2 className="text-sm font-semibold">Create garment</h2>
+            <input value={form.garment_code} onChange={(event) => setForm((current) => ({ ...current, garment_code: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="garment_code" />
+            <input value={form.display_name} onChange={(event) => setForm((current) => ({ ...current, display_name: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="display_name" />
+            <button type="button" disabled={creating} onClick={createGarment} className="rounded bg-indigo-500 px-3 py-2 text-xs font-semibold text-white">{creating ? "Creating..." : "Create"}</button>
           </article>
 
-          <article className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4 lg:col-span-2">
+          <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4 lg:col-span-2">
             <div className="flex flex-wrap gap-2">
               <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded border border-white/10 bg-zinc-950 px-2 py-1 text-xs"><option value="all">Status: all</option><option value="draft">draft</option><option value="approved">approved</option><option value="archived">archived</option></select>
               <input value={categoryFilter === "all" ? "" : categoryFilter} onChange={(event) => setCategoryFilter(event.target.value.trim() ? event.target.value : "all")} placeholder="Category filter" className="rounded border border-white/10 bg-zinc-950 px-2 py-1 text-xs" />
             </div>
-
             <div className="grid gap-2 md:grid-cols-2">
               {items.map((item) => (
                 <button key={item.id} type="button" onClick={() => setSelectedId(item.id)} className={`rounded border p-3 text-left text-xs ${selectedId === item.id ? "border-indigo-500 bg-indigo-500/10" : "border-white/10 bg-zinc-950/60"}`}>
                   <p className="font-semibold">{item.display_name}</p>
                   <p className="text-zinc-400">{item.garment_code} · {item.status}</p>
                   <p className="text-zinc-500">{item.category || "uncategorized"}</p>
+                  <p className="mt-1 text-zinc-300">Readiness: {item.readiness_status ?? "reference_incomplete"} ({item.readiness_score ?? 0})</p>
+                  {!!item.reference_summary?.missing?.length && <p className="text-amber-300">Missing: {item.reference_summary.missing.join(", ")}</p>}
                 </button>
               ))}
             </div>
@@ -210,6 +208,15 @@ export default function GarmentsPage() {
         {selected && (
           <section className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-lg font-semibold">{selected.display_name}</h2>
+            <div className="rounded border border-white/10 bg-zinc-950/40 p-3 text-xs">
+              <p className="font-medium">Readiness status: {selected.readiness_status ?? "reference_incomplete"}</p>
+              <p className="text-zinc-300">Readiness score: {selected.readiness_score ?? 0}</p>
+              <p className="text-zinc-400">Front: {String(selected.reference_summary?.hasFront ?? false)} · Back: {String(selected.reference_summary?.hasBack ?? false)} · Neckline: {String(selected.reference_summary?.hasNeckline ?? false)}</p>
+              <p className="text-zinc-400">Sleeve/strap: {String(selected.reference_summary?.hasSleeveOrStrap ?? false)} · Hem: {String(selected.reference_summary?.hasHem ?? false)} · Print/fabric: {String(selected.reference_summary?.hasPrintOrFabric ?? false)}</p>
+              <p className="text-amber-300">Missing critical references: {selected.reference_summary?.missing?.join(", ") || "none"}</p>
+              <button type="button" onClick={() => saveGarment(selected)} className="mt-2 rounded border border-white/20 px-2 py-1">Recompute readiness</button>
+            </div>
+
             <div className="grid gap-2 md:grid-cols-3">
               <input value={selected.status} onChange={(event) => setItems((current) => current.map((entry) => entry.id === selected.id ? { ...entry, status: event.target.value } : entry))} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="status" />
               <input value={selected.category ?? ""} onChange={(event) => setItems((current) => current.map((entry) => entry.id === selected.id ? { ...entry, category: event.target.value } : entry))} className="rounded border border-white/10 bg-zinc-950 p-2 text-xs" placeholder="category" />

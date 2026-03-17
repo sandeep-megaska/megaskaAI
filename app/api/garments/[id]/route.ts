@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { recomputeAndPersistGarmentReadiness } from "@/lib/tryon/computeGarmentReadiness";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -47,6 +48,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       console.error("[garments/:id][PATCH] update error", error);
       return json(400, { success: false, error: error.message });
     }
+
+    await recomputeAndPersistGarmentReadiness({
+      garmentId: id,
+      garmentStatus: data.status,
+      primaryFrontAssetId: data.primary_front_asset_id,
+      primaryBackAssetId: data.primary_back_asset_id,
+    });
 
     return json(200, { success: true, data });
   } catch (error) {
