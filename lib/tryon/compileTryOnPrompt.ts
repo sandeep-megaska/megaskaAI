@@ -52,12 +52,14 @@ export type CompiledTryOnInstruction = {
     garmentAssetUrls: string[];
     constraints: TryOnConstraintMap;
     preservationPriority: string[];
+    transformationMode: "reconstruct" | "identity_transfer";
   };
   debug: {
     preservationPriority: string[];
     workflowMode: string;
     fidelityLevel: string;
     appliedRules: string[];
+    transformationMode: "reconstruct" | "identity_transfer";
   };
 };
 
@@ -81,6 +83,12 @@ export function compileTryOnPrompt(input: {
   const role = input.workflowProfile.workflowMode === "catalog_fidelity"
     ? "You are generating a Megaska catalog-fidelity try-on. Recreate the exact selected garment identity on the target subject."
     : "You are generating a Megaska swimwear beta try-on result for internal product review.";
+
+  const transformationMode: "reconstruct" | "identity_transfer" =
+    input.workflowProfile.shouldUseCatalogRules || input.workflowProfile.fidelityLevel === "hard_lock"
+      || input.printPreservationRules.preservePrintPattern
+      ? "identity_transfer"
+      : "reconstruct";
 
   const subject = input.subject.sourceMode === "model_library"
     ? `Use approved model library subject: ${input.subject.modelName ?? "Unnamed Model"}.`
@@ -128,8 +136,19 @@ export function compileTryOnPrompt(input: {
 
   const sections = { role, subject, garmentIdentity, hardPreservation, printFidelity, forbidden, composition, negative };
 
+  const transformationInstruction = transformationMode === "identity_transfer"
+    ? [
+      "This is a garment identity transfer task, not a creative concept request.",
+      "Preserve garment category, neckline, sleeve/strap construction, bust construction, hem/length, silhouette, coverage, print family, pattern density, and color distribution.",
+      "Do not redesign, reinterpret, simplify, replace print, or change garment type.",
+      "Only adapt the garment naturally for the target subject body and pose.",
+    ].join("\n")
+    : "Transformation mode is reconstruct: maintain identity where possible while allowing moderate adaptation.";
+
   const compiledPrompt = [
     `[ROLE]\n${sections.role}`,
+    `[TRANSFORMATION_MODE]\n${transformationMode}`,
+    `[TRANSFORMATION_INSTRUCTION]\n${transformationInstruction}`,
     `[SUBJECT_REPLACEMENT]\n${sections.subject}${input.subject.modelPromptAnchor ? `\nModel anchor: ${input.subject.modelPromptAnchor}` : ""}`,
     `[EXACT_GARMENT_IDENTITY]\n${sections.garmentIdentity}`,
     `[HARD_PRESERVATION_RULES]\n${sections.hardPreservation}`,
@@ -158,12 +177,14 @@ export function compileTryOnPrompt(input: {
       garmentAssetUrls: input.garment.assetUrls,
       constraints: input.constraints,
       preservationPriority: profile?.preservationPriority ?? [],
+      transformationMode,
     },
     debug: {
       preservationPriority: profile?.preservationPriority ?? [],
       workflowMode: input.workflowProfile.workflowMode,
       fidelityLevel: input.workflowProfile.fidelityLevel,
       appliedRules,
+      transformationMode,
     },
   };
 }

@@ -14,6 +14,8 @@ type AdapterOutput = {
   bytes: Buffer;
   mimeType: string;
   model: string;
+  debug?: Record<string, unknown>;
+  warnings?: string[];
 };
 
 function buildPrompt(input: AdapterInput) {

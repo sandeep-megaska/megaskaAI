@@ -1,18 +1,38 @@
 import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
 import { isGeminiImageModel, isImagenModel } from "@/lib/ai/backendFamilies";
 import { runGoogleImageTryOn } from "@/lib/tryon/adapters/googleImageAdapter";
-import { runGeminiImageTryOn } from "@/lib/tryon/adapters/geminiImageAdapter";
+import { runGeminiImageConditionedTryOn } from "@/lib/tryon/adapters/geminiImageConditionedTryOn";
 
 export type TryOnAdapterPayload = {
-  subject?: Record<string, unknown>;
+  subject?: {
+    sourceMode?: "model_library" | "manual_upload";
+    modelId?: string | null;
+    personAssetUrl?: string | null;
+  } & Record<string, unknown>;
   garment?: Record<string, unknown>;
   selectedReferences?: {
+    selectedAssetIds?: string[];
+    primaryFrontAssetId?: string | null;
+    primaryBackAssetId?: string | null;
+    categoryDefiningAssetIds?: string[];
+    constructionDetailAssetIds?: string[];
+    silhouetteCriticalAssetIds?: string[];
+    printCriticalAssetIds?: string[];
     bundle?: {
       silhouetteReferences?: string[];
       detailReferences?: string[];
       fabricPrintReferences?: string[];
     };
+    subjectModelAssetUrls?: string[];
   } & Record<string, unknown>;
+  garmentAssets?: Array<{
+    id: string;
+    public_url: string;
+    asset_type: string;
+    detail_zone?: string | null;
+    view_label?: string | null;
+    sort_order?: number | null;
+  }>;
   compiledPrompt?: string;
   negativePrompt?: string;
   workflowProfile?: Record<string, unknown>;
@@ -34,6 +54,8 @@ export type RunTryOnResult = {
   mimeType: string;
   backendId: string;
   backendModel: string;
+  debug?: Record<string, unknown>;
+  warnings?: string[];
 };
 
 export async function runTryOnJob(input: RunTryOnInput): Promise<RunTryOnResult> {
@@ -51,10 +73,16 @@ export async function runTryOnJob(input: RunTryOnInput): Promise<RunTryOnResult>
     adapterPayload: input.adapterPayload,
   };
 
-  let output: Awaited<ReturnType<typeof runGeminiImageTryOn>>;
+  let output: {
+    bytes: Buffer;
+    mimeType: string;
+    model: string;
+    debug?: Record<string, unknown>;
+    warnings?: string[];
+  };
 
   if (isGeminiImageModel(backend.model)) {
-    output = await runGeminiImageTryOn(adapterInput);
+    output = await runGeminiImageConditionedTryOn(adapterInput);
   } else if (isImagenModel(backend.model)) {
     output = await runGoogleImageTryOn(adapterInput);
   } else {
@@ -66,5 +94,7 @@ export async function runTryOnJob(input: RunTryOnInput): Promise<RunTryOnResult>
     mimeType: output.mimeType,
     backendId: backend.id,
     backendModel: output.model,
+    debug: output.debug,
+    warnings: output.warnings,
   };
 }
