@@ -7,13 +7,14 @@ import { Copy, Download, Sparkles, Wallet } from "lucide-react";
 type MediaType = "Image" | "Video";
 type AspectRatio = "1:1" | "16:9" | "9:16";
 type OverlayPosition = "top" | "center" | "bottom";
+type OverlayTheme = "megaska-light" | "megaska-dark";
 
 type ModelLibrary = { id: string; display_name: string; model_code: string };
 type BrandPreset = {
   id: string;
   name: string;
   aspect_ratio?: AspectRatio;
-  overlay_defaults?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition };
+  overlay_defaults?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition; theme?: OverlayTheme };
 };
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
 type CreditSummary = { balance: number; currency: string; last_updated: string };
@@ -28,7 +29,7 @@ type GenerationItem = {
   url?: string;
   model_id?: string | null;
   preset_id?: string | null;
-  overlay_json?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition } | null;
+  overlay_json?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition; theme?: OverlayTheme } | null;
   reference_urls?: string[] | null;
 };
 
@@ -46,6 +47,7 @@ export default function Home() {
   const [subtext, setSubtext] = useState("");
   const [cta, setCta] = useState("");
   const [overlayPosition, setOverlayPosition] = useState<OverlayPosition>("bottom");
+  const [overlayTheme, setOverlayTheme] = useState<OverlayTheme>("megaska-light");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
@@ -135,7 +137,7 @@ export default function Home() {
           model_id: modelId || null,
           preset_id: presetId || null,
           ai_backend_id: backendId || null,
-          overlay: { headline, subtext, cta, position: overlayPosition },
+          overlay: { headline, subtext, cta, position: overlayPosition, theme: overlayTheme },
           reference_urls: referenceUrls,
         }),
       });
@@ -159,6 +161,7 @@ export default function Home() {
     setSubtext(item.overlay_json?.subtext ?? "");
     setCta(item.overlay_json?.cta ?? "");
     setOverlayPosition(item.overlay_json?.position ?? "bottom");
+    setOverlayTheme(item.overlay_json?.theme ?? "megaska-light");
     setReferenceUrls(item.reference_urls ?? []);
   }
 
@@ -184,6 +187,7 @@ export default function Home() {
               <input value={subtext} onChange={(event) => setSubtext(event.target.value)} placeholder="Subtext" className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
               <input value={cta} onChange={(event) => setCta(event.target.value)} placeholder="CTA" className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
               <select value={overlayPosition} onChange={(event) => setOverlayPosition(event.target.value as OverlayPosition)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="top">Overlay Top</option><option value="center">Overlay Center</option><option value="bottom">Overlay Bottom</option></select>
+              <select value={overlayTheme} onChange={(event) => setOverlayTheme(event.target.value as OverlayTheme)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="megaska-light">Theme: Megaska Light</option><option value="megaska-dark">Theme: Megaska Dark</option></select>
             </div>
             <input type="file" accept="image/*" multiple onChange={(event) => uploadReferenceFiles(event.target.files)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
             {!!referenceUrls.length && <p className="text-xs text-zinc-400">Uploaded references: {referenceUrls.length}</p>}
