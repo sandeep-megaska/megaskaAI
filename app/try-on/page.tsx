@@ -27,9 +27,20 @@ type TryOnResultMeta = {
   tryonJobId?: string;
   generationId?: string;
   warnings?: string[];
-  readiness?: { readinessStatus?: string; readinessScore?: number; referenceSummary?: { missing?: string[] } };
-  selectedReferences?: { selectedAssetIds?: string[]; primaryFrontAssetId?: string | null; primaryBackAssetId?: string | null; detailAssetIds?: string[] };
+  readiness?: {
+    readinessStatus?: string;
+    readinessScore?: number;
+    referenceSummary?: { missing?: string[] };
+  };
+  selectedReferences?: {
+    selectedAssetIds?: string[];
+    primaryFrontAssetId?: string | null;
+    primaryBackAssetId?: string | null;
+    detailAssetIds?: string[];
+  };
 };
+
+type SourceMode = "model_library" | "manual_upload";
 
 const initialConstraints = {
   preserve_color: true,
@@ -49,27 +60,56 @@ export default function TryOnPage() {
   const [models, setModels] = useState<Model[]>([]);
   const [garments, setGarments] = useState<Garment[]>([]);
   const [jobs, setJobs] = useState<TryOnJob[]>([]);
-  const [sourceMode, setSourceMode] = useState<"model_library" | "manual_upload">("model_library");
+
+  const [sourceMode, setSourceMode] = useState<SourceMode>("model_library");
   const [modelId, setModelId] = useState("");
   const [personAssetUrl, setPersonAssetUrl] = useState("");
   const [garmentId, setGarmentId] = useState("");
+
   const [backend, setBackend] = useState("imagen");
   const [engineMode, setEngineMode] = useState("fidelity");
   const [aspectRatio, setAspectRatio] = useState<"1:1" | "16:9" | "9:16">("1:1");
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [constraints, setConstraints] = useState(initialConstraints);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [resultUrl, setResultUrl] = useState<string>("");
-  const [resultMeta, setResultMeta] = useState<TryOnResultMeta>({});
-  const [reviewState, setReviewState] = useState({ overall_rating: "usable", garment_fidelity_rating: "usable", subject_rating: "usable", pose_background_rating: "usable", issue_tags: "", review_notes: "" });
 
-  const selectedGarment = useMemo(() => garments.find((item) => item.id === garmentId) ?? null, [garments, garmentId]);
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadingPerson, setUploadingPerson] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resultUrl, setResultUrl] = useState("");
+  const [resultMeta, setResultMeta] = useState<TryOnResultMeta>({});
+  const [reviewState, setReviewState] = useState({
+    overall_rating: "usable",
+    garment_fidelity_rating: "usable",
+    subject_rating: "usable",
+    pose_background_rating: "usable",
+    issue_tags: "",
+    review_notes: "",
+  });
+
+  const selectedGarment = useMemo(
+    () => garments.find((item) => item.id === garmentId) ?? null,
+    [garments, garmentId],
+  );
+
+  const hasValidSubject =
+    sourceMode === "model_library" ? !!modelId : !!personAssetUrl;
+
+  const canSubmit = !!garmentId && hasValidSubject && !submitting && !uploadingPerson;
 
   async function loadAll() {
-    const [modelsRes, garmentsRes, jobsRes] = await Promise.all([fetch("/api/models"), fetch("/api/garments"), fetch("/api/try-on")]);
-    const [modelsJson, garmentsJson, jobsJson] = await Promise.all([modelsRes.json(), garmentsRes.json(), jobsRes.json()]);
+    const [modelsRes, garmentsRes, jobsRes] = await Promise.all([
+      fetch("/api/models"),
+      fetch("/api/garments"),
+      fetch("/api/try-on"),
+    ]);
+
+    const [modelsJson, garmentsJson, jobsJson] = await Promise.all([
+      modelsRes.json(),
+      garmentsRes.json(),
+      jobsRes.json(),
+    ]);
+
     setModels(modelsJson.data ?? []);
     setGarments(garmentsJson.data ?? []);
     setJobs(jobsJson.data ?? []);
@@ -80,43 +120,98 @@ export default function TryOnPage() {
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    if (sourceMode === "model_library") {
+      setPersonAssetUrl("");
+    } else {
+      setModelId("");
+    }
+  }, [sourceMode]);
+
   async function uploadPerson(file: File | null) {
     if (!file) return;
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", body: form });
-    const json = await res.json();
-    if (res.ok && json.public_url) {
+
+    setError(null);
+    setUploadingPerson(true);
+    setPersonAssetUrl("");
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: form,
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.public_url) {
+        setError(json.error ?? "Failed to upload subject image.");
+        return;
+      }
+
       setPersonAssetUrl(json.public_url);
       setSourceMode("manual_upload");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to upload subject image.");
+    } finally {
+      setUploadingPerson(false);
     }
   }
 
   async function submitTryOn() {
+    if (!garmentId) {
+      setError("Please select a garment.");
+      return;
+    }
+
+    if (sourceMode === "model_library" && !modelId) {
+      setError("Please select a model.");
+      return;
+    }
+
+    if (sourceMode === "manual_upload" && !personAssetUrl) {
+      setError("Please upload a person image.");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setResultUrl("");
     setResultMeta({});
 
-    const res = await fetch("/api/try-on", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model_id: sourceMode === "model_library" ? modelId || null : null,
-        person_asset_url: sourceMode === "manual_upload" ? personAssetUrl || null : null,
-        garment_id: garmentId,
-        backend,
-        engine_mode: engineMode,
-        aspect_ratio: aspectRatio,
-        prompt,
-        negative_prompt: negativePrompt,
-        constraints,
-      }),
+    console.log("TRYON_SUBMIT", {
+      sourceMode,
+      modelId,
+      personAssetUrl,
+      garmentId,
     });
 
-    const json = await res.json();
-    if (!res.ok) setError(json.error ?? "Try-on failed.");
-    if (res.ok) {
+    try {
+      const res = await fetch("/api/try-on", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model_id: sourceMode === "model_library" ? modelId || null : null,
+          person_asset_url: sourceMode === "manual_upload" ? personAssetUrl || null : null,
+          garment_id: garmentId,
+          backend,
+          engine_mode: engineMode,
+          aspect_ratio: aspectRatio,
+          prompt,
+          negative_prompt: negativePrompt,
+          constraints,
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok) {
+        setError(json.error ?? "Try-on failed.");
+        return;
+      }
+
       setResultUrl(json.data?.output_url ?? json.outputUrl ?? "");
       setResultMeta({
         tryonJobId: json.tryonJobId ?? json.data?.tryon_job_id,
@@ -125,27 +220,45 @@ export default function TryOnPage() {
         readiness: json.readiness ?? json.data?.readiness,
         selectedReferences: json.selectedReferences ?? json.data?.selected_references,
       });
+
       await loadAll();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Try-on failed.");
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   }
 
   async function saveReview() {
     if (!resultMeta.tryonJobId) return;
-    await fetch("/api/try-on/review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        tryon_job_id: resultMeta.tryonJobId,
-        generation_id: resultMeta.generationId ?? null,
-        overall_rating: reviewState.overall_rating,
-        garment_fidelity_rating: reviewState.garment_fidelity_rating,
-        subject_rating: reviewState.subject_rating,
-        pose_background_rating: reviewState.pose_background_rating,
-        issue_tags: reviewState.issue_tags.split(",").map((value) => value.trim()).filter(Boolean),
-        review_notes: reviewState.review_notes,
-      }),
-    });
+
+    try {
+      const res = await fetch("/api/try-on/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tryon_job_id: resultMeta.tryonJobId,
+          generation_id: resultMeta.generationId ?? null,
+          overall_rating: reviewState.overall_rating,
+          garment_fidelity_rating: reviewState.garment_fidelity_rating,
+          subject_rating: reviewState.subject_rating,
+          pose_background_rating: reviewState.pose_background_rating,
+          issue_tags: reviewState.issue_tags
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+          review_notes: reviewState.review_notes,
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok) {
+        setError(json.error ?? "Failed to save review.");
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to save review.");
+    }
   }
 
   return (
@@ -153,96 +266,347 @@ export default function TryOnPage() {
       <div className="mx-auto max-w-7xl space-y-6">
         <header>
           <h1 className="text-3xl font-semibold">Try-On Studio (Beta)</h1>
-          <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Beta workflow: results are directional and require QA before publication.</p>
+          <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            Beta workflow: results are directional and require QA before publication.
+          </p>
         </header>
-        {error && <div className="rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</div>}
+
+        {error && (
+          <div className="rounded border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+            {error}
+          </div>
+        )}
 
         <section className="grid gap-4 lg:grid-cols-3">
           <article className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-sm font-semibold">1. Subject</h2>
-            <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as "model_library" | "manual_upload")} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="model_library">Approved model</option><option value="manual_upload">Manual upload</option></select>
+
+            <select
+              value={sourceMode}
+              onChange={(event) => setSourceMode(event.target.value as SourceMode)}
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+            >
+              <option value="model_library">Approved model</option>
+              <option value="manual_upload">Manual upload</option>
+            </select>
+
             {sourceMode === "model_library" ? (
-              <select value={modelId} onChange={(event) => setModelId(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="">Select model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.model_code} — {model.display_name}</option>)}</select>
+              <select
+                value={modelId}
+                onChange={(event) => setModelId(event.target.value)}
+                className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+              >
+                <option value="">Select model</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.model_code} — {model.display_name}
+                  </option>
+                ))}
+              </select>
             ) : (
               <>
-                <input value={personAssetUrl} onChange={(event) => setPersonAssetUrl(event.target.value)} placeholder="Uploaded person URL" className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" />
-                <input type="file" accept="image/*" onChange={(event) => uploadPerson(event.target.files?.[0] ?? null)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" />
+                <input
+                  value={personAssetUrl}
+                  readOnly
+                  placeholder="Uploaded person URL will appear here"
+                  className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs text-zinc-400"
+                />
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => uploadPerson(event.target.files?.[0] ?? null)}
+                  className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+                />
+                {uploadingPerson ? (
+                  <p className="text-xs text-zinc-400">Uploading subject image...</p>
+                ) : personAssetUrl ? (
+                  <p className="text-xs text-emerald-300">Subject image uploaded and ready.</p>
+                ) : (
+                  <p className="text-xs text-amber-300">Upload a person image before submitting.</p>
+                )}
               </>
             )}
           </article>
 
           <article className="space-y-3 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-sm font-semibold">2. Garment</h2>
-            <select value={garmentId} onChange={(event) => setGarmentId(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="">Select garment</option>{garments.map((garment) => <option key={garment.id} value={garment.id}>{garment.garment_code} — {garment.display_name}</option>)}</select>
+
+            <select
+              value={garmentId}
+              onChange={(event) => setGarmentId(event.target.value)}
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+            >
+              <option value="">Select garment</option>
+              {garments.map((garment) => (
+                <option key={garment.id} value={garment.id}>
+                  {garment.garment_code} — {garment.display_name}
+                </option>
+              ))}
+            </select>
+
             {selectedGarment && (
               <div className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
-                <p>Readiness: {selectedGarment.readiness_status ?? "reference_incomplete"} ({selectedGarment.readiness_score ?? 0})</p>
-                {!!selectedGarment.reference_summary?.missing?.length && <p className="text-amber-300">Reference pack is incomplete; try-on fidelity may be limited. Missing: {selectedGarment.reference_summary.missing.join(", ")}</p>}
+                <p>
+                  Readiness: {selectedGarment.readiness_status ?? "reference_incomplete"} (
+                  {selectedGarment.readiness_score ?? 0})
+                </p>
+                {!!selectedGarment.reference_summary?.missing?.length && (
+                  <p className="text-amber-300">
+                    Reference pack is incomplete; try-on fidelity may be limited. Missing:{" "}
+                    {selectedGarment.reference_summary.missing.join(", ")}
+                  </p>
+                )}
               </div>
             )}
-            <div className="grid grid-cols-3 gap-2">{(selectedGarment?.garment_assets ?? []).slice(0, 6).map((asset) => <img key={asset.id} src={asset.public_url} alt={asset.asset_type} className="h-20 w-full rounded object-cover" />)}</div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {(selectedGarment?.garment_assets ?? []).slice(0, 6).map((asset) => (
+                <img
+                  key={asset.id}
+                  src={asset.public_url}
+                  alt={asset.asset_type}
+                  className="h-20 w-full rounded object-cover"
+                />
+              ))}
+            </div>
           </article>
 
           <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="text-sm font-semibold">3. Controls</h2>
-            <select value={backend} onChange={(event) => setBackend(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="imagen">Imagen</option><option value="nano-banana">Nano Banana</option></select>
-            <select value={engineMode} onChange={(event) => setEngineMode(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="fidelity">fidelity</option><option value="creative">creative</option></select>
-            <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as "1:1" | "16:9" | "9:16")} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"><option value="1:1">1:1</option><option value="16:9">16:9</option><option value="9:16">9:16</option></select>
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="scene prompt (optional)" className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" rows={2} />
-            <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="negative prompt (optional)" className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" rows={2} />
+
+            <select
+              value={backend}
+              onChange={(event) => setBackend(event.target.value)}
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+            >
+              <option value="imagen">Imagen</option>
+              <option value="nano-banana">Nano Banana</option>
+            </select>
+
+            <select
+              value={engineMode}
+              onChange={(event) => setEngineMode(event.target.value)}
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+            >
+              <option value="fidelity">fidelity</option>
+              <option value="creative">creative</option>
+            </select>
+
+            <select
+              value={aspectRatio}
+              onChange={(event) => setAspectRatio(event.target.value as "1:1" | "16:9" | "9:16")}
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+            >
+              <option value="1:1">1:1</option>
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="scene prompt (optional)"
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+              rows={2}
+            />
+
+            <textarea
+              value={negativePrompt}
+              onChange={(event) => setNegativePrompt(event.target.value)}
+              placeholder="negative prompt (optional)"
+              className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs"
+              rows={2}
+            />
           </article>
         </section>
 
         <section className="rounded-lg border border-white/10 bg-zinc-900/40 p-4">
           <h2 className="mb-2 text-sm font-semibold">Structured Constraints</h2>
+
           <div className="grid gap-2 md:grid-cols-3">
-            {Object.entries(constraints).map(([key, value]) => typeof value === "boolean" ? (
-              <label key={key} className="flex items-center justify-between rounded border border-white/10 bg-zinc-950/70 px-2 py-1 text-xs"><span>{key}</span><input type="checkbox" checked={value} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.checked }))} /></label>
-            ) : (
-              <label key={key} className="space-y-1 text-xs"><span>{key}</span><input value={String(value)} onChange={(event) => setConstraints((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-950 p-1" /></label>
-            ))}
+            {Object.entries(constraints).map(([key, value]) =>
+              typeof value === "boolean" ? (
+                <label
+                  key={key}
+                  className="flex items-center justify-between rounded border border-white/10 bg-zinc-950/70 px-2 py-1 text-xs"
+                >
+                  <span>{key}</span>
+                  <input
+                    type="checkbox"
+                    checked={value}
+                    onChange={(event) =>
+                      setConstraints((current) => ({
+                        ...current,
+                        [key]: event.target.checked,
+                      }))
+                    }
+                  />
+                </label>
+              ) : (
+                <label key={key} className="space-y-1 text-xs">
+                  <span>{key}</span>
+                  <input
+                    value={String(value)}
+                    onChange={(event) =>
+                      setConstraints((current) => ({
+                        ...current,
+                        [key]: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded border border-white/10 bg-zinc-950 p-1"
+                  />
+                </label>
+              ),
+            )}
           </div>
-          <button type="button" disabled={submitting} onClick={submitTryOn} className="mt-3 rounded bg-indigo-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{submitting ? "Submitting..." : "Submit try-on job"}</button>
+
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={submitTryOn}
+            className="mt-3 rounded bg-indigo-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {uploadingPerson
+              ? "Uploading subject..."
+              : submitting
+              ? "Submitting..."
+              : "Submit try-on job"}
+          </button>
+
+          {!garmentId && (
+            <p className="mt-2 text-xs text-amber-300">Select a garment before submitting.</p>
+          )}
+
+          {sourceMode === "model_library" && !modelId && (
+            <p className="mt-2 text-xs text-amber-300">Select a model before submitting.</p>
+          )}
+
+          {sourceMode === "manual_upload" && !personAssetUrl && !uploadingPerson && (
+            <p className="mt-2 text-xs text-amber-300">Upload a person image before submitting.</p>
+          )}
         </section>
 
         <section className="grid gap-4 lg:grid-cols-2">
           <article className="space-y-2 rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="mb-2 text-sm font-semibold">4. Output</h2>
-            {resultUrl ? <img src={resultUrl} alt="try-on result" className="max-h-96 w-full rounded object-cover" /> : <p className="text-xs text-zinc-400">No generated output yet.</p>}
-            {!!resultMeta.warnings?.length && <p className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{resultMeta.warnings.join(" | ")}</p>}
+
+            {resultUrl ? (
+              <img
+                src={resultUrl}
+                alt="try-on result"
+                className="max-h-96 w-full rounded object-cover"
+              />
+            ) : (
+              <p className="text-xs text-zinc-400">No generated output yet.</p>
+            )}
+
+            {!!resultMeta.warnings?.length && (
+              <p className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+                {resultMeta.warnings.join(" | ")}
+              </p>
+            )}
+
             {resultMeta.selectedReferences && (
               <details className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
                 <summary>Reference selection debug</summary>
                 <p>Front: {resultMeta.selectedReferences.primaryFrontAssetId ?? "none"}</p>
                 <p>Back: {resultMeta.selectedReferences.primaryBackAssetId ?? "none"}</p>
-                <p>Details: {(resultMeta.selectedReferences.detailAssetIds ?? []).join(", ") || "none"}</p>
-                <p>Selected assets: {(resultMeta.selectedReferences.selectedAssetIds ?? []).join(", ") || "none"}</p>
+                <p>
+                  Details:{" "}
+                  {(resultMeta.selectedReferences.detailAssetIds ?? []).join(", ") || "none"}
+                </p>
+                <p>
+                  Selected assets:{" "}
+                  {(resultMeta.selectedReferences.selectedAssetIds ?? []).join(", ") || "none"}
+                </p>
               </details>
             )}
 
             {resultMeta.tryonJobId && (
               <div className="space-y-2 rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
                 <p className="font-medium">Internal output review</p>
-                {(["overall_rating", "garment_fidelity_rating", "subject_rating", "pose_background_rating"] as const).map((field) => (
-                  <select key={field} value={reviewState[field]} onChange={(event) => setReviewState((current) => ({ ...current, [field]: event.target.value }))} className="w-full rounded border border-white/10 bg-zinc-900 p-1">
-                    <option value="approved">approved</option><option value="usable">usable</option><option value="poor">poor</option><option value="rejected">rejected</option>
+
+                {(
+                  [
+                    "overall_rating",
+                    "garment_fidelity_rating",
+                    "subject_rating",
+                    "pose_background_rating",
+                  ] as const
+                ).map((field) => (
+                  <select
+                    key={field}
+                    value={reviewState[field]}
+                    onChange={(event) =>
+                      setReviewState((current) => ({
+                        ...current,
+                        [field]: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded border border-white/10 bg-zinc-900 p-1"
+                  >
+                    <option value="approved">approved</option>
+                    <option value="usable">usable</option>
+                    <option value="poor">poor</option>
+                    <option value="rejected">rejected</option>
                   </select>
                 ))}
-                <input value={reviewState.issue_tags} onChange={(event) => setReviewState((current) => ({ ...current, issue_tags: event.target.value }))} placeholder="issue tags comma-separated" className="w-full rounded border border-white/10 bg-zinc-900 p-1" />
-                <textarea value={reviewState.review_notes} onChange={(event) => setReviewState((current) => ({ ...current, review_notes: event.target.value }))} placeholder="review notes" className="w-full rounded border border-white/10 bg-zinc-900 p-1" rows={2} />
-                <button type="button" onClick={saveReview} className="rounded border border-white/20 px-2 py-1">Save review</button>
+
+                <input
+                  value={reviewState.issue_tags}
+                  onChange={(event) =>
+                    setReviewState((current) => ({
+                      ...current,
+                      issue_tags: event.target.value,
+                    }))
+                  }
+                  placeholder="issue tags comma-separated"
+                  className="w-full rounded border border-white/10 bg-zinc-900 p-1"
+                />
+
+                <textarea
+                  value={reviewState.review_notes}
+                  onChange={(event) =>
+                    setReviewState((current) => ({
+                      ...current,
+                      review_notes: event.target.value,
+                    }))
+                  }
+                  placeholder="review notes"
+                  className="w-full rounded border border-white/10 bg-zinc-900 p-1"
+                  rows={2}
+                />
+
+                <button
+                  type="button"
+                  onClick={saveReview}
+                  className="rounded border border-white/20 px-2 py-1"
+                >
+                  Save review
+                </button>
               </div>
             )}
           </article>
 
           <article className="rounded-lg border border-white/10 bg-zinc-900/40 p-4">
             <h2 className="mb-2 text-sm font-semibold">Latest Jobs</h2>
+
             <div className="space-y-2">
               {jobs.map((job) => (
-                <div key={job.id} className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
-                  <p>{job.garment_library?.display_name ?? "Garment"} · {job.model_library?.display_name ?? "Manual subject"}</p>
-                  <p className="text-zinc-400">{job.status} · {new Date(job.created_at).toLocaleString()}</p>
-                  {job.error_message && <p className="text-rose-300">{job.error_message}</p>}
+                <div
+                  key={job.id}
+                  className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs"
+                >
+                  <p>
+                    {job.garment_library?.display_name ?? "Garment"} ·{" "}
+                    {job.model_library?.display_name ?? "Manual subject"}
+                  </p>
+                  <p className="text-zinc-400">
+                    {job.status} · {new Date(job.created_at).toLocaleString()}
+                  </p>
+                  {job.error_message && (
+                    <p className="text-rose-300">{job.error_message}</p>
+                  )}
                 </div>
               ))}
             </div>
