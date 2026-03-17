@@ -179,7 +179,7 @@ export default function Home() {
     <div className="flex min-w-0 items-center gap-4">
       
       {/* LOGO */}
-      <Link href="/" className="flex items-center gap-3">
+      <Link href="/logo_megaska.png" className="flex items-center gap-3">
         <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/20 to-blue-500/20 shadow-[0_8px_30px_rgba(34,211,238,0.12)]">
           <span className="text-sm font-semibold tracking-[0.18em] text-cyan-300">
             M
