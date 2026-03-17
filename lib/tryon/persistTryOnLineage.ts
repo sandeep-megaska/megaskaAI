@@ -10,9 +10,14 @@ export async function persistTryOnLineage(input: {
   selectedReferenceBundle: Record<string, unknown>;
   workflowMode: string;
   fidelityLevel: string;
+  printLockEnabled: boolean;
+  printFidelityLevel: string;
   hardPreservationRules: Record<string, unknown>;
+  printPreservationRules: Record<string, unknown>;
   forbiddenTransformations: string[];
+  printForbiddenTransformations: string[];
   readinessGateResult: Record<string, unknown>;
+  printGateResult: Record<string, unknown>;
   orchestrationDebug: Record<string, unknown>;
 }) {
   const supabase = getSupabaseAdminClient();
@@ -28,8 +33,12 @@ export async function persistTryOnLineage(input: {
       selected_reference_bundle: input.selectedReferenceBundle,
       workflow_mode: input.workflowMode,
       fidelity_level: input.fidelityLevel,
+      print_lock_enabled: input.printLockEnabled,
+      print_fidelity_level: input.printFidelityLevel,
       hard_preservation_rules: input.hardPreservationRules,
-      forbidden_transformations: input.forbiddenTransformations,
+      print_preservation_rules: input.printPreservationRules,
+      forbidden_transformations: [...input.forbiddenTransformations, ...input.printForbiddenTransformations],
+      print_gate_result: input.printGateResult,
       readiness_gate_result: input.readinessGateResult,
       orchestration_debug: input.orchestrationDebug,
     })

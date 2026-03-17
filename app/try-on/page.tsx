@@ -12,6 +12,9 @@ type Garment = {
   readiness_score?: number;
   readiness_status?: string;
   reference_summary?: { missing?: string[] };
+  print_readiness_score?: number;
+  print_readiness_status?: string;
+  print_reference_summary?: { missing?: string[] };
   garment_assets?: GarmentAsset[];
 };
 type TryOnJob = {
@@ -41,12 +44,26 @@ type TryOnResultMeta = {
     reasons?: string[];
     missingCritical?: string[];
   };
+  printReadiness?: {
+    printReadinessStatus?: string;
+    printReadinessScore?: number;
+    printReferenceSummary?: { missing?: string[] };
+  };
+  printGate?: {
+    severity?: string;
+    reasons?: string[];
+    missingCritical?: string[];
+  };
   selectedReferences?: {
     selectedAssetIds?: string[];
     primaryFrontAssetId?: string | null;
     primaryBackAssetId?: string | null;
     detailAssetIds?: string[];
+    printCriticalAssetIds?: string[];
+    printDistributionAssetIds?: string[];
+    printDetailAssetIds?: string[];
     missingIdentityCriticalReferences?: string[];
+    missingPrintCriticalReferences?: string[];
   };
 };
 
@@ -84,6 +101,8 @@ export default function TryOnPage() {
   const [preferredOutputStyle, setPreferredOutputStyle] = useState<PreferredOutputStyle>("catalog");
 
   const [backend, setBackend] = useState("imagen");
+  const [printLockEnabled, setPrintLockEnabled] = useState(true);
+  const [printFidelityLevel, setPrintFidelityLevel] = useState<FidelityLevel>("strict");
   const [engineMode] = useState("fidelity");
   const [aspectRatio] = useState<"1:1" | "16:9" | "9:16">("1:1");
   const [prompt, setPrompt] = useState("");
@@ -117,6 +136,8 @@ export default function TryOnPage() {
   useEffect(() => {
     if (workflowMode === "catalog_fidelity") {
       setFidelityLevel((current) => (current === "balanced" ? "strict" : current));
+      setPrintLockEnabled(true);
+      setPrintFidelityLevel((current) => (current === "balanced" ? "strict" : current));
       setPreferredOutputStyle((current) => (current === "lifestyle" ? "catalog" : current));
       setConstraints((current) => ({
         ...current,
@@ -125,6 +146,9 @@ export default function TryOnPage() {
         allow_styling_variation: false,
         composition_mode: preferredOutputStyle === "studio" ? "studio" : "catalog",
       }));
+    } else {
+      setPrintLockEnabled(false);
+      setPrintFidelityLevel("balanced");
     }
   }, [workflowMode, preferredOutputStyle]);
 
@@ -229,6 +253,8 @@ export default function TryOnPage() {
           prompt,
           negative_prompt: negativePrompt,
           constraints,
+          print_lock_enabled: printLockEnabled,
+          print_fidelity_level: printFidelityLevel,
         }),
       });
 
@@ -248,6 +274,8 @@ export default function TryOnPage() {
         selectedReferences: json.selectedReferences ?? json.data?.selected_references,
         workflowProfile: json.workflowProfile ?? json.data?.workflow_profile,
         readinessGate: json.readinessGate ?? json.data?.readiness_gate,
+        printReadiness: json.printReadiness ?? json.data?.print_readiness,
+        printGate: json.printGate ?? json.data?.print_gate,
       });
 
       await loadAll();
@@ -374,14 +402,13 @@ export default function TryOnPage() {
 
             {selectedGarment && (
               <div className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
-                <p>
-                  Readiness: {selectedGarment.readiness_status ?? "reference_incomplete"} (
-                  {selectedGarment.readiness_score ?? 0})
-                </p>
+                <p>Structure readiness: {selectedGarment.readiness_status ?? "reference_incomplete"} ({selectedGarment.readiness_score ?? 0})</p>
+                <p>Print readiness: {selectedGarment.print_readiness_status ?? "print_reference_weak"} ({selectedGarment.print_readiness_score ?? 0})</p>
                 {!!selectedGarment.reference_summary?.missing?.length && (
-                  <p className="text-amber-300">
-                    Missing identity-critical references: {selectedGarment.reference_summary.missing.join(", ")}
-                  </p>
+                  <p className="text-amber-300">Missing identity-critical references: {selectedGarment.reference_summary.missing.join(", ")}</p>
+                )}
+                {!!selectedGarment.print_reference_summary?.missing?.length && (
+                  <p className="text-amber-300">Missing print-critical references: {selectedGarment.print_reference_summary.missing.join(", ")}</p>
                 )}
               </div>
             )}
@@ -400,6 +427,17 @@ export default function TryOnPage() {
               <option value="hard_lock">hard_lock</option>
             </select>
 
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={printLockEnabled} onChange={(event) => setPrintLockEnabled(event.target.checked)} />
+              Print Lock
+            </label>
+
+            <select value={printFidelityLevel} onChange={(event) => setPrintFidelityLevel(event.target.value as FidelityLevel)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs">
+              <option value="balanced">print balanced</option>
+              <option value="strict">print strict</option>
+              <option value="hard_lock">print hard_lock</option>
+            </select>
+
             <select value={preferredOutputStyle} onChange={(event) => setPreferredOutputStyle(event.target.value as PreferredOutputStyle)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs">
               <option value="catalog">catalog</option>
               <option value="studio">studio</option>
@@ -409,6 +447,11 @@ export default function TryOnPage() {
             {workflowMode === "catalog_fidelity" && (
               <p className="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-200">
                 Catalog fidelity mode prioritizes garment identity over creative styling.
+              </p>
+            )}
+            {printFidelityLevel === "hard_lock" && selectedGarment?.print_readiness_status === "print_reference_weak" && (
+              <p className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+                hard_lock selected with weak print references; output may degrade to strict/balanced print mode.
               </p>
             )}
             {workflowMode === "catalog_fidelity" && fidelityLevel !== "balanced" && preferredOutputStyle === "lifestyle" && (
@@ -450,12 +493,16 @@ export default function TryOnPage() {
               <p>Workflow mode used: {resultMeta.workflowProfile?.workflowMode ?? "n/a"}</p>
               <p>Fidelity level used: {resultMeta.workflowProfile?.fidelityLevel ?? "n/a"}</p>
               <p>Readiness gate: {resultMeta.readinessGate?.severity ?? "n/a"}</p>
+              <p>Print gate: {resultMeta.printGate?.severity ?? "n/a"}</p>
             </div>
 
             <details className="rounded border border-white/10 bg-zinc-950/60 p-2 text-xs">
-              <summary>Forbidden transformations debug</summary>
-              <p>{(resultMeta.selectedReferences?.missingIdentityCriticalReferences ?? []).join(", ") || "none"}</p>
-              <p>{(resultMeta.readinessGate?.reasons ?? []).join(" | ") || "No gate warnings."}</p>
+              <summary>Print/forbidden transformations debug</summary>
+              <p>Missing identity refs: {(resultMeta.selectedReferences?.missingIdentityCriticalReferences ?? []).join(", ") || "none"}</p>
+              <p>Missing print refs: {(resultMeta.selectedReferences?.missingPrintCriticalReferences ?? []).join(", ") || "none"}</p>
+              <p>Print critical IDs: {(resultMeta.selectedReferences?.printCriticalAssetIds ?? []).join(", ") || "none"}</p>
+              <p>{(resultMeta.readinessGate?.reasons ?? []).join(" | ") || "No structural gate warnings."}</p>
+              <p>{(resultMeta.printGate?.reasons ?? []).join(" | ") || "No print gate warnings."}</p>
             </details>
 
             {resultMeta.tryonJobId && (

@@ -1,5 +1,6 @@
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { GarmentAssetRecord } from "@/lib/tryon/types";
+import { computePrintReadiness } from "@/lib/tryon/computePrintReadiness";
 
 export type GarmentReadinessStatus = "draft" | "reference_incomplete" | "tryon_ready" | "archived";
 
@@ -111,14 +112,23 @@ export async function recomputeAndPersistGarmentReadiness(input: {
     assets,
   });
 
+  const printReadiness = computePrintReadiness({
+    assets,
+    primaryFrontAssetId: input.primaryFrontAssetId,
+    primaryBackAssetId: input.primaryBackAssetId,
+  });
+
   await supabase
     .from("garment_library")
     .update({
       readiness_score: readiness.readinessScore,
       readiness_status: readiness.readinessStatus,
       reference_summary: readiness.referenceSummary,
+      print_readiness_score: printReadiness.printReadinessScore,
+      print_readiness_status: printReadiness.printReadinessStatus,
+      print_reference_summary: printReadiness.printReferenceSummary,
     })
     .eq("id", input.garmentId);
 
-  return readiness;
+  return { ...readiness, printReadiness };
 }

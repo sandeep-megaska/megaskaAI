@@ -3,6 +3,7 @@ export type TryOnConstraintMap = Record<string, string | boolean | null | undefi
 export type WorkflowMode = "standard_tryon" | "catalog_fidelity";
 export type FidelityLevel = "balanced" | "strict" | "hard_lock";
 export type PreferredOutputStyle = "catalog" | "studio" | "lifestyle";
+export type PrintFidelityLevel = "balanced" | "strict" | "hard_lock";
 
 export type ConstraintProfile = {
   preservePrint: boolean;
@@ -45,6 +46,44 @@ export type HardPreservationRules = {
   preserveBustConstruction: boolean;
   preserveWaistConstruction: boolean;
   preserveSkirtPresence: boolean;
+};
+
+export type PrintReadinessStatus = "print_reference_weak" | "print_reference_medium" | "print_reference_strong";
+
+export type PrintReadinessSummary = {
+  hasFrontPrintView: boolean;
+  hasBackPrintView: boolean;
+  hasClosePrintDetail: boolean;
+  hasFabricTextureDetail: boolean;
+  hasDistributionView: boolean;
+  totalPrintRelevantAssets: number;
+  missing: string[];
+};
+
+export type PrintReadinessResult = {
+  printReadinessScore: number;
+  printReadinessStatus: PrintReadinessStatus;
+  printReferenceSummary: PrintReadinessSummary;
+};
+
+export type PrintPreservationRules = {
+  preservePrintPattern: boolean;
+  preservePrintDensity: boolean;
+  preservePrintDistribution: boolean;
+  preserveColorComplexity: boolean;
+  preserveColorFamily: boolean;
+  preserveTextureRichness: boolean;
+  preservePatternScale: boolean;
+  preserveFrontBackPatternContinuity: boolean;
+  confidence: "low" | "medium" | "high";
+};
+
+export type PrintGateResult = {
+  allowed: boolean;
+  severity: "ok" | "warn" | "block";
+  reasons: string[];
+  missingCritical: string[];
+  fallbackPrintMode: PrintFidelityLevel | null;
 };
 
 export type CatalogReadinessGateResult = {
