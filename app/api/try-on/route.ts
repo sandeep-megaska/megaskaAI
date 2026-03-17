@@ -123,6 +123,7 @@ export async function POST(request: Request) {
     if (readiness.readinessStatus !== "tryon_ready") warnings.push("Reference pack is incomplete; try-on fidelity may be limited.");
 
     let model: { id: string; display_name: string; prompt_anchor?: string | null; negative_prompt?: string | null } | null = null;
+    let modelAssetUrls: string[] = [];
     if (modelId) {
       const { data: modelData, error: modelError } = await supabase
         .from("model_library")
@@ -131,6 +132,16 @@ export async function POST(request: Request) {
         .single();
       if (modelError || !modelData) return json(404, { success: false, error: modelError?.message || "Model not found." });
       model = modelData;
+
+      const { data: modelAssets } = await supabase
+        .from("model_assets")
+        .select("asset_url,is_primary,sort_order")
+        .eq("model_id", modelId)
+        .order("is_primary", { ascending: false })
+        .order("sort_order", { ascending: true })
+        .limit(3);
+
+      modelAssetUrls = (modelAssets ?? []).map((asset) => String(asset.asset_url)).filter(Boolean);
     }
 
     const selectedReferences = selectGarmentReferencePack({
@@ -303,7 +314,11 @@ export async function POST(request: Request) {
       adapterPayload: {
         subject: { sourceMode, modelId, personAssetUrl },
         garment: { id: garment.id, garmentCode: garment.garment_code, displayName: garment.display_name },
-        selectedReferences,
+        garmentAssets: selectedAssets,
+        selectedReferences: {
+          ...selectedReferences,
+          subjectModelAssetUrls: modelAssetUrls,
+        },
         compiledPrompt: compiled.compiledPrompt,
         negativePrompt: compiled.negativePrompt,
         workflowProfile: effectiveWorkflowProfile,
@@ -346,6 +361,7 @@ export async function POST(request: Request) {
           print_fidelity_level: printFidelityLevel,
           forbidden_transformations: forbiddenTransformations,
           selected_reference_ids: selectedReferences.selectedAssetIds,
+          conditioning_debug: tryOnOutput.debug ?? null,
         },
         generation_kind: "image",
       })
@@ -362,6 +378,14 @@ export async function POST(request: Request) {
       negative_prompt: compiled.negativePrompt,
       print_preservation_rules: printPreservationRules,
       print_gate_result: printGate,
+      orchestration_debug: {
+        referenceSelection: selectedReferences.debug,
+        promptCompiler: compiled.debug,
+        workflowProfile,
+        readiness,
+        printReadiness,
+        conditioning: tryOnOutput.debug ?? null,
+      },
       error_message: null,
     }).eq("id", jobId);
 
@@ -383,6 +407,10 @@ export async function POST(request: Request) {
       },
     ]);
 
+    if (tryOnOutput.warnings?.length) {
+      warnings.push(...tryOnOutput.warnings);
+    }
+
     return json(200, {
       success: true,
       ok: true,
@@ -394,6 +422,7 @@ export async function POST(request: Request) {
       warnings,
       readiness,
       printReadiness,
+      conditioningDebug: tryOnOutput.debug ?? null,
       workflowProfile: effectiveWorkflowProfile,
       readinessGate,
       printGate,
