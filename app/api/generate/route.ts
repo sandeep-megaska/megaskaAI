@@ -24,6 +24,14 @@ type GeneratePayload = {
     referenceKindsUsed?: string[];
     promptHash?: string;
     backendModel?: string;
+    // Video foundation metadata (reuses generations persistence; additive only).
+    motionPreset?: string;
+    durationSeconds?: number;
+    style?: string;
+    strictGarmentLock?: boolean;
+    sceneKey?: string;
+    clipLabel?: string;
+    requestedThumbnailUrl?: string | null;
   };
 };
 
@@ -227,6 +235,17 @@ export async function POST(request: Request) {
           estimatedCostUsd: estimatedGeminiCost?.estimatedCostUsd ?? null,
         };
     const generationMeta = payload.studio_meta ? { ...generationMetaBase, ...payload.studio_meta } : generationMetaBase;
+    const videoMeta =
+      type === "video"
+        ? {
+            motionPreset: payload.studio_meta?.motionPreset ?? null,
+            durationSeconds: payload.studio_meta?.durationSeconds ?? null,
+            style: payload.studio_meta?.style ?? null,
+            strictGarmentLock: payload.studio_meta?.strictGarmentLock ?? null,
+            sceneKey: payload.studio_meta?.sceneKey ?? null,
+            clipLabel: payload.studio_meta?.clipLabel ?? null,
+          }
+        : {};
 
     const { data: insertedGeneration, error: insertError } = await supabase
       .from("generations")
@@ -242,6 +261,9 @@ export async function POST(request: Request) {
         overlay_json: generationMeta,
         reference_urls: allReferenceUrls,
         generation_kind: type,
+        source_generation_id: payload.studio_meta?.masterGenerationId ?? null,
+        thumbnail_url: payload.studio_meta?.requestedThumbnailUrl ?? null,
+        video_meta: videoMeta,
       })
       .select("id")
       .single();

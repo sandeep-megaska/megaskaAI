@@ -66,13 +66,13 @@ export const AI_BACKENDS: AIBackend[] = [
     id: "veo-3.1",
     name: "Veo 3.1",
     type: "video",
-    model: "veo-3.1-generate-preview",
+    model: "veo-3.1-generate-001",
   },
   {
     id: "veo-3.1-fast",
     name: "Veo 3.1 Fast",
     type: "video",
-    model: "veo-3.1-fast-generate-preview",
+    model: "veo-3.1-fast-generate-001",
   },
 ];
 
