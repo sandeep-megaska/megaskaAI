@@ -3,6 +3,7 @@ import { applyOverlayToImage, type OverlayConfig } from "@/lib/overlay-image";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { ProviderUnavailableError } from "@/lib/ai/providerErrors";
 import { runStudioGeneration, type StudioGenerationType } from "@/lib/generation/runStudioGeneration";
+import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -10,7 +11,7 @@ export const maxDuration = 300;
 type GeneratePayload = {
   prompt?: string;
   type?: StudioGenerationType;
-  aspect_ratio?: "1:1" | "16:9" | "9:16";
+  aspect_ratio?: StudioAspectRatio;
   model_id?: string | null;
   preset_id?: string | null;
   ai_backend_id?: string | null;
@@ -84,6 +85,10 @@ export async function POST(request: Request) {
 
     if (type !== "image" && type !== "video") {
       return asJson(400, { success: false, error: "Type must be 'image' or 'video'." });
+    }
+
+    if (!isStudioAspectRatio(aspectRatio)) {
+      return asJson(400, { success: false, error: "Unsupported aspect_ratio value." });
     }
 
     const supabase = getSupabaseAdminClient();

@@ -4,15 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Download, Sparkles } from "lucide-react";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
+import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildMasterCandidatePrompt, buildMoreViewsPrompt, type StudioWorkflowMode } from "@/lib/studio/prompts";
 
-type AspectRatio = "1:1" | "16:9" | "9:16";
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
 
 type GenerationItem = {
   id: string;
   prompt: string;
-  aspect_ratio: AspectRatio;
+  aspect_ratio: StudioAspectRatio;
   asset_url?: string;
   url?: string;
   overlay_json?: Record<string, unknown> | null;
@@ -36,7 +36,6 @@ type SelectedMaster = {
   selectedMasterMetadata: Record<string, unknown> | null;
 };
 
-const aspectRatios: AspectRatio[] = ["1:1", "16:9", "9:16"];
 const quickActions = [
   "Back View",
   "Side View",
@@ -52,7 +51,7 @@ const quickActions = [
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
+  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("1:1");
   const [backendId, setBackendId] = useState("");
   const [workflowMode, setWorkflowMode] = useState<StudioWorkflowMode>("master-candidates");
   const [garmentReferenceUrls, setGarmentReferenceUrls] = useState<string[]>([]);
@@ -327,10 +326,14 @@ export default function Home() {
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
-            <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">
-              {aspectRatios.map((ratio) => (
-                <option key={ratio} value={ratio}>
-                  {ratio}
+            <select
+              value={aspectRatio}
+              onChange={(event) => setAspectRatio(event.target.value as StudioAspectRatio)}
+              className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"
+            >
+              {STUDIO_ASPECT_RATIO_OPTIONS.map((option) => (
+                <option key={option.id} value={option.ratio}>
+                  {option.label} — {option.ratio}
                 </option>
               ))}
             </select>
@@ -359,6 +362,8 @@ export default function Home() {
               )}
             </select>
           </div>
+
+          <p className="text-xs text-zinc-400">Choose the output format best suited for Instagram, ads, catalog, or editorial use.</p>
 
           {workflowMode === "more-views" && (
             <div className="flex flex-wrap gap-2">
