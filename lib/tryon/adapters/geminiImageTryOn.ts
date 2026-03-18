@@ -64,7 +64,11 @@ export async function runGeminiImageTryOn(payload: TryOnExecutionPayload): Promi
   const warnings: string[] = [];
 
   const subjectParts = await buildGeminiImageParts({
-    references: subjectReferences.map((reference) => ({ url: reference.url, assetId: reference.assetId })),
+    references: subjectReferences.map((reference) => ({
+      url: reference.url,
+      role: reference.kind,
+      assetId: reference.assetId,
+    })),
     maxImages: 2,
   });
 
@@ -73,7 +77,11 @@ export async function runGeminiImageTryOn(payload: TryOnExecutionPayload): Promi
   }
 
   const garmentParts = await buildGeminiImageParts({
-    references: garmentReferences.map((reference) => ({ url: reference.url, assetId: reference.assetId })),
+    references: garmentReferences.map((reference) => ({
+      url: reference.url,
+      role: reference.kind,
+      assetId: reference.assetId,
+    })),
     maxImages: 8,
   });
 
