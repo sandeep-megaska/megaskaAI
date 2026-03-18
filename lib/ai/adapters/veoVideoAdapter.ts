@@ -1,13 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
-
-type AspectRatio = "1:1" | "16:9" | "9:16";
+import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 type VeoInput = {
   apiKey?: string;
   model: string;
   prompt: string;
-  aspectRatio?: AspectRatio;
+  aspectRatio?: StudioAspectRatio;
 };
 
 type VeoOutput = {

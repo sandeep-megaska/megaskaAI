@@ -3,16 +3,15 @@ import { isGeminiImageModel, isImagenModel, isVeoModel } from "@/lib/ai/backendF
 import { runGeminiImageGeneration } from "@/lib/ai/adapters/geminiImageAdapter";
 import { runImagenImageGeneration } from "@/lib/ai/adapters/imagenImageAdapter";
 import { runVeoVideoGeneration } from "@/lib/ai/adapters/veoVideoAdapter";
+import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 export type StudioGenerationType = "image" | "video";
-
-type AspectRatio = "1:1" | "16:9" | "9:16";
 
 export type RunStudioGenerationInput = {
   apiKey?: string;
   type: StudioGenerationType;
   prompt: string;
-  aspectRatio?: AspectRatio;
+  aspectRatio?: StudioAspectRatio;
   backendId?: string | null;
   referenceUrls?: string[];
 };
