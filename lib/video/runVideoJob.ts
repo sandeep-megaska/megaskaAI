@@ -1,0 +1,53 @@
+import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
+import { isVeoModel } from "@/lib/ai/backendFamilies";
+import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
+
+export type RunVideoJobInput = {
+  apiKey?: string;
+  backendId?: string | null;
+  prompt: string;
+  durationSeconds: number;
+  referenceImageUrls: string[];
+  aspectRatio?: StudioAspectRatio;
+};
+
+export type RunVideoJobResult = {
+  bytes: Buffer;
+  mimeType: string;
+  backendId: string;
+  backendModel: string;
+};
+
+export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobResult> {
+  const requestedBackend = findBackendById(input.backendId);
+  if (input.backendId && !requestedBackend) {
+    throw new Error("Unknown ai_backend_id.");
+  }
+
+  const backend = requestedBackend ?? getDefaultBackendForType("video");
+
+  if (backend.type !== "video") {
+    throw new Error(`Backend '${backend.id}' supports ${backend.type} only.`);
+  }
+
+  if (!isVeoModel(backend.model)) {
+    throw new Error(`Unsupported video backend family for model '${backend.model}'.`);
+  }
+
+  const output = await runVeoVideo({
+    apiKey: input.apiKey,
+    model: backend.model,
+    prompt: input.prompt,
+    referenceImageUrls: input.referenceImageUrls,
+    aspectRatio: input.aspectRatio,
+    durationSeconds: input.durationSeconds,
+  });
+
+  return {
+    bytes: output.bytes,
+    mimeType: output.mimeType,
+    backendId: backend.id,
+    backendModel: output.model,
+  };
+}
