@@ -2,88 +2,89 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Copy, Download, Sparkles, Wallet } from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Download, Sparkles } from "lucide-react";
+import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
+import { buildMasterCandidatePrompt, buildMoreViewsPrompt, type StudioWorkflowMode } from "@/lib/studio/prompts";
 
-type MediaType = "Image" | "Video";
 type AspectRatio = "1:1" | "16:9" | "9:16";
-type OverlayPosition = "top" | "center" | "bottom";
-type OverlayTheme = "megaska-light" | "megaska-dark";
-
-type ModelLibrary = { id: string; display_name: string; model_code: string };
-type BrandPreset = {
-  id: string;
-  name: string;
-  aspect_ratio?: AspectRatio;
-  overlay_defaults?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition; theme?: OverlayTheme };
-};
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
-type CreditSummary = { balance: number; currency: string; last_updated: string };
 
 type GenerationItem = {
   id: string;
   prompt: string;
-  media_type?: MediaType;
-  type?: MediaType;
   aspect_ratio: AspectRatio;
   asset_url?: string;
   url?: string;
-  model_id?: string | null;
-  preset_id?: string | null;
-  overlay_json?: { headline?: string; subtext?: string; cta?: string; position?: OverlayPosition; theme?: OverlayTheme } | null;
-  reference_urls?: string[] | null;
+  overlay_json?: Record<string, unknown> | null;
 };
 
-const mediaTypes: MediaType[] = ["Image", "Video"];
+type StudioResultItem = {
+  id: string;
+  url: string;
+  prompt: string;
+  workflowMode: StudioWorkflowMode;
+};
+
+type SelectedMaster = {
+  selectedMasterImage: StudioResultItem | null;
+  selectedMasterGenerationId: string | null;
+  selectedMasterUrl: string | null;
+  selectedMasterMetadata: Record<string, unknown> | null;
+};
+
 const aspectRatios: AspectRatio[] = ["1:1", "16:9", "9:16"];
+const quickActions = ["Back View", "Side View", "3/4 View", "Detail View", "Lifestyle Shot"];
 
 export default function Home() {
-  const pathname = usePathname();
   const [prompt, setPrompt] = useState("");
-  const [mediaType, setMediaType] = useState<MediaType>("Image");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("1:1");
-  const [modelId, setModelId] = useState("");
-  const [presetId, setPresetId] = useState("");
   const [backendId, setBackendId] = useState("");
-  const [headline, setHeadline] = useState("");
-  const [subtext, setSubtext] = useState("");
-  const [cta, setCta] = useState("");
-  const [overlayPosition, setOverlayPosition] = useState<OverlayPosition>("bottom");
-  const [overlayTheme, setOverlayTheme] = useState<OverlayTheme>("megaska-light");
-  const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
+  const [workflowMode, setWorkflowMode] = useState<StudioWorkflowMode>("master-candidates");
+  const [garmentReferenceUrls, setGarmentReferenceUrls] = useState<string[]>([]);
+  const [modelReferenceUrls, setModelReferenceUrls] = useState<string[]>([]);
+  const [outputCount, setOutputCount] = useState<number>(4);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
-  const [galleryState, setGalleryState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelLibrary[]>([]);
-  const [presets, setPresets] = useState<BrandPreset[]>([]);
   const [backends, setBackends] = useState<AIBackend[]>([]);
-  const [credits, setCredits] = useState<CreditSummary | null>(null);
+  const [results, setResults] = useState<StudioResultItem[]>([]);
+  const [masterState, setMasterState] = useState<SelectedMaster>({
+    selectedMasterImage: null,
+    selectedMasterGenerationId: null,
+    selectedMasterUrl: null,
+    selectedMasterMetadata: null,
+  });
+  const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
     return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   }, []);
 
-  const availableBackends = useMemo(
-    () => backends.filter((backend) => backend.type === (mediaType === "Image" ? "image" : "video")),
-    [backends, mediaType],
+  const geminiImageBackends = useMemo(
+    () => backends.filter((backend) => backend.type === "image" && isGeminiImageModel(backend.model)),
+    [backends],
   );
 
+  const canGenerateMoreViews = Boolean(masterState.selectedMasterUrl);
+
   useEffect(() => {
-    if (availableBackends.length && !availableBackends.some((backend) => backend.id === backendId)) {
-      setBackendId(availableBackends[0].id);
+    if (workflowMode === "master-candidates") {
+      setOutputCount((count) => (count === 3 ? 3 : 4));
+      return;
     }
-  }, [availableBackends, backendId]);
+    setOutputCount((count) => (count > 1 ? 2 : 1));
+  }, [workflowMode]);
+
+  useEffect(() => {
+    if (geminiImageBackends.length && !geminiImageBackends.some((backend) => backend.id === backendId)) {
+      setBackendId(geminiImageBackends[0].id);
+    }
+  }, [backendId, geminiImageBackends]);
 
   const loadGallery = useCallback(async () => {
     if (!supabase) return;
-    setGalleryState("loading");
-    const { data, error } = await supabase.from("generations").select("*").order("created_at", { ascending: false }).limit(12);
-    if (error) return setGalleryState("error");
+    const { data } = await supabase.from("generations").select("id,prompt,aspect_ratio,asset_url,url,overlay_json").order("created_at", { ascending: false }).limit(12);
     setGalleryItems((data ?? []) as GenerationItem[]);
-    setGalleryState("idle");
   }, [supabase]);
 
   useEffect(() => {
@@ -92,26 +93,14 @@ export default function Home() {
 
   useEffect(() => {
     async function loadOptions() {
-      const [modelsRes, presetsRes, backendsRes, creditsRes] = await Promise.all([
-        fetch("/api/models"),
-        fetch("/api/presets"),
-        fetch("/api/ai/backends"),
-        fetch("/api/credits"),
-      ]);
-      const modelJson = await modelsRes.json();
-      const presetJson = await presetsRes.json();
+      const backendsRes = await fetch("/api/ai/backends");
       const backendJson = await backendsRes.json();
-      const creditJson = await creditsRes.json();
-      setModels(modelJson.data ?? []);
-      setPresets(presetJson.data ?? []);
       setBackends(backendJson.data ?? []);
-      setCredits(creditJson.data ?? null);
     }
-
     loadOptions();
   }, []);
 
-  async function uploadReferenceFiles(files: FileList | null) {
+  async function uploadFiles(files: FileList | null, kind: "garment" | "model") {
     if (!files?.length) return;
     const uploaded: string[] = [];
     for (const file of Array.from(files)) {
@@ -121,31 +110,108 @@ export default function Home() {
       const json = await res.json();
       if (res.ok && json.public_url) uploaded.push(json.public_url);
     }
-    if (uploaded.length) setReferenceUrls((current) => [...current, ...uploaded]);
+
+    if (!uploaded.length) return;
+
+    if (kind === "garment") {
+      setGarmentReferenceUrls((current) => [...current, ...uploaded]);
+      return;
+    }
+
+    setModelReferenceUrls((current) => [...current, ...uploaded]);
+  }
+
+  function buildRequestForMode() {
+    if (workflowMode === "master-candidates") {
+      const wrappedPrompt = buildMasterCandidatePrompt({
+        userPrompt: prompt,
+        hasModelReferences: modelReferenceUrls.length > 0,
+      });
+
+      const referenceUrls = [...modelReferenceUrls, ...garmentReferenceUrls];
+
+      return {
+        prompt: wrappedPrompt,
+        referenceUrls,
+        referenceKindsUsed: [
+          ...(modelReferenceUrls.length ? ["model"] : []),
+          ...(garmentReferenceUrls.length ? ["garment"] : []),
+        ],
+        masterGenerationId: null,
+      };
+    }
+
+    const wrappedPrompt = buildMoreViewsPrompt({ userPrompt: prompt });
+    const referenceUrls = [
+      ...(masterState.selectedMasterUrl ? [masterState.selectedMasterUrl] : []),
+      ...garmentReferenceUrls,
+      ...modelReferenceUrls,
+    ];
+
+    return {
+      prompt: wrappedPrompt,
+      referenceUrls,
+      referenceKindsUsed: [
+        ...(masterState.selectedMasterUrl ? ["master"] : []),
+        ...(garmentReferenceUrls.length ? ["garment"] : []),
+        ...(modelReferenceUrls.length ? ["model"] : []),
+      ],
+      masterGenerationId: masterState.selectedMasterGenerationId,
+    };
+  }
+
+  function normalizeApiError(status: number, fallback: string) {
+    if (status === 429 || status === 503) {
+      return "AI image service is busy right now. Please retry.";
+    }
+    return fallback;
   }
 
   async function handleGenerate() {
-    if (!prompt.trim() || isGenerating) return;
+    if (isGenerating) return;
+    if (workflowMode === "more-views" && !canGenerateMoreViews) return;
 
     try {
       setIsGenerating(true);
       setError(null);
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: mediaType === "Image" ? "image" : "video",
+
+      const request = buildRequestForMode();
+      const totalOutputs = workflowMode === "master-candidates" ? outputCount : outputCount;
+
+      const generationCalls = Array.from({ length: totalOutputs }).map(async () => {
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "image",
+            prompt: request.prompt,
+            aspect_ratio: aspectRatio,
+            ai_backend_id: backendId || null,
+            reference_urls: request.referenceUrls,
+            studio_meta: {
+              studioWorkflowMode: workflowMode,
+              masterGenerationId: request.masterGenerationId,
+              referenceKindsUsed: request.referenceKindsUsed,
+              promptHash: request.prompt.slice(0, 120),
+            },
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(normalizeApiError(res.status, data.error || "Generation failed"));
+        }
+
+        return {
+          id: data.generationId,
+          url: data.outputUrl,
           prompt,
-          aspect_ratio: aspectRatio,
-          model_id: modelId || null,
-          preset_id: presetId || null,
-          ai_backend_id: backendId || null,
-          overlay: { headline, subtext, cta, position: overlayPosition, theme: overlayTheme },
-          reference_urls: referenceUrls,
-        }),
+          workflowMode,
+        } satisfies StudioResultItem;
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || "Generation failed");
+
+      const generatedItems = await Promise.all(generationCalls);
+      setResults((current) => [...generatedItems, ...current]);
       await loadGallery();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Generation failed.");
@@ -154,77 +220,165 @@ export default function Home() {
     }
   }
 
-  function applyGalleryItem(item: GenerationItem) {
-    setPrompt(item.prompt);
-    setAspectRatio(item.aspect_ratio);
-    setMediaType((item.media_type || item.type || "Image") as MediaType);
-    setModelId(item.model_id ?? "");
-    setPresetId(item.preset_id ?? "");
-    setHeadline(item.overlay_json?.headline ?? "");
-    setSubtext(item.overlay_json?.subtext ?? "");
-    setCta(item.overlay_json?.cta ?? "");
-    setOverlayPosition(item.overlay_json?.position ?? "bottom");
-    setOverlayTheme(item.overlay_json?.theme ?? "megaska-light");
-    setReferenceUrls(item.reference_urls ?? []);
+  function selectAsMaster(item: StudioResultItem) {
+    setMasterState({
+      selectedMasterImage: item,
+      selectedMasterGenerationId: item.id,
+      selectedMasterUrl: item.url,
+      selectedMasterMetadata: { workflowMode: item.workflowMode },
+    });
+    if (workflowMode === "master-candidates") {
+      setWorkflowMode("more-views");
+      setOutputCount(1);
+    }
   }
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
-      
-
-        <section className="grid gap-6 rounded-xl border border-white/10 bg-zinc-900/50 p-6 lg:grid-cols-2">
-          <div className="space-y-3">
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe your creative request..." className="h-32 w-full rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm" />
-            <div className="grid gap-3 md:grid-cols-2">
-              <select value={modelId} onChange={(event) => setModelId(event.target.value)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="">Model Library (optional)</option>{models.map((model) => <option key={model.id} value={model.id}>{`${model.model_code} — ${model.display_name}`}</option>)}</select>
-              <select value={presetId} onChange={(event) => setPresetId(event.target.value)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="">Preset (optional)</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select>
+        <section className="rounded-xl border border-white/10 bg-zinc-900/50 p-6 space-y-6">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-zinc-300">Studio Workflow</p>
+            <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
+              <button type="button" onClick={() => setWorkflowMode("master-candidates")} className={`rounded-md px-4 py-2 text-sm ${workflowMode === "master-candidates" ? "bg-indigo-500 text-white" : "text-zinc-300"}`}>
+                Generate Master Candidates
+              </button>
+              <button
+                type="button"
+                disabled={!canGenerateMoreViews}
+                onClick={() => canGenerateMoreViews && setWorkflowMode("more-views")}
+                className={`rounded-md px-4 py-2 text-sm ${workflowMode === "more-views" ? "bg-indigo-500 text-white" : "text-zinc-300"} disabled:opacity-40`}
+              >
+                Generate More Views
+              </button>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <input value={headline} onChange={(event) => setHeadline(event.target.value)} placeholder="Headline" className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-              <input value={subtext} onChange={(event) => setSubtext(event.target.value)} placeholder="Subtext" className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-              <input value={cta} onChange={(event) => setCta(event.target.value)} placeholder="CTA" className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-              <select value={overlayPosition} onChange={(event) => setOverlayPosition(event.target.value as OverlayPosition)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="top">Overlay Top</option><option value="center">Overlay Center</option><option value="bottom">Overlay Bottom</option></select>
-              <select value={overlayTheme} onChange={(event) => setOverlayTheme(event.target.value as OverlayTheme)} className="rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"><option value="megaska-light">Theme: Megaska Light</option><option value="megaska-dark">Theme: Megaska Dark</option></select>
-            </div>
-            <input type="file" accept="image/*" multiple onChange={(event) => uploadReferenceFiles(event.target.files)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-            {!!referenceUrls.length && <p className="text-xs text-zinc-400">Uploaded references: {referenceUrls.length}</p>}
+            {!canGenerateMoreViews && <p className="text-xs text-zinc-400">Select a generated candidate as master before generating more views.</p>}
+            <p className="text-xs text-zinc-400">
+              {workflowMode === "master-candidates"
+                ? "Create 3–4 strong front-view candidates from garment and model references."
+                : "Use the selected master image as the anchor to generate back, side, detail, or lifestyle variations with prompt-based control."}
+            </p>
           </div>
 
-          <div className="space-y-5">
-            <div>
-              <p className="mb-2 text-sm font-medium text-zinc-300">Output Type</p>
-              <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">{mediaTypes.map((type) => <button key={type} type="button" onClick={() => setMediaType(type)} className={`rounded-md px-4 py-2 text-sm ${mediaType === type ? "bg-indigo-500 text-white" : "text-zinc-300"}`}>{type}</button>)}</div>
+          {masterState.selectedMasterUrl && (
+            <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-3">
+              <p className="text-sm font-medium text-indigo-200">Master Image</p>
+              <div className="mt-2 flex items-center gap-3">
+                <img src={masterState.selectedMasterUrl} alt="Selected master" className="h-24 w-24 rounded-md object-cover" />
+                <p className="text-xs text-zinc-300">This image is the primary anchor for Generate More Views.</p>
+              </div>
             </div>
-            <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">{aspectRatios.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}</select>
-            <select value={backendId} onChange={(event) => setBackendId(event.target.value)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">
-              {availableBackends.map((backend) => <option key={backend.id} value={backend.id}>{backend.name}</option>)}
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={workflowMode === "master-candidates" ? "Premium front-view swimwear campaign shot..." : "Back view, side angle, detail shot, poolside luxury..."}
+              className="h-28 w-full rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm md:col-span-2"
+            />
+            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "garment")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
+            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "model")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">
+              {aspectRatios.map((ratio) => (
+                <option key={ratio} value={ratio}>
+                  {ratio}
+                </option>
+              ))}
             </select>
-            <button type="button" onClick={handleGenerate} disabled={isGenerating || !prompt.trim()} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"><Sparkles className="h-4 w-4" />{isGenerating ? "Generating..." : "Generate"}</button>
-            {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
+            <select value={backendId} onChange={(event) => setBackendId(event.target.value)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">
+              {geminiImageBackends.map((backend) => (
+                <option key={backend.id} value={backend.id}>
+                  {backend.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={outputCount}
+              onChange={(event) => setOutputCount(Number(event.target.value))}
+              className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"
+            >
+              {workflowMode === "master-candidates" ? (
+                <>
+                  <option value={4}>4 outputs (default)</option>
+                  <option value={3}>3 outputs</option>
+                </>
+              ) : (
+                <>
+                  <option value={1}>1 output (default)</option>
+                  <option value={2}>2 outputs</option>
+                </>
+              )}
+            </select>
+          </div>
+
+          {workflowMode === "more-views" && (
+            <div className="flex flex-wrap gap-2">
+              {quickActions.map((action) => (
+                <button key={action} type="button" onClick={() => setPrompt(action)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
+                  {action}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <p className="text-xs text-zinc-400">Garment refs: {garmentReferenceUrls.length} · Model refs: {modelReferenceUrls.length}</p>
+
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerating || !backendId || (workflowMode === "more-views" && !canGenerateMoreViews)}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            <Sparkles className="h-4 w-4" />
+            {isGenerating ? "Generating..." : workflowMode === "master-candidates" ? "Generate Master Candidates" : "Generate More Views"}
+          </button>
+
+          {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
+        </section>
+
+        <section className="space-y-4">
+          <h2 className="text-xl font-semibold">Studio Results</h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {results.map((item) => (
+              <article key={`${item.workflowMode}-${item.id}`} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
+                <div className="aspect-square overflow-hidden bg-zinc-900">
+                  <img src={item.url} alt={item.prompt} className="h-full w-full object-cover" />
+                </div>
+                <div className="space-y-2 p-3">
+                  <p className="text-xs text-zinc-400">{item.workflowMode === "master-candidates" ? "Master Candidate" : "More Views"}</p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => selectAsMaster(item)}
+                      className={`rounded-md px-3 py-2 text-xs ${masterState.selectedMasterGenerationId === item.id ? "bg-indigo-500 text-white" : "border border-white/15"}`}
+                    >
+                      {masterState.selectedMasterGenerationId === item.id ? "Selected Master" : "Use as Master"}
+                    </button>
+                    <a href={item.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md border border-white/15 px-3 py-2 text-xs">
+                      <Download className="h-3.5 w-3.5" />Download
+                    </a>
+                  </div>
+                </div>
+              </article>
+            ))}
           </div>
         </section>
 
         <section className="space-y-4">
-          <h2 className="text-xl font-semibold">Gallery</h2>
-          {galleryState === "loading" && <p className="text-sm text-zinc-400">Loading brand assets...</p>}
-          {galleryState === "error" && <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">Unable to fetch gallery results right now.</p>}
+          <h2 className="text-xl font-semibold">Recent Gallery</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {galleryItems.map((item) => {
-              const type = item.media_type || item.type;
               const src = item.asset_url || item.url;
-              const modelName = models.find((model) => model.id === item.model_id)?.display_name;
-              const presetName = presets.find((preset) => preset.id === item.preset_id)?.name;
               return (
                 <article key={item.id} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
-                  <div className="aspect-video overflow-hidden bg-zinc-900">{src ? (type === "Video" ? <video src={src} controls className="h-full w-full object-cover" /> : <img src={src} alt={item.prompt} className="h-full w-full object-cover" />) : <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>}</div>
-                  <div className="space-y-3 p-4">
+                  <div className="aspect-video overflow-hidden bg-zinc-900">{src ? <img src={src} alt={item.prompt} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>}</div>
+                  <div className="space-y-1 p-4">
                     <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>
-                    <p className="text-xs text-zinc-400">{modelName ? `Model: ${modelName}` : "Model: none"} · {presetName ? `Preset: ${presetName}` : "Preset: none"}</p>
-                    <div className="flex gap-2">
-                      <button type="button" onClick={() => applyGalleryItem(item)} className="inline-flex items-center gap-2 rounded-md border border-white/15 px-3 py-2 text-xs"><Copy className="h-4 w-4" />Reuse</button>
-                      <a href={src} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-md border border-white/15 px-3 py-2 text-xs"><Download className="h-4 w-4" />Download</a>
-                    </div>
+                    <p className="text-xs text-zinc-400">{String(item.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
                   </div>
                 </article>
               );

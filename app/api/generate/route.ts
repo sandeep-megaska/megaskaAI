@@ -16,6 +16,12 @@ type GeneratePayload = {
   ai_backend_id?: string | null;
   overlay?: OverlayConfig;
   reference_urls?: string[];
+  studio_meta?: {
+    studioWorkflowMode?: "master-candidates" | "more-views";
+    masterGenerationId?: string | null;
+    referenceKindsUsed?: string[];
+    promptHash?: string;
+  };
 };
 
 type ModelContext = {
@@ -181,9 +187,10 @@ export async function POST(request: Request) {
     const publicUrl = publicData.publicUrl;
 
     const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
-    const generationMeta = hasOverlay
+    const generationMetaBase = hasOverlay
       ? { ...overlay, ai_backend_id: generationOutput.backend.id, ai_model: generationOutput.backendModel }
       : { ai_backend_id: generationOutput.backend.id, ai_model: generationOutput.backendModel };
+    const generationMeta = payload.studio_meta ? { ...generationMetaBase, ...payload.studio_meta } : generationMetaBase;
 
     const { data: insertedGeneration, error: insertError } = await supabase
       .from("generations")
@@ -238,7 +245,14 @@ export async function POST(request: Request) {
       return asJson(503, {
         success: false,
         error_code: error.errorCode,
-        error: error.message,
+        error: "AI image service is busy right now. Please retry.",
+      });
+    }
+
+    if (error instanceof Error && /(429|503|UNAVAILABLE|RATE)/i.test(error.message)) {
+      return asJson(503, {
+        success: false,
+        error: "AI image service is busy right now. Please retry.",
       });
     }
 
