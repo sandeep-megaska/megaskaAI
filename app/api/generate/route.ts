@@ -4,6 +4,7 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { ProviderUnavailableError } from "@/lib/ai/providerErrors";
 import { runStudioGeneration, type StudioGenerationType } from "@/lib/generation/runStudioGeneration";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import { estimateGeminiGenerationCostUsd } from "@/lib/billing/geminiCost";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -193,17 +194,37 @@ export async function POST(request: Request) {
     const publicUrl = publicData.publicUrl;
 
     const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
+    const requestedBackendModelFromMeta =
+      typeof payload.studio_meta?.backendModel === "string" ? payload.studio_meta.backendModel : undefined;
+    const requestedBackendModel = requestedBackendModelFromMeta ?? generationOutput.backend.model;
+    const estimatedGeminiCost = estimateGeminiGenerationCostUsd({
+      aspect_ratio: aspectRatio,
+      generation_kind: type,
+      media_type: generationOutput.mediaType,
+      overlay_json: {
+        requestedBackendModel,
+        actualBackendModel: generationOutput.backendModel,
+      },
+    });
     const generationMetaBase = hasOverlay
       ? {
           ...overlay,
           ai_backend_id: generationOutput.backend.id,
           ai_model: generationOutput.backendModel,
           backendModel: generationOutput.backendModel,
+          requestedBackendModel,
+          actualBackendModel: generationOutput.backendModel,
+          fallbackApplied: Boolean(requestedBackendModel && requestedBackendModel !== generationOutput.backendModel),
+          estimatedCostUsd: estimatedGeminiCost?.estimatedCostUsd ?? null,
         }
       : {
           ai_backend_id: generationOutput.backend.id,
           ai_model: generationOutput.backendModel,
           backendModel: generationOutput.backendModel,
+          requestedBackendModel,
+          actualBackendModel: generationOutput.backendModel,
+          fallbackApplied: Boolean(requestedBackendModel && requestedBackendModel !== generationOutput.backendModel),
+          estimatedCostUsd: estimatedGeminiCost?.estimatedCostUsd ?? null,
         };
     const generationMeta = payload.studio_meta ? { ...generationMetaBase, ...payload.studio_meta } : generationMetaBase;
 

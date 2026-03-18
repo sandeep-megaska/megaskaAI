@@ -3,9 +3,12 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 
-type AppHeaderProps = {
-  credits?: number;
+type CostSummary = {
+  estimated_last_gen_usd: number | null;
+  estimated_today_usd: number;
+  estimated_this_month_usd: number;
 };
 
 const navItems = [
@@ -16,8 +19,49 @@ const navItems = [
   { href: "/lookbook", label: "Lookbook" },
 ];
 
-export default function AppHeader({ credits = 0 }: AppHeaderProps) {
+function formatUsd(value: number | null) {
+  if (value === null) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+export default function AppHeader() {
   const pathname = usePathname();
+  const [costSummary, setCostSummary] = useState<CostSummary | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCostSummary() {
+      try {
+        const response = await fetch("/api/credits");
+        const payload = (await response.json()) as { success?: boolean; data?: CostSummary };
+        if (!mounted || !response.ok || !payload.success || !payload.data) return;
+        setCostSummary(payload.data);
+      } catch {
+        if (!mounted) return;
+        setCostSummary(null);
+      }
+    }
+
+    loadCostSummary();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const hasAnyEstimatedSpend = useMemo(() => {
+    if (!costSummary) return false;
+    return (
+      costSummary.estimated_last_gen_usd !== null ||
+      costSummary.estimated_this_month_usd > 0 ||
+      costSummary.estimated_today_usd > 0
+    );
+  }, [costSummary]);
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/10 bg-[#07111f]/85 backdrop-blur-xl">
@@ -71,10 +115,15 @@ export default function AppHeader({ credits = 0 }: AppHeaderProps) {
 
         <div className="flex items-center gap-3">
           <div className="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-2 sm:block">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
-              Credits
-            </div>
-            <div className="text-sm font-semibold text-white">{credits}</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-400">Gemini Spend (Est.)</div>
+            {hasAnyEstimatedSpend && costSummary ? (
+              <div className="space-y-0.5 text-xs text-slate-200">
+                <p>Last Gen: {formatUsd(costSummary.estimated_last_gen_usd)}</p>
+                <p>This Month: {formatUsd(costSummary.estimated_this_month_usd)}</p>
+              </div>
+            ) : (
+              <div className="text-sm font-semibold text-white">No Gemini generations yet</div>
+            )}
           </div>
         </div>
       </div>
