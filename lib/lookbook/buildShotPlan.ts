@@ -1,6 +1,6 @@
-import type { LookbookShotSpec } from "@/lib/lookbook/types";
+import type { LookbookJobVariant, LookbookShotSpec } from "@/lib/lookbook/types";
 
-const DEFAULT_SHOT_PLAN: LookbookShotSpec[] = [
+export const DEFAULT_CATALOG_SHOT_PLAN: LookbookShotSpec[] = [
   {
     shotKey: "front_full",
     title: "Front Full",
@@ -45,8 +45,95 @@ const DEFAULT_SHOT_PLAN: LookbookShotSpec[] = [
   },
 ];
 
-export function buildShotPlan(input?: { shotSpecs?: LookbookShotSpec[] | null }): LookbookShotSpec[] {
+export const DEFAULT_LIFESTYLE_SHOT_PLAN: LookbookShotSpec[] = [
+  {
+    shotKey: "poolside_standing",
+    title: "Poolside Standing",
+    instruction: "Premium poolside editorial standing pose with refined body language, luxury resort atmosphere, and exact garment preservation from references.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "Full-body editorial",
+    angle: "Eye-level, slight 3/4",
+    backgroundStyle: "Luxury infinity pool and premium architecture",
+    poseInstruction: "Confident standing stance with natural arm placement",
+    sceneKey: "poolside_luxury",
+    poseKey: "standing_editorial",
+    moodKey: "sunlit_confident",
+  },
+  {
+    shotKey: "resort_walk",
+    title: "Resort Walk",
+    instruction: "Resort pathway movement shot with subtle walk energy, high-end travel editorial tone, and strict garment identity lock.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "Full-body movement",
+    angle: "Low-to-mid tracking angle",
+    backgroundStyle: "Premium resort corridor with depth",
+    poseInstruction: "Natural walking stride, relaxed shoulders, directional gaze",
+    sceneKey: "resort_pathway",
+    poseKey: "walking_motion",
+    moodKey: "breezy_editorial",
+  },
+  {
+    shotKey: "seated_lounge",
+    title: "Seated Lounge",
+    instruction: "Seated luxury lounge composition with relaxed posture and polished fashion-magazine mood while preserving exact garment shape and details.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "3/4 seated portrait",
+    angle: "Eye-level",
+    backgroundStyle: "Modern lounge furniture and soft premium textures",
+    poseInstruction: "Composed seated pose with elegant hand placement",
+    sceneKey: "lounge_interior",
+    poseKey: "seated_relaxed",
+    moodKey: "warm_refined",
+  },
+  {
+    shotKey: "studio_shadow",
+    title: "Studio Shadow",
+    instruction: "High-fashion studio setup using dramatic shadow shaping and controlled lighting contrast, with zero garment redesign or drift.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "Full-body fashion frame",
+    angle: "Slightly low angle",
+    backgroundStyle: "Minimal studio with controlled shadow gradients",
+    poseInstruction: "Angular editorial pose emphasizing silhouette",
+    sceneKey: "studio_shadow_set",
+    poseKey: "angular_editorial",
+    moodKey: "dramatic_clean",
+  },
+  {
+    shotKey: "sunlit_terrace",
+    title: "Sunlit Terrace",
+    instruction: "Golden-hour terrace portrait with airy premium travel aesthetic and strict fidelity to garment colorway, print placement, and seams.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "Mid-to-full body",
+    angle: "Eye-level with soft perspective",
+    backgroundStyle: "Sunlit stone terrace with elegant depth",
+    poseInstruction: "Soft contrapposto stance, natural expression",
+    sceneKey: "sunlit_terrace",
+    poseKey: "soft_stance",
+    moodKey: "golden_hour_luxe",
+  },
+  {
+    shotKey: "close_fashion",
+    title: "Close Fashion",
+    instruction: "Close fashion portrait with premium beauty styling cues and micro-detail fidelity on garment trims, print edges, and seam lines.",
+    aspectRatio: "1:1",
+    styleHint: "lifestyle",
+    framing: "Upper-body close crop",
+    angle: "Eye-level close portrait",
+    backgroundStyle: "Soft premium backdrop bokeh",
+    poseInstruction: "Subtle fashion pose with expressive gaze",
+    sceneKey: "editorial_closeup",
+    poseKey: "closeup_expression",
+    moodKey: "polished_intimate",
+  },
+];
+
+export function buildShotPlan(input?: { shotSpecs?: LookbookShotSpec[] | null; variant?: LookbookJobVariant }): LookbookShotSpec[] {
   const supplied = (input?.shotSpecs ?? []).filter((shot) => shot?.shotKey && shot?.instruction);
   if (supplied.length) return supplied;
-  return DEFAULT_SHOT_PLAN;
+  return input?.variant === "lifestyle" ? DEFAULT_LIFESTYLE_SHOT_PLAN : DEFAULT_CATALOG_SHOT_PLAN;
 }
