@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Download, Sparkles, Trash2, X } from "lucide-react";
@@ -52,6 +53,7 @@ const quickActions = [
 ];
 
 export default function Home() {
+  const searchParams = useSearchParams();
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("1:1");
   const [backendId, setBackendId] = useState("");
@@ -72,6 +74,7 @@ export default function Home() {
   const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
   const [promptDialogItem, setPromptDialogItem] = useState<GenerationItem | null>(null);
   const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -152,6 +155,43 @@ export default function Home() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [promptDialogItem]);
+
+  useEffect(() => {
+    const masterGenerationId = searchParams.get("masterGenerationId");
+    const masterUrl = searchParams.get("masterUrl");
+    if (!masterGenerationId || !masterUrl) return;
+
+    const sourceVideoGenerationId = searchParams.get("sourceVideoGenerationId");
+    const extractedAt = searchParams.get("extractedAt");
+    const extractedDateLabel =
+      extractedAt && !Number.isNaN(new Date(extractedAt).getTime())
+        ? new Intl.DateTimeFormat(undefined, {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          }).format(new Date(extractedAt))
+        : null;
+
+    setMasterState({
+      selectedMasterImage: null,
+      selectedMasterGenerationId: masterGenerationId,
+      selectedMasterUrl: masterUrl,
+      selectedMasterMetadata: {
+        extractedFromVideo: true,
+        sourceVideoGenerationId,
+        extractedAt,
+      },
+    });
+    setWorkflowMode("more-views");
+    setOutputCount(1);
+    setHandoffNotice(
+      `Video frame is now active as your master${sourceVideoGenerationId ? ` (source video: ${sourceVideoGenerationId.slice(0, 8)}…)` : ""}${
+        extractedDateLabel ? ` · extracted ${extractedDateLabel}` : ""
+      }. Continue with Generate More Views.`,
+    );
+  }, [searchParams]);
 
   async function uploadFiles(files: FileList | null, kind: "garment" | "model") {
     if (!files?.length) return;
@@ -374,6 +414,11 @@ export default function Home() {
                 ? "Create 3–4 strong front-view candidates from garment and model references."
                 : "Use the selected master image as the anchor to generate back, side, detail, or lifestyle variations with prompt-based control."}
             </p>
+            {handoffNotice ? (
+              <div className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                {handoffNotice}
+              </div>
+            ) : null}
           </div>
 
           {masterState.selectedMasterUrl && (
