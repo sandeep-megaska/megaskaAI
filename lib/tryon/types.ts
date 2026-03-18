@@ -1,6 +1,6 @@
 export type TryOnConstraintMap = Record<string, string | boolean | null | undefined>;
 
-export type WorkflowMode = "standard_tryon" | "catalog_fidelity";
+export type WorkflowMode = "standard_tryon" | "catalog_fidelity" | "consistent-lookbook";
 export type FidelityLevel = "balanced" | "strict" | "hard_lock";
 export type PreferredOutputStyle = "catalog" | "studio" | "lifestyle";
 export type PrintFidelityLevel = "balanced" | "strict" | "hard_lock";

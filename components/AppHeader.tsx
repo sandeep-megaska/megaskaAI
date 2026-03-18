@@ -13,6 +13,7 @@ const navItems = [
   { href: "/models", label: "Models" },
   { href: "/garments", label: "Garments" },
   { href: "/try-on", label: "Try-On" },
+  { href: "/lookbook", label: "Lookbook" },
 ];
 
 export default function AppHeader({ credits = 0 }: AppHeaderProps) {
