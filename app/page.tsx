@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Download, Sparkles, Trash2, X } from "lucide-react";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
@@ -52,7 +52,7 @@ const quickActions = [
   "Indoor Premium",
 ];
 
-export default function Home() {
+function HomeContent() {
   const searchParams = useSearchParams();
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("1:1");
@@ -648,5 +648,13 @@ export default function Home() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
   );
 }
