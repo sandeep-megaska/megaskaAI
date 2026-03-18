@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Download, Sparkles, Trash2 } from "lucide-react";
+import { Download, Sparkles, Trash2, X } from "lucide-react";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildMasterCandidatePrompt, buildMoreViewsPrompt, type StudioWorkflowMode } from "@/lib/studio/prompts";
@@ -138,6 +138,19 @@ export default function Home() {
     }
     loadOptions();
   }, []);
+
+  useEffect(() => {
+    if (!promptDialogItem) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPromptDialogItem(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [promptDialogItem]);
 
   async function uploadFiles(files: FileList | null, kind: "garment" | "model") {
     if (!files?.length) return;
@@ -535,23 +548,43 @@ export default function Home() {
       </div>
 
       {promptDialogItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Prompt details">
-          <div className="w-full max-w-xl rounded-xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
-            <div className="mb-3 flex items-start justify-between gap-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Prompt details"
+          onClick={() => setPromptDialogItem(null)}
+        >
+          <div className="flex max-h-[80vh] w-full max-w-[720px] flex-col overflow-hidden rounded-xl border border-white/10 bg-zinc-900 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-white/10 bg-zinc-900 px-4 py-3">
               <div>
-                <h3 className="text-base font-semibold text-zinc-100">Generation Prompt</h3>
+                <h3 className="text-base font-semibold text-zinc-100">Prompt Details</h3>
                 <p className="mt-1 text-xs text-zinc-400">{formatGeneratedAt(promptDialogItem.created_at)}</p>
               </div>
-              <button type="button" onClick={() => setPromptDialogItem(null)} className="rounded-md border border-white/15 px-2 py-1 text-xs text-zinc-300">
-                Close
+              <button
+                type="button"
+                onClick={() => setPromptDialogItem(null)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 text-zinc-300 transition hover:bg-zinc-800"
+                aria-label="Close prompt details"
+              >
+                <X className="h-4 w-4" />
               </button>
             </div>
 
-            <p className="whitespace-pre-wrap rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm text-zinc-200">{promptDialogItem.prompt}</p>
+            <div className="space-y-3 overflow-y-auto px-4 py-3">
+              <p className="whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm leading-relaxed text-zinc-200">
+                {promptDialogItem.prompt}
+              </p>
+              <div className="text-xs text-zinc-400">
+                <p>Workflow: {String(promptDialogItem.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
+                {typeof promptDialogItem.overlay_json?.["backendModel"] === "string" && <p>Backend model: {String(promptDialogItem.overlay_json?.["backendModel"])}</p>}
+              </div>
+            </div>
 
-            <div className="mt-3 text-xs text-zinc-400">
-              <p>Workflow: {String(promptDialogItem.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
-              {typeof promptDialogItem.overlay_json?.["backendModel"] === "string" && <p>Backend model: {String(promptDialogItem.overlay_json?.["backendModel"])}</p>}
+            <div className="border-t border-white/10 px-4 py-3">
+              <button type="button" onClick={() => setPromptDialogItem(null)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
+                Close
+              </button>
             </div>
           </div>
         </div>
