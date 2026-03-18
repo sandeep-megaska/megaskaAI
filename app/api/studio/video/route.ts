@@ -75,6 +75,8 @@ function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRa
   return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
 }
 
+type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
 
@@ -163,6 +165,8 @@ export async function POST(request: Request) {
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const outputUrl = publicData.publicUrl;
+    const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
+    const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
     const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
 
     const debugMeta = {
@@ -172,6 +176,8 @@ export async function POST(request: Request) {
       creativeNotes: payload.creative_notes ?? null,
       masterImageUrl,
       backendModel: videoResult.backendModel,
+      rawOutputUri,
+      rawOutputUriFormat,
       generatedAt: new Date().toISOString(),
     };
 
@@ -199,6 +205,17 @@ export async function POST(request: Request) {
           style: payload.style,
           motionStrength: payload.motion_strength,
           strictGarmentLock,
+          storage: {
+            provider: "supabase",
+            bucket: supabaseBucket,
+            objectPath: filePath,
+            publicUrl: outputUrl,
+            copySucceeded: true,
+          },
+          sourceOutput: {
+            provider: rawOutputUriFormat,
+            uri: rawOutputUri,
+          },
           debug: debugMeta,
         },
       })
@@ -213,8 +230,13 @@ export async function POST(request: Request) {
       generationId: inserted.id,
       backendId: videoResult.backendId,
       outputUriFormat: classifyStoredVideoUri(outputUrl),
+      rawOutputUriFormat,
+      rawOutputUri,
       outputUrl,
+      canonicalStorageProvider: "supabase",
+      canonicalBucket: supabaseBucket,
       storagePath: filePath,
+      appOwnedCopyUploadSucceeded: true,
       elapsedMs: Date.now() - startedAt,
     });
 
