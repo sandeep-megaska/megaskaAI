@@ -176,6 +176,7 @@ export async function POST(request: Request) {
 
     let bytes = generationOutput.bytes;
     let mimeType = generationOutput.mimeType;
+    const isVideoGeneration = type === "video";
 
     if (generationOutput.mediaType === "Image") {
       const overlayResult = await applyOverlayToImage(bytes, overlay);
@@ -200,6 +201,17 @@ export async function POST(request: Request) {
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const publicUrl = publicData.publicUrl;
+
+    if (isVideoGeneration) {
+      console.log("[generate] canonical video output ready", {
+        mediaType: generationOutput.mediaType,
+        mimeType,
+        canonicalUrl: publicUrl,
+        canonicalAssetUrl: publicUrl,
+        storageBucket: supabaseBucket,
+        storagePath: filePath,
+      });
+    }
 
     const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
     const requestedBackendModelFromMeta =
@@ -253,6 +265,7 @@ export async function POST(request: Request) {
         prompt,
         type: generationOutput.mediaType,
         media_type: generationOutput.mediaType,
+        status: "completed",
         aspect_ratio: aspectRatio,
         asset_url: publicUrl,
         url: publicUrl,

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
-import { ProviderInvalidArgumentError, ProviderUnavailableError, isGeminiUnavailableError } from "@/lib/ai/providerErrors";
+import {
+  ProviderInvalidArgumentError,
+  ProviderUnavailableError,
+  isGeminiUnavailableError,
+} from "@/lib/ai/providerErrors";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   buildVideoPrompt,
@@ -40,7 +44,13 @@ function asJson(status: number, body: Record<string, unknown>) {
 }
 
 function sanitizeForPath(input: string) {
-  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 48) || "asset";
+  return (
+    input
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .slice(0, 48) || "asset"
+  );
 }
 
 function classifyStoredVideoUri(value: string) {
@@ -150,6 +160,21 @@ export async function POST(request: Request) {
       aspectRatio,
     });
 
+    const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
+    const rawOutputUriFormat: UriClassification = rawOutputUri
+      ? classifyStoredVideoUri(rawOutputUri)
+      : "unknown-uri";
+    const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
+
+    console.log("[studio/video] provider output extracted", {
+      backendId: videoResult.backendId,
+      backendModel: videoResult.backendModel,
+      mimeType: videoResult.mimeType,
+      outputVideoUri: rawOutputUri,
+      outputVideoUriFormat: rawOutputUriFormat,
+      outputThumbnailUri: thumbnailUrl,
+    });
+
     const fileName = `${Date.now()}-${sanitizeForPath(payload.motion_preset)}-${payload.duration_seconds}s.mp4`;
     const filePath = `video/${fileName}`;
 
@@ -157,17 +182,29 @@ export async function POST(request: Request) {
 
     const { error: uploadError } = await supabase.storage
       .from(supabaseBucket)
-      .upload(filePath, videoResult.bytes, { contentType: videoResult.mimeType || "video/mp4", upsert: false });
+      .upload(filePath, videoResult.bytes, {
+        contentType: videoResult.mimeType || "video/mp4",
+        upsert: false,
+      });
 
     if (uploadError) {
+      console.error("[studio/video] canonical storage upload failed", {
+        bucket: supabaseBucket,
+        filePath,
+        error: uploadError.message,
+      });
       return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
     }
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const canonicalVideoUrl = publicData.publicUrl;
-    const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
-    const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
-    const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
+
+    console.log("[studio/video] canonical storage upload succeeded", {
+      bucket: supabaseBucket,
+      filePath,
+      canonicalVideoUrl,
+      copyUploadSucceeded: true,
+    });
 
     const debugMeta = {
       source: "video-project-phase-1",
@@ -181,51 +218,83 @@ export async function POST(request: Request) {
       generatedAt: new Date().toISOString(),
     };
 
+    const generationInsertPayload = {
+      prompt,
+      type: "Video",
+      media_type: "Video",
+      status: "completed",
+      aspect_ratio: aspectRatio,
+      asset_url: canonicalVideoUrl,
+      url: canonicalVideoUrl,
+      overlay_json: {
+        ai_backend_id: videoResult.backendId,
+        ai_model: videoResult.backendModel,
+        backendModel: videoResult.backendModel,
+      },
+      reference_urls: [masterImageUrl],
+      generation_kind: "video",
+      source_generation_id: payload.source_generation_id ?? null,
+      thumbnail_url: thumbnailUrl,
+      video_meta: {
+        motionPreset: payload.motion_preset,
+        durationSeconds: payload.duration_seconds,
+        style: payload.style,
+        motionStrength: payload.motion_strength,
+        strictGarmentLock,
+        storage: {
+          provider: "supabase",
+          bucket: supabaseBucket,
+          objectPath: filePath,
+          publicUrl: canonicalVideoUrl,
+          copySucceeded: true,
+        },
+        sourceOutput: {
+          provider: rawOutputUriFormat,
+          uri: rawOutputUri,
+        },
+        providerResponse: videoResult.providerResponseMeta,
+        debug: debugMeta,
+      },
+    } satisfies Record<string, unknown>;
+
+    console.log("[studio/video] generations insert payload", {
+      type: generationInsertPayload.type,
+      mediaType: generationInsertPayload.media_type,
+      status: generationInsertPayload.status,
+      generationKind: generationInsertPayload.generation_kind,
+      canonicalUrl: generationInsertPayload.url,
+      canonicalAssetUrl: generationInsertPayload.asset_url,
+      thumbnailUrl: generationInsertPayload.thumbnail_url,
+      sourceGenerationId: generationInsertPayload.source_generation_id,
+      hasVideoMeta: true,
+    });
+
     const { data: inserted, error: insertError } = await supabase
       .from("generations")
-      .insert({
-        prompt,
-        type: "Video",
-        media_type: "Video",
-        aspect_ratio: aspectRatio,
-        asset_url: canonicalVideoUrl,
-        url: canonicalVideoUrl,
-        overlay_json: {
-          ai_backend_id: videoResult.backendId,
-          ai_model: videoResult.backendModel,
-          backendModel: videoResult.backendModel,
-        },
-        reference_urls: [masterImageUrl],
-        generation_kind: "video",
-        source_generation_id: payload.source_generation_id ?? null,
-        thumbnail_url: thumbnailUrl,
-        video_meta: {
-          motionPreset: payload.motion_preset,
-          durationSeconds: payload.duration_seconds,
-          style: payload.style,
-          motionStrength: payload.motion_strength,
-          strictGarmentLock,
-          storage: {
-            provider: "supabase",
-            bucket: supabaseBucket,
-            objectPath: filePath,
-            publicUrl: canonicalVideoUrl,
-            copySucceeded: true,
-          },
-          sourceOutput: {
-            provider: rawOutputUriFormat,
-            uri: rawOutputUri,
-          },
-          providerResponse: videoResult.providerResponseMeta,
-          debug: debugMeta,
-        },
-      })
-      .select("id")
+      .insert(generationInsertPayload)
+      .select("id,url,asset_url,type,media_type,status")
       .single();
 
     if (insertError) {
+      console.error("[studio/video] generations insert failed", {
+        error: insertError.message,
+        type: generationInsertPayload.type,
+        mediaType: generationInsertPayload.media_type,
+        generationKind: generationInsertPayload.generation_kind,
+        canonicalUrl: generationInsertPayload.url,
+        canonicalAssetUrl: generationInsertPayload.asset_url,
+      });
       return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
     }
+
+    console.log("[studio/video] generations insert succeeded", {
+      generationId: inserted.id,
+      type: inserted.type,
+      mediaType: inserted.media_type,
+      status: inserted.status,
+      canonicalUrl: inserted.url,
+      canonicalAssetUrl: inserted.asset_url,
+    });
 
     console.log("[studio/video] success", {
       generationId: inserted.id,
@@ -260,6 +329,8 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    console.error("[studio/video] unhandled error", error);
+
     if (error instanceof ProviderInvalidArgumentError) {
       return asJson(400, {
         success: false,
@@ -276,7 +347,10 @@ export async function POST(request: Request) {
     }
 
     if (isGeminiUnavailableError(error)) {
-      return asJson(503, { success: false, error: "AI video service is busy right now. Please retry." });
+      return asJson(503, {
+        success: false,
+        error: "AI video service is busy right now. Please retry.",
+      });
     }
 
     return asJson(500, {
