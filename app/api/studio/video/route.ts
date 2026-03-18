@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
-import { ProviderInvalidArgumentError, ProviderUnavailableError, isGeminiUnavailableError } from "@/lib/ai/providerErrors";
+import {
+  ProviderInvalidArgumentError,
+  ProviderUnavailableError,
+  isGeminiUnavailableError,
+} from "@/lib/ai/providerErrors";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   buildVideoPrompt,
@@ -40,7 +44,13 @@ function asJson(status: number, body: Record<string, unknown>) {
 }
 
 function sanitizeForPath(input: string) {
-  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 48) || "asset";
+  return (
+    input
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .slice(0, 48) || "asset"
+  );
 }
 
 function classifyStoredVideoUri(value: string) {
@@ -149,8 +159,11 @@ export async function POST(request: Request) {
       referenceImageUrls: [masterImageUrl],
       aspectRatio,
     });
+
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
-    const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
+    const rawOutputUriFormat: UriClassification = rawOutputUri
+      ? classifyStoredVideoUri(rawOutputUri)
+      : "unknown-uri";
     const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
 
     console.log("[studio/video] provider output extracted", {
@@ -169,7 +182,10 @@ export async function POST(request: Request) {
 
     const { error: uploadError } = await supabase.storage
       .from(supabaseBucket)
-      .upload(filePath, videoResult.bytes, { contentType: videoResult.mimeType || "video/mp4", upsert: false });
+      .upload(filePath, videoResult.bytes, {
+        contentType: videoResult.mimeType || "video/mp4",
+        upsert: false,
+      });
 
     if (uploadError) {
       console.error("[studio/video] canonical storage upload failed", {
@@ -181,12 +197,12 @@ export async function POST(request: Request) {
     }
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
-    const outputUrl = publicData.publicUrl;
+    const canonicalVideoUrl = publicData.publicUrl;
 
     console.log("[studio/video] canonical storage upload succeeded", {
       bucket: supabaseBucket,
       filePath,
-      canonicalVideoUrl: outputUrl,
+      canonicalVideoUrl,
       copyUploadSucceeded: true,
     });
 
@@ -208,8 +224,8 @@ export async function POST(request: Request) {
       media_type: "Video",
       status: "completed",
       aspect_ratio: aspectRatio,
-      asset_url: outputUrl,
-      url: outputUrl,
+      asset_url: canonicalVideoUrl,
+      url: canonicalVideoUrl,
       overlay_json: {
         ai_backend_id: videoResult.backendId,
         ai_model: videoResult.backendModel,
@@ -229,13 +245,14 @@ export async function POST(request: Request) {
           provider: "supabase",
           bucket: supabaseBucket,
           objectPath: filePath,
-          publicUrl: outputUrl,
+          publicUrl: canonicalVideoUrl,
           copySucceeded: true,
         },
         sourceOutput: {
           provider: rawOutputUriFormat,
           uri: rawOutputUri,
         },
+        providerResponse: videoResult.providerResponseMeta,
         debug: debugMeta,
       },
     } satisfies Record<string, unknown>;
@@ -282,10 +299,10 @@ export async function POST(request: Request) {
     console.log("[studio/video] success", {
       generationId: inserted.id,
       backendId: videoResult.backendId,
-      outputUriFormat: classifyStoredVideoUri(outputUrl),
+      outputUriFormat: classifyStoredVideoUri(canonicalVideoUrl),
       rawOutputUriFormat,
       rawOutputUri,
-      outputUrl,
+      outputUrl: canonicalVideoUrl,
       canonicalStorageProvider: "supabase",
       canonicalBucket: supabaseBucket,
       storagePath: filePath,
@@ -296,7 +313,7 @@ export async function POST(request: Request) {
     return asJson(200, {
       success: true,
       generationId: inserted.id,
-      outputUrl,
+      outputUrl: canonicalVideoUrl,
       downloadUrl: `/api/studio/video/${inserted.id}/download`,
       thumbnailUrl,
       backend: videoResult.backendId,
@@ -330,7 +347,10 @@ export async function POST(request: Request) {
     }
 
     if (isGeminiUnavailableError(error)) {
-      return asJson(503, { success: false, error: "AI video service is busy right now. Please retry." });
+      return asJson(503, {
+        success: false,
+        error: "AI video service is busy right now. Please retry.",
+      });
     }
 
     return asJson(500, {
