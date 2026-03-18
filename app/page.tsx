@@ -23,6 +23,10 @@ type StudioResultItem = {
   url: string;
   prompt: string;
   workflowMode: StudioWorkflowMode;
+  masterGenerationId: string | null;
+  backendModel?: string;
+  referenceKindsUsed: string[];
+  promptHash: string;
 };
 
 type SelectedMaster = {
@@ -33,7 +37,18 @@ type SelectedMaster = {
 };
 
 const aspectRatios: AspectRatio[] = ["1:1", "16:9", "9:16"];
-const quickActions = ["Back View", "Side View", "3/4 View", "Detail View", "Lifestyle Shot"];
+const quickActions = [
+  "Back View",
+  "Side View",
+  "3/4 View",
+  "Detail Upper",
+  "Detail Lower",
+  "Seated Pose",
+  "Walking Pose",
+  "Poolside Luxury",
+  "Resort Editorial",
+  "Indoor Premium",
+];
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
@@ -66,6 +81,15 @@ export default function Home() {
   );
 
   const canGenerateMoreViews = Boolean(masterState.selectedMasterUrl);
+  const selectedMasterId = masterState.selectedMasterGenerationId;
+  const derivedFromSelectedMaster = useMemo(
+    () => results.filter((item) => item.workflowMode === "more-views" && item.masterGenerationId === selectedMasterId),
+    [results, selectedMasterId],
+  );
+  const allOtherResults = useMemo(
+    () => results.filter((item) => !(item.workflowMode === "more-views" && item.masterGenerationId === selectedMasterId)),
+    [results, selectedMasterId],
+  );
 
   useEffect(() => {
     if (workflowMode === "master-candidates") {
@@ -167,6 +191,15 @@ export default function Home() {
     return fallback;
   }
 
+  function hashPrompt(value: string) {
+    let hash = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = (hash << 5) - hash + value.charCodeAt(index);
+      hash |= 0;
+    }
+    return `p-${Math.abs(hash).toString(36)}`;
+  }
+
   async function handleGenerate() {
     if (isGenerating) return;
     if (workflowMode === "more-views" && !canGenerateMoreViews) return;
@@ -177,6 +210,7 @@ export default function Home() {
 
       const request = buildRequestForMode();
       const totalOutputs = workflowMode === "master-candidates" ? outputCount : outputCount;
+      const promptHash = hashPrompt(request.prompt);
 
       const generationCalls = Array.from({ length: totalOutputs }).map(async () => {
         const res = await fetch("/api/generate", {
@@ -192,7 +226,7 @@ export default function Home() {
               studioWorkflowMode: workflowMode,
               masterGenerationId: request.masterGenerationId,
               referenceKindsUsed: request.referenceKindsUsed,
-              promptHash: request.prompt.slice(0, 120),
+              promptHash,
             },
           }),
         });
@@ -207,6 +241,10 @@ export default function Home() {
           url: data.outputUrl,
           prompt,
           workflowMode,
+          masterGenerationId: request.masterGenerationId,
+          backendModel: data.backendModel,
+          referenceKindsUsed: request.referenceKindsUsed,
+          promptHash,
         } satisfies StudioResultItem;
       });
 
@@ -218,6 +256,13 @@ export default function Home() {
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  function applyQuickAction(action: string) {
+    setPrompt((current) => {
+      if (!current.trim()) return action;
+      return `${current.trim()}, ${action}`;
+    });
   }
 
   function selectAsMaster(item: StudioResultItem) {
@@ -318,7 +363,7 @@ export default function Home() {
           {workflowMode === "more-views" && (
             <div className="flex flex-wrap gap-2">
               {quickActions.map((action) => (
-                <button key={action} type="button" onClick={() => setPrompt(action)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
+                <button key={action} type="button" onClick={() => applyQuickAction(action)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
                   {action}
                 </button>
               ))}
@@ -342,14 +387,22 @@ export default function Home() {
 
         <section className="space-y-4">
           <h2 className="text-xl font-semibold">Studio Results</h2>
+          {selectedMasterId && (
+            <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-3 text-xs text-indigo-100">
+              Derived views for the selected master are grouped first for iterative branching.
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {results.map((item) => (
+            {[...derivedFromSelectedMaster, ...allOtherResults].map((item) => (
               <article key={`${item.workflowMode}-${item.id}`} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
                 <div className="aspect-square overflow-hidden bg-zinc-900">
                   <img src={item.url} alt={item.prompt} className="h-full w-full object-cover" />
                 </div>
                 <div className="space-y-2 p-3">
-                  <p className="text-xs text-zinc-400">{item.workflowMode === "master-candidates" ? "Master Candidate" : "More Views"}</p>
+                  <p className="text-xs text-zinc-400">
+                    {item.workflowMode === "master-candidates" ? "Master Candidate" : "More Views"}
+                    {item.workflowMode === "more-views" && item.masterGenerationId === selectedMasterId ? " · Derived from current master" : ""}
+                  </p>
                   <div className="flex gap-2">
                     <button
                       type="button"
@@ -373,12 +426,43 @@ export default function Home() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {galleryItems.map((item) => {
               const src = item.asset_url || item.url;
+              const workflow = item.overlay_json?.["studioWorkflowMode"];
+              const galleryMasterGenerationId = (item.overlay_json?.["masterGenerationId"] as string | undefined) ?? null;
+              const isCurrentMaster = masterState.selectedMasterGenerationId === item.id;
+              const canUseAsMaster = typeof workflow === "string";
               return (
-                <article key={item.id} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
+                <article key={item.id} className={`overflow-hidden rounded-xl border bg-zinc-950/60 ${isCurrentMaster ? "border-indigo-500/70" : "border-white/10"}`}>
                   <div className="aspect-video overflow-hidden bg-zinc-900">{src ? <img src={src} alt={item.prompt} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>}</div>
                   <div className="space-y-1 p-4">
                     <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>
-                    <p className="text-xs text-zinc-400">{String(item.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
+                    <p className="text-xs text-zinc-400">
+                      {String(workflow ?? "legacy")}
+                      {galleryMasterGenerationId && selectedMasterId === galleryMasterGenerationId ? " · Derived from current master" : ""}
+                    </p>
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        disabled={!canUseAsMaster || !src}
+                        onClick={() =>
+                          src &&
+                          selectAsMaster({
+                            id: item.id,
+                            url: src,
+                            prompt: item.prompt,
+                            workflowMode: workflow === "more-views" ? "more-views" : "master-candidates",
+                            masterGenerationId: galleryMasterGenerationId,
+                            backendModel: (item.overlay_json?.["backendModel"] as string | undefined) ?? undefined,
+                            referenceKindsUsed: Array.isArray(item.overlay_json?.["referenceKindsUsed"])
+                              ? (item.overlay_json?.["referenceKindsUsed"] as string[])
+                              : [],
+                            promptHash: String(item.overlay_json?.["promptHash"] ?? ""),
+                          })
+                        }
+                        className={`rounded-md px-3 py-2 text-xs ${isCurrentMaster ? "bg-indigo-500 text-white" : "border border-white/15"} disabled:opacity-40`}
+                      >
+                        {isCurrentMaster ? "Selected Master" : "Use as Master"}
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
