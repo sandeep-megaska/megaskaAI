@@ -19,22 +19,17 @@ function classifyStoredVideoUri(value: string) {
   return "unknown-uri";
 }
 
+type StorageCandidate = {
+  source: "video_meta.storage" | "asset_url" | "url";
+  provider: "supabase";
+  bucket: string;
+  objectPath: string;
+};
+
 function parseSupabaseObjectFromUri(
   uri: string,
 ): { bucket: string; objectPath: string; parseSource: string } | null {
   if (!uri) return null;
-
-  if (uri.startsWith("gs://")) {
-    const stripped = uri.slice("gs://".length);
-    const slashIndex = stripped.indexOf("/");
-    if (slashIndex <= 0 || slashIndex === stripped.length - 1) return null;
-
-    return {
-      bucket: stripped.slice(0, slashIndex),
-      objectPath: stripped.slice(slashIndex + 1),
-      parseSource: "gs-uri",
-    };
-  }
 
   if (!(uri.startsWith("http://") || uri.startsWith("https://"))) return null;
 
@@ -72,7 +67,7 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
 
   const { data: generation, error: generationError } = await supabase
     .from("generations")
-    .select("id,asset_url,url")
+    .select("id,asset_url,url,video_meta")
     .eq("id", generationId)
     .eq("generation_kind", "video")
     .maybeSingle();
@@ -94,35 +89,85 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
     return asJson(400, { success: false, error: "No stored video URI found for generation." });
   }
 
-  const parsedObject = parseSupabaseObjectFromUri(storedUri);
+  const uriFormat = classifyStoredVideoUri(storedUri);
+  const videoMeta = generation.video_meta && typeof generation.video_meta === "object" ? generation.video_meta : null;
+  const metaStorage = videoMeta && "storage" in videoMeta ? (videoMeta.storage as Record<string, unknown>) : null;
+
+  let candidate: StorageCandidate | null = null;
+
+  if (
+    metaStorage?.provider === "supabase" &&
+    typeof metaStorage.bucket === "string" &&
+    typeof metaStorage.objectPath === "string" &&
+    metaStorage.bucket.trim() &&
+    metaStorage.objectPath.trim()
+  ) {
+    candidate = {
+      source: "video_meta.storage",
+      provider: "supabase",
+      bucket: metaStorage.bucket.trim(),
+      objectPath: metaStorage.objectPath.trim(),
+    };
+  } else {
+    const parsedFromAsset = parseSupabaseObjectFromUri(String(generation.asset_url || "").trim());
+    if (parsedFromAsset) {
+      candidate = {
+        source: "asset_url",
+        provider: "supabase",
+        bucket: parsedFromAsset.bucket,
+        objectPath: parsedFromAsset.objectPath,
+      };
+    } else {
+      const parsedFromUrl = parseSupabaseObjectFromUri(String(generation.url || "").trim());
+      if (parsedFromUrl) {
+        candidate = {
+          source: "url",
+          provider: "supabase",
+          bucket: parsedFromUrl.bucket,
+          objectPath: parsedFromUrl.objectPath,
+        };
+      }
+    }
+  }
 
   console.log("[studio/video/download] resolved stored URI", {
     generationId,
-    uriFormat: classifyStoredVideoUri(storedUri),
+    uriFormat,
     storedUri,
-    parseSource: parsedObject?.parseSource ?? "unparsed",
-    bucket: parsedObject?.bucket ?? null,
-    objectPath: parsedObject?.objectPath ?? null,
+    canonicalSource: candidate?.source ?? "none",
+    canonicalProvider: candidate?.provider ?? null,
+    canonicalBucket: candidate?.bucket ?? null,
+    canonicalObjectPath: candidate?.objectPath ?? null,
+    signerProvider: candidate?.provider ?? "none",
   });
 
-  if (!parsedObject) {
+  if (!candidate) {
+    console.error("[studio/video/download] unsupported URI for download signing", {
+      generationId,
+      storedUri,
+      uriFormat,
+      failureReason: "no-canonical-app-owned-supabase-object",
+    });
     return asJson(400, {
       success: false,
-      error: "Stored video URI is not a supported downloadable storage URI.",
+      error:
+        "Stored video URI is not an app-owned Supabase storage object. Re-generate to create a canonical downloadable copy.",
     });
   }
 
-  const fileName = parsedObject.objectPath.split("/").pop() || `video-${generationId}.mp4`;
+  const fileName = candidate.objectPath.split("/").pop() || `video-${generationId}.mp4`;
   const { data: signedData, error: signedError } = await supabase.storage
-    .from(parsedObject.bucket)
-    .createSignedUrl(parsedObject.objectPath, 60, { download: fileName });
+    .from(candidate.bucket)
+    .createSignedUrl(candidate.objectPath, 60, { download: fileName });
 
   if (signedError || !signedData?.signedUrl) {
     console.error("[studio/video/download] signed URL generation failed", {
       generationId,
-      bucket: parsedObject.bucket,
-      objectPath: parsedObject.objectPath,
+      bucket: candidate.bucket,
+      objectPath: candidate.objectPath,
+      signerProvider: "supabase",
       error: signedError?.message ?? "Missing signed URL",
+      failureReason: "supabase-signing-error",
     });
 
     return asJson(403, {
@@ -134,8 +179,9 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
 
   console.log("[studio/video/download] signed URL created", {
     generationId,
-    bucket: parsedObject.bucket,
-    objectPath: parsedObject.objectPath,
+    bucket: candidate.bucket,
+    objectPath: candidate.objectPath,
+    signerProvider: "supabase",
   });
 
   return NextResponse.redirect(signedData.signedUrl, { status: 302 });
