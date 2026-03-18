@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Download, Sparkles } from "lucide-react";
+import { Download, Sparkles, Trash2 } from "lucide-react";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildMasterCandidatePrompt, buildMoreViewsPrompt, type StudioWorkflowMode } from "@/lib/studio/prompts";
@@ -13,6 +13,7 @@ type GenerationItem = {
   id: string;
   prompt: string;
   aspect_ratio: StudioAspectRatio;
+  created_at?: string;
   asset_url?: string;
   url?: string;
   overlay_json?: Record<string, unknown> | null;
@@ -68,6 +69,8 @@ export default function Home() {
     selectedMasterMetadata: null,
   });
   const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
+  const [promptDialogItem, setPromptDialogItem] = useState<GenerationItem | null>(null);
+  const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -106,9 +109,22 @@ export default function Home() {
 
   const loadGallery = useCallback(async () => {
     if (!supabase) return;
-    const { data } = await supabase.from("generations").select("id,prompt,aspect_ratio,asset_url,url,overlay_json").order("created_at", { ascending: false }).limit(12);
+    const { data } = await supabase.from("generations").select("id,prompt,aspect_ratio,created_at,asset_url,url,overlay_json").order("created_at", { ascending: false }).limit(12);
     setGalleryItems((data ?? []) as GenerationItem[]);
   }, [supabase]);
+
+  const formatGeneratedAt = useCallback((value?: string) => {
+    if (!value) return "Generated: —";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Generated: —";
+    return `Generated: ${new Intl.DateTimeFormat(undefined, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(parsed)}`;
+  }, []);
 
   useEffect(() => {
     loadGallery();
@@ -277,6 +293,36 @@ export default function Home() {
     }
   }
 
+  async function handleDeleteGeneration(item: GenerationItem) {
+    if (!supabase || isDeletingId) return;
+    const confirmed = window.confirm("Delete this generated image?");
+    if (!confirmed) return;
+
+    try {
+      setIsDeletingId(item.id);
+      const { error: deleteError } = await supabase.from("generations").delete().eq("id", item.id);
+      if (deleteError) {
+        throw deleteError;
+      }
+      setGalleryItems((current) => current.filter((entry) => entry.id !== item.id));
+      if (promptDialogItem?.id === item.id) {
+        setPromptDialogItem(null);
+      }
+      if (masterState.selectedMasterGenerationId === item.id) {
+        setMasterState({
+          selectedMasterImage: null,
+          selectedMasterGenerationId: null,
+          selectedMasterUrl: null,
+          selectedMasterMetadata: null,
+        });
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Delete failed.");
+    } finally {
+      setIsDeletingId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
@@ -438,13 +484,13 @@ export default function Home() {
               return (
                 <article key={item.id} className={`overflow-hidden rounded-xl border bg-zinc-950/60 ${isCurrentMaster ? "border-indigo-500/70" : "border-white/10"}`}>
                   <div className="aspect-video overflow-hidden bg-zinc-900">{src ? <img src={src} alt={item.prompt} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>}</div>
-                  <div className="space-y-1 p-4">
-                    <p className="line-clamp-2 text-sm text-zinc-200">{item.prompt}</p>
+                  <div className="space-y-2 p-4">
                     <p className="text-xs text-zinc-400">
                       {String(workflow ?? "legacy")}
                       {galleryMasterGenerationId && selectedMasterId === galleryMasterGenerationId ? " · Derived from current master" : ""}
                     </p>
-                    <div className="pt-1">
+                    <p className="text-xs text-zinc-500">{formatGeneratedAt(item.created_at)}</p>
+                    <div className="flex flex-wrap gap-2 pt-1">
                       <button
                         type="button"
                         disabled={!canUseAsMaster || !src}
@@ -467,6 +513,18 @@ export default function Home() {
                       >
                         {isCurrentMaster ? "Selected Master" : "Use as Master"}
                       </button>
+                      <button type="button" onClick={() => setPromptDialogItem(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
+                        View Prompt
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDeletingId === item.id}
+                        onClick={() => handleDeleteGeneration(item)}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 px-3 py-2 text-xs text-rose-200 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </button>
                     </div>
                   </div>
                 </article>
@@ -475,6 +533,29 @@ export default function Home() {
           </div>
         </section>
       </div>
+
+      {promptDialogItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Prompt details">
+          <div className="w-full max-w-xl rounded-xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-zinc-100">Generation Prompt</h3>
+                <p className="mt-1 text-xs text-zinc-400">{formatGeneratedAt(promptDialogItem.created_at)}</p>
+              </div>
+              <button type="button" onClick={() => setPromptDialogItem(null)} className="rounded-md border border-white/15 px-2 py-1 text-xs text-zinc-300">
+                Close
+              </button>
+            </div>
+
+            <p className="whitespace-pre-wrap rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm text-zinc-200">{promptDialogItem.prompt}</p>
+
+            <div className="mt-3 text-xs text-zinc-400">
+              <p>Workflow: {String(promptDialogItem.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
+              {typeof promptDialogItem.overlay_json?.["backendModel"] === "string" && <p>Backend model: {String(promptDialogItem.overlay_json?.["backendModel"])}</p>}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
