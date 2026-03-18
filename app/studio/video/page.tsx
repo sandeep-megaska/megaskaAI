@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -64,7 +65,16 @@ export default function VideoProjectPage() {
   const [error, setError] = useState<string | null>(null);
   const [latestResult, setLatestResult] = useState<VideoResult | null>(null);
   const [history, setHistory] = useState<VideoResult[]>([]);
+  const [isExtractingFrame, setIsExtractingFrame] = useState(false);
+  const [extractedFrame, setExtractedFrame] = useState<{
+    generationId: string;
+    frameUrl: string;
+    sourceVideoGenerationId: string;
+    extractedAt: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const latestVideoRef = useRef<HTMLVideoElement>(null);
+  const router = useRouter();
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -200,11 +210,78 @@ export default function VideoProjectPage() {
 
       setLatestResult(result);
       setHistory((current) => [result, ...current]);
+      setExtractedFrame(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Video generation failed.");
     } finally {
       setIsGenerating(false);
     }
+  }
+
+
+  async function handleExtractFrame() {
+    if (!latestResult || isExtractingFrame) return null;
+
+    try {
+      setIsExtractingFrame(true);
+      setError(null);
+
+      const frameUrl = latestResult.thumbnailUrl || masterSelection?.imageUrl || latestResult.outputUrl;
+
+      const response = await fetch("/api/studio/video/extract-frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_video_generation_id: latestResult.generationId,
+          frame_url: frameUrl,
+          backend_model: videoBackends.find((backend) => backend.id === selectedBackendId)?.model ?? null,
+          extraction_method: latestResult.thumbnailUrl ? "thumbnail" : "fallback",
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        success?: boolean;
+        generationId?: string;
+        frameUrl?: string;
+        sourceVideoGenerationId?: string;
+        extractedAt?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.success || !payload.generationId || !payload.frameUrl || !payload.sourceVideoGenerationId || !payload.extractedAt) {
+        throw new Error(payload.error ?? "Frame extraction failed.");
+      }
+
+      const frame = {
+        generationId: payload.generationId,
+        frameUrl: payload.frameUrl,
+        sourceVideoGenerationId: payload.sourceVideoGenerationId,
+        extractedAt: payload.extractedAt,
+      };
+
+      setExtractedFrame(frame);
+      await loadGalleryImages();
+      return frame;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Frame extraction failed.");
+      return null;
+    } finally {
+      setIsExtractingFrame(false);
+    }
+  }
+
+  async function handleUseFrameAsMaster() {
+    const frame = extractedFrame ?? (await handleExtractFrame());
+    if (!frame) return;
+
+    const query = new URLSearchParams({
+      masterGenerationId: frame.generationId,
+      masterUrl: frame.frameUrl,
+      sourceVideoGenerationId: frame.sourceVideoGenerationId,
+      extractedAt: frame.extractedAt,
+    });
+
+    router.push(`/?${query.toString()}`);
   }
 
   const canGenerate = Boolean(masterSelection?.imageUrl && selectedBackendId);
@@ -443,7 +520,14 @@ export default function VideoProjectPage() {
 
             {latestResult ? (
               <div className="space-y-3 rounded-lg border border-cyan-400/30 bg-zinc-950/70 p-3">
-                <video key={latestResult.outputUrl} src={latestResult.outputUrl} controls className="h-auto w-full rounded-md" />
+                <video
+                  ref={latestVideoRef}
+                  key={latestResult.outputUrl}
+                  src={latestResult.outputUrl}
+                  poster={latestResult.thumbnailUrl}
+                  controls
+                  className="h-auto w-full rounded-md"
+                />
                 <div className="grid gap-2 text-xs text-zinc-300 sm:grid-cols-2">
                   <p>Preset: {getMotionPresetLabel(latestResult.motionPreset)}</p>
                   <p>Duration: {latestResult.durationSeconds}s</p>
@@ -457,7 +541,7 @@ export default function VideoProjectPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const video = document.querySelector("video");
+                      const video = latestVideoRef.current;
                       if (video) {
                         video.currentTime = 0;
                         void video.play();
@@ -476,13 +560,40 @@ export default function VideoProjectPage() {
                   </a>
                   <button
                     type="button"
+                    onClick={() => void handleExtractFrame()}
+                    disabled={isExtractingFrame}
+                    className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
+                  >
+                    {isExtractingFrame ? "Extracting..." : "Extract Frame"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleUseFrameAsMaster()}
+                    disabled={isExtractingFrame}
+                    className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200 disabled:opacity-50"
+                  >
+                    Use Frame as Master
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => void handleGenerate()}
                     disabled={isGenerating || !canGenerate}
-                    className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200 disabled:opacity-50"
+                    className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
                   >
                     Regenerate
                   </button>
                 </div>
+                {extractedFrame && extractedFrame.sourceVideoGenerationId === latestResult.generationId ? (
+                  <div className="rounded-md border border-emerald-400/40 bg-emerald-500/10 p-3">
+                    <p className="text-xs font-medium text-emerald-200">Frame extracted and saved to Image Project</p>
+                    <div className="mt-2 flex items-center gap-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={extractedFrame.frameUrl} alt="Extracted frame" className="h-14 w-14 rounded-md object-cover" />
+                      <p className="text-xs text-zinc-200">Use it as the next master to continue Generate More Views in Image Project.</p>
+                    </div>
+                  </div>
+                ) : null}
+
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">
@@ -498,7 +609,10 @@ export default function VideoProjectPage() {
                     <button
                       type="button"
                       key={item.generationId}
-                      onClick={() => setLatestResult(item)}
+                      onClick={() => {
+                        setLatestResult(item);
+                        setExtractedFrame(null);
+                      }}
                       className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-xs hover:border-white/30"
                     >
                       <p className="text-zinc-200">
