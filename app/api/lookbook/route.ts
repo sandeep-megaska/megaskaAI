@@ -4,7 +4,7 @@ import { findBackendById } from "@/lib/ai-backends";
 import { isGeminiImageModel, isImagenModel, isVeoModel } from "@/lib/ai/backendFamilies";
 import { buildShotPlan } from "@/lib/lookbook/buildShotPlan";
 import { runLookbookJob } from "@/lib/lookbook/runLookbookJob";
-import type { LookbookReferenceImage, LookbookShotSpec } from "@/lib/lookbook/types";
+import type { LookbookJobVariant, LookbookReferenceImage, LookbookShotSpec, LookbookThemeKey } from "@/lib/lookbook/types";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -23,6 +23,25 @@ function fileExtensionForMime(mimeType: string) {
 
 type ModelAsset = { id: string; asset_url: string; is_primary: boolean; sort_order: number | null };
 type GarmentAsset = { id: string; public_url: string; view_label: string | null; detail_zone: string | null; is_primary: boolean; sort_order: number | null };
+const LIFESTYLE_THEMES: LookbookThemeKey[] = [
+  "luxury_poolside",
+  "resort_editorial",
+  "premium_studio_lifestyle",
+  "tropical_escape",
+  "minimal_neutral_editorial",
+  "sunlit_terrace",
+  "modern_indoor_luxury",
+];
+
+function parseLookbookVariant(value: unknown): LookbookJobVariant {
+  return value === "lifestyle" ? "lifestyle" : "catalog";
+}
+
+function parseThemeKey(value: unknown, jobVariant: LookbookJobVariant): LookbookThemeKey | null {
+  if (jobVariant !== "lifestyle") return null;
+  if (typeof value !== "string") return null;
+  return LIFESTYLE_THEMES.includes(value as LookbookThemeKey) ? (value as LookbookThemeKey) : null;
+}
 
 function pickGarmentReferences(garment: {
   primary_front_asset_id?: string | null;
@@ -79,6 +98,8 @@ export async function POST(request: Request) {
     const modelId = body.model_id ? String(body.model_id) : null;
     const garmentId = body.garment_id ? String(body.garment_id) : null;
     const backendId = body.backend ? String(body.backend) : null;
+    const jobVariant = parseLookbookVariant(body.job_variant ?? body.variant ?? body.mode);
+    const themeKey = parseThemeKey(body.theme_key, jobVariant);
 
     if (!modelId) return json(400, { success: false, error: "model_id is required for Consistent Lookbook." });
     if (!garmentId) return json(400, { success: false, error: "garment_id is required for Consistent Lookbook." });
@@ -135,7 +156,13 @@ export async function POST(request: Request) {
       ...picked.details.map((asset) => ({ kind: "garment_detail" as const, url: asset.public_url, assetId: asset.id, label: asset.detail_zone ?? "garment_detail" })),
     ];
 
-    const shotSpecs = buildShotPlan({ shotSpecs: Array.isArray(body.shot_specs) ? (body.shot_specs as LookbookShotSpec[]) : null });
+    const shotSpecs = buildShotPlan({
+      shotSpecs: Array.isArray(body.shot_specs) ? (body.shot_specs as LookbookShotSpec[]) : null,
+      variant: jobVariant,
+    });
+    const outputStyle = jobVariant === "lifestyle"
+      ? "lifestyle"
+      : (body.output_style === "studio" || body.output_style === "lifestyle" ? body.output_style : "catalog");
 
     const { data: createdJob, error: jobInsertError } = await supabase
       .from("lookbook_jobs")
@@ -147,10 +174,14 @@ export async function POST(request: Request) {
         backend: backend.id,
         backend_model: backend.model,
         workflow_mode: "consistent-lookbook",
-        output_style: body.output_style === "studio" || body.output_style === "lifestyle" ? body.output_style : "catalog",
+        output_style: outputStyle,
+        job_variant: jobVariant,
+        theme_key: themeKey,
         no_reconstruction: true,
         debug_trace: {
           backendModel: backend.model,
+          jobVariant,
+          themeKey,
           referenceKinds: Array.from(new Set(references.map((item) => item.kind))),
           noReconstruction: true,
         },
@@ -170,6 +201,9 @@ export async function POST(request: Request) {
         shot_key: shot.shotKey,
         shot_title: shot.title,
         shot_order: index,
+        scene_key: shot.sceneKey ?? null,
+        pose_key: shot.poseKey ?? null,
+        mood_key: shot.moodKey ?? null,
         status: "queued",
       })),
     );
@@ -179,7 +213,9 @@ export async function POST(request: Request) {
     const result = await runLookbookJob({
       backendId: backend.id,
       references,
-      outputStyle: body.output_style === "studio" || body.output_style === "lifestyle" ? body.output_style : "catalog",
+      outputStyle,
+      jobVariant,
+      themeKey,
       shotSpecs,
     });
 
@@ -216,6 +252,8 @@ export async function POST(request: Request) {
             shot_key: shotResult.shot.shotKey,
             backend: result.backendId,
             backend_model: result.backendModel,
+            job_variant: jobVariant,
+            theme_key: themeKey,
             debug_trace: shotResult.debugTrace,
           },
           generation_kind: "image",
@@ -269,6 +307,8 @@ export async function POST(request: Request) {
       success: true,
       lookbookJobId: jobId,
       workflowMode: result.workflowMode,
+      jobVariant,
+      themeKey,
       backend: result.backendId,
       backendModel: result.backendModel,
       shots: contactSheet,

@@ -5,9 +5,11 @@ import { buildLookbookPrompt } from "@/lib/lookbook/buildLookbookPrompt";
 import { runGeminiLookbookShot } from "@/lib/lookbook/adapters/runGeminiLookbookShot";
 import type {
   LookbookConstraintProfile,
+  LookbookJobVariant,
   LookbookReferenceImage,
   LookbookShotResult,
   LookbookShotSpec,
+  LookbookThemeKey,
   LookbookWorkflowMode,
 } from "@/lib/lookbook/types";
 
@@ -15,6 +17,8 @@ export type RunLookbookInput = {
   backendId?: string | null;
   references: LookbookReferenceImage[];
   shotSpecs?: LookbookShotSpec[];
+  jobVariant?: LookbookJobVariant;
+  themeKey?: LookbookThemeKey | null;
   outputStyle?: "catalog" | "studio" | "lifestyle";
 };
 
@@ -49,8 +53,9 @@ export async function runLookbookJob(input: RunLookbookInput): Promise<RunLookbo
     throw new Error("Consistent Lookbook requires a Gemini image backend.");
   }
 
-  const shots = buildShotPlan({ shotSpecs: input.shotSpecs });
-  const outputStyle = input.outputStyle ?? "catalog";
+  const jobVariant = input.jobVariant ?? "catalog";
+  const shots = buildShotPlan({ shotSpecs: input.shotSpecs, variant: jobVariant });
+  const outputStyle = input.outputStyle ?? (jobVariant === "lifestyle" ? "lifestyle" : "catalog");
 
   const results: LookbookShotResult[] = [];
   for (const shot of shots) {
@@ -58,6 +63,8 @@ export async function runLookbookJob(input: RunLookbookInput): Promise<RunLookbo
       workflowMode: "consistent-lookbook",
       backendModel: backend.model,
       outputStyle,
+      jobVariant,
+      themeKey: input.themeKey ?? null,
       references: input.references,
       shot,
       constraints: LOOKBOOK_CONSTRAINT_PROFILE,
@@ -69,6 +76,8 @@ export async function runLookbookJob(input: RunLookbookInput): Promise<RunLookbo
       workflowMode: "consistent-lookbook",
       backendModel: backend.model,
       outputStyle,
+      jobVariant,
+      themeKey: input.themeKey ?? null,
       references: input.references,
       shot,
       constraints: LOOKBOOK_CONSTRAINT_PROFILE,
@@ -77,6 +86,8 @@ export async function runLookbookJob(input: RunLookbookInput): Promise<RunLookbo
       debugTrace: {
         backendModel: backend.model,
         shotKey: shot.shotKey,
+        jobVariant,
+        themeKey: input.themeKey ?? null,
         promptHash: compiled.promptHash,
         referenceKinds: Array.from(new Set(input.references.map((reference) => reference.kind))),
         noReconstruction: LOOKBOOK_CONSTRAINT_PROFILE.noReconstruction,

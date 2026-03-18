@@ -19,13 +19,34 @@ function buildGlobalIdentityPreservationBlock(constraints: LookbookConstraintPro
   ].filter(Boolean).join("\n");
 }
 
-function buildPerShotInstructionBlock(payload: Pick<LookbookExecutionPayload, "shot">) {
+function buildPerShotInstructionBlock(payload: Pick<LookbookExecutionPayload, "shot" | "jobVariant" | "themeKey">) {
+  const variantInstructions = payload.jobVariant === "lifestyle"
+    ? [
+      "MODE_DIRECTIVE: Lifestyle Photoshoot.",
+      "Create a premium editorial scene-driven image.",
+      "Allow variation in background, pose, expression, and lighting mood.",
+      "Do not change garment identity, garment construction, or print geometry.",
+      payload.themeKey ? `THEME_KEY: ${payload.themeKey}.` : "",
+    ]
+    : [
+      "MODE_DIRECTIVE: Catalog Lookbook.",
+      "Maintain technical catalog clarity, clean separation, and production-ready framing.",
+    ];
+
   return [
+    ...variantInstructions,
     `SHOT_KEY: ${payload.shot.shotKey}.`,
     `SHOT_TITLE: ${payload.shot.title}.`,
     `SHOT_INSTRUCTION: ${payload.shot.instruction}`,
     payload.shot.styleHint ? `SHOT_STYLE_HINT: ${payload.shot.styleHint}.` : "",
     payload.shot.aspectRatio ? `SHOT_ASPECT_RATIO: ${payload.shot.aspectRatio}.` : "",
+    payload.shot.framing ? `SHOT_FRAMING: ${payload.shot.framing}.` : "",
+    payload.shot.angle ? `SHOT_ANGLE: ${payload.shot.angle}.` : "",
+    payload.shot.backgroundStyle ? `SHOT_BACKGROUND_STYLE: ${payload.shot.backgroundStyle}.` : "",
+    payload.shot.poseInstruction ? `SHOT_POSE_INSTRUCTION: ${payload.shot.poseInstruction}.` : "",
+    payload.shot.sceneKey ? `SCENE_KEY: ${payload.shot.sceneKey}.` : "",
+    payload.shot.poseKey ? `POSE_KEY: ${payload.shot.poseKey}.` : "",
+    payload.shot.moodKey ? `MOOD_KEY: ${payload.shot.moodKey}.` : "",
   ].filter(Boolean).join("\n");
 }
 
