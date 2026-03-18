@@ -43,6 +43,18 @@ function sanitizeForPath(input: string) {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 48) || "asset";
 }
 
+function classifyStoredVideoUri(value: string) {
+  if (value.startsWith("gs://")) return "gcs-gs-uri";
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    if (value.includes("/storage/v1/object/public/")) return "supabase-public-http";
+    if (value.includes("/storage/v1/object/sign/")) return "supabase-signed-http";
+    if (value.includes("/storage.googleapis.com/")) return "gcs-http";
+    return "http-unknown";
+  }
+  if (value.startsWith("projects/") || value.startsWith("locations/")) return "provider-internal-uri";
+  return "unknown-uri";
+}
+
 function isMotionPreset(value: unknown): value is VideoMotionPreset {
   return typeof value === "string" && VIDEO_MOTION_PRESETS.includes(value as VideoMotionPreset);
 }
@@ -200,6 +212,9 @@ export async function POST(request: Request) {
     console.log("[studio/video] success", {
       generationId: inserted.id,
       backendId: videoResult.backendId,
+      outputUriFormat: classifyStoredVideoUri(outputUrl),
+      outputUrl,
+      storagePath: filePath,
       elapsedMs: Date.now() - startedAt,
     });
 
@@ -207,6 +222,7 @@ export async function POST(request: Request) {
       success: true,
       generationId: inserted.id,
       outputUrl,
+      downloadUrl: `/api/studio/video/${inserted.id}/download`,
       thumbnailUrl,
       backend: videoResult.backendId,
       backendModel: videoResult.backendModel,

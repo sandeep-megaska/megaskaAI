@@ -40,6 +40,7 @@ type MasterSelection = {
 type VideoResult = {
   generationId: string;
   outputUrl: string;
+  downloadUrl: string;
   thumbnailUrl?: string;
   sourceGenerationId: string | null;
   motionPreset: VideoMotionPreset;
@@ -180,6 +181,7 @@ export default function VideoProjectPage() {
         success?: boolean;
         generationId?: string;
         outputUrl?: string;
+        downloadUrl?: string;
         thumbnailUrl?: string;
         sourceGenerationId?: string | null;
         videoMeta?: {
@@ -199,6 +201,7 @@ export default function VideoProjectPage() {
       const result: VideoResult = {
         generationId: payload.generationId,
         outputUrl: payload.outputUrl,
+        downloadUrl: payload.downloadUrl || `/api/studio/video/${payload.generationId}/download`,
         thumbnailUrl: payload.thumbnailUrl,
         sourceGenerationId: payload.sourceGenerationId ?? null,
         motionPreset: payload.videoMeta.motionPreset,
@@ -553,7 +556,7 @@ export default function VideoProjectPage() {
                     Replay
                   </button>
                   <a
-                    href={latestResult.outputUrl}
+                    href={latestResult.downloadUrl}
                     download
                     className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100"
                   >
