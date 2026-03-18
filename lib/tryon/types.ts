@@ -110,3 +110,35 @@ export type GarmentReferenceBundle = {
   fabricPrintReferences: string[];
   preservationPriorities: string[];
 };
+
+export type TryOnReferenceImageKind = "subject" | "garment_silhouette" | "garment_detail" | "garment_print";
+
+export type TryOnReferenceImage = {
+  kind: TryOnReferenceImageKind;
+  url: string;
+  assetId?: string;
+  label?: string;
+};
+
+export type TryOnConstraintProfile = {
+  noReconstruction: boolean;
+  preserveStructure: boolean;
+  preservePrintPlacement: boolean;
+  preserveColorway: boolean;
+  preserveSilhouette: boolean;
+  allowPoseAdaptation: boolean;
+  allowFitAdaptation: boolean;
+  allowPerspectiveAdaptation: boolean;
+};
+
+export type TryOnExecutionPayload = {
+  workflowMode: WorkflowMode | "video-try-on";
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio?: "1:1" | "16:9" | "9:16";
+  backendModel: string;
+  references: TryOnReferenceImage[];
+  compiledPrompt?: string;
+  constraints: TryOnConstraintProfile;
+  debugTrace?: Record<string, unknown>;
+};

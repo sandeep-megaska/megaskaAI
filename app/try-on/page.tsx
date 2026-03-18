@@ -76,6 +76,22 @@ type WorkflowMode = "standard_tryon" | "catalog_fidelity";
 type FidelityLevel = "balanced" | "strict" | "hard_lock";
 type PreferredOutputStyle = "catalog" | "studio" | "lifestyle";
 
+function getBackendFamily(model: string): "gemini-image" | "imagen" | "veo" | "unknown" {
+  const normalized = model.trim().toLowerCase();
+  if (normalized.startsWith("gemini-") && normalized.includes("image")) return "gemini-image";
+  if (normalized.startsWith("imagen-")) return "imagen";
+  if (normalized.startsWith("veo-")) return "veo";
+  return "unknown";
+}
+
+function getTryOnBackendDisabledReason(backend: AIBackend): string | null {
+  const family = getBackendFamily(backend.model);
+  if (family === "gemini-image") return null;
+  if (family === "imagen") return "creative generation only";
+  if (family === "veo") return "video workflows only";
+  return "unsupported for try-on";
+}
+
 const initialConstraints = {
   preserve_color: true,
   preserve_print: true,
@@ -172,12 +188,10 @@ export default function TryOnPage() {
       backendsRes.json(),
     ]);
 
-    const imageBackends = (backendsJson.data ?? []).filter((item: AIBackend) => item.type === "image");
-
     setModels(modelsJson.data ?? []);
     setGarments(garmentsJson.data ?? []);
     setJobs(jobsJson.data ?? []);
-    setBackends(imageBackends);
+    setBackends(backendsJson.data ?? []);
   }
 
   useEffect(() => {
@@ -194,8 +208,9 @@ export default function TryOnPage() {
   }, [sourceMode]);
 
   useEffect(() => {
-    if (backends.length && !backends.some((item) => item.id === backend)) {
-      setBackend(backends[0].id);
+    const enabledBackends = backends.filter((item) => !getTryOnBackendDisabledReason(item));
+    if (enabledBackends.length && !enabledBackends.some((item) => item.id === backend)) {
+      setBackend(enabledBackends[0].id);
     }
   }, [backends, backend]);
 
@@ -479,9 +494,15 @@ export default function TryOnPage() {
             )}
 
             <select value={backend} onChange={(event) => setBackend(event.target.value)} className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs">
-              {backends.map((item) => (
-                <option key={item.id} value={item.id}>{item.name}</option>
-              ))}
+              {backends.map((item) => {
+                const disabledReason = getTryOnBackendDisabledReason(item);
+                const label = disabledReason ? `${item.name} (${disabledReason})` : item.name;
+                return (
+                  <option key={item.id} value={item.id} disabled={Boolean(disabledReason)} title={disabledReason ?? undefined}>
+                    {label}
+                  </option>
+                );
+              })}
             </select>
 
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="scene prompt (optional)" className="w-full rounded border border-white/10 bg-zinc-950 p-2 text-xs" rows={2} />
