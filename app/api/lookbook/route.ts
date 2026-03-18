@@ -129,10 +129,24 @@ export async function POST(request: Request) {
     if (!picked.back) return json(400, { success: false, error: "Consistent Lookbook requires at least 1 garment back image." });
 
     const references: LookbookReferenceImage[] = [
-      ...modelIdentityAssets.slice(0, 3).map((asset: ModelAsset) => ({ kind: "model_identity", url: asset.asset_url, assetId: asset.id, label: "model_identity" as const })),
+      ...modelIdentityAssets.slice(0, 3).map(
+        (asset: ModelAsset): LookbookReferenceImage => ({
+          kind: "model_identity",
+          url: asset.asset_url,
+          assetId: asset.id,
+          label: "model_identity",
+        }),
+      ),
       { kind: "garment_front", url: picked.front.public_url, assetId: picked.front.id, label: "garment_front" },
       { kind: "garment_back", url: picked.back.public_url, assetId: picked.back.id, label: "garment_back" },
-      ...picked.details.map((asset) => ({ kind: "garment_detail" as const, url: asset.public_url, assetId: asset.id, label: asset.detail_zone ?? "garment_detail" })),
+      ...picked.details.map(
+        (asset): LookbookReferenceImage => ({
+          kind: "garment_detail",
+          url: asset.public_url,
+          assetId: asset.id,
+          label: asset.detail_zone ?? "garment_detail",
+        }),
+      ),
     ];
 
     const shotSpecs = buildShotPlan({ shotSpecs: Array.isArray(body.shot_specs) ? (body.shot_specs as LookbookShotSpec[]) : null });
