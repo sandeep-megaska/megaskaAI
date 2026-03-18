@@ -18,6 +18,7 @@ export type RunVideoJobResult = {
   backendId: string;
   backendModel: string;
   rawOutputUri: string | null;
+  providerResponseMeta: Record<string, unknown>;
 };
 
 function getAllowedDurationsForVeoModel(model: string): readonly number[] {
@@ -76,5 +77,6 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     backendId: backend.id,
     backendModel: output.model,
     rawOutputUri: output.rawOutputUri,
+    providerResponseMeta: output.providerResponseMeta,
   };
 }

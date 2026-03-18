@@ -20,7 +20,7 @@ function classifyStoredVideoUri(value: string) {
 }
 
 type StorageCandidate = {
-  source: "video_meta.storage" | "asset_url" | "url";
+  source: "url" | "asset_url" | "video_meta.storage";
   provider: "supabase";
   bucket: string;
   objectPath: string;
@@ -67,7 +67,7 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
 
   const { data: generation, error: generationError } = await supabase
     .from("generations")
-    .select("id,asset_url,url,video_meta")
+    .select("id,type,media_type,asset_url,url,video_meta")
     .eq("id", generationId)
     .eq("generation_kind", "video")
     .maybeSingle();
@@ -84,7 +84,9 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
     return asJson(404, { success: false, error: "Video generation not found." });
   }
 
-  const storedUri = String(generation.asset_url || generation.url || "").trim();
+  const canonicalUrl = String(generation.url || "").trim();
+  const canonicalAssetUrl = String(generation.asset_url || "").trim();
+  const storedUri = canonicalUrl || canonicalAssetUrl;
   if (!storedUri) {
     return asJson(400, { success: false, error: "No stored video URI found for generation." });
   }
@@ -95,21 +97,16 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
 
   let candidate: StorageCandidate | null = null;
 
-  if (
-    metaStorage?.provider === "supabase" &&
-    typeof metaStorage.bucket === "string" &&
-    typeof metaStorage.objectPath === "string" &&
-    metaStorage.bucket.trim() &&
-    metaStorage.objectPath.trim()
-  ) {
+  const parsedFromUrl = parseSupabaseObjectFromUri(canonicalUrl);
+  if (parsedFromUrl) {
     candidate = {
-      source: "video_meta.storage",
+      source: "url",
       provider: "supabase",
-      bucket: metaStorage.bucket.trim(),
-      objectPath: metaStorage.objectPath.trim(),
+      bucket: parsedFromUrl.bucket,
+      objectPath: parsedFromUrl.objectPath,
     };
   } else {
-    const parsedFromAsset = parseSupabaseObjectFromUri(String(generation.asset_url || "").trim());
+    const parsedFromAsset = parseSupabaseObjectFromUri(canonicalAssetUrl);
     if (parsedFromAsset) {
       candidate = {
         source: "asset_url",
@@ -117,16 +114,19 @@ export async function GET(_: Request, context: { params: Promise<{ generationId:
         bucket: parsedFromAsset.bucket,
         objectPath: parsedFromAsset.objectPath,
       };
-    } else {
-      const parsedFromUrl = parseSupabaseObjectFromUri(String(generation.url || "").trim());
-      if (parsedFromUrl) {
-        candidate = {
-          source: "url",
-          provider: "supabase",
-          bucket: parsedFromUrl.bucket,
-          objectPath: parsedFromUrl.objectPath,
-        };
-      }
+    } else if (
+      metaStorage?.provider === "supabase" &&
+      typeof metaStorage.bucket === "string" &&
+      typeof metaStorage.objectPath === "string" &&
+      metaStorage.bucket.trim() &&
+      metaStorage.objectPath.trim()
+    ) {
+      candidate = {
+        source: "video_meta.storage",
+        provider: "supabase",
+        bucket: metaStorage.bucket.trim(),
+        objectPath: metaStorage.objectPath.trim(),
+      };
     }
   }
 
