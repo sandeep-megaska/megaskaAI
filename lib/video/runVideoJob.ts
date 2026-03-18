@@ -19,7 +19,7 @@ export type RunVideoJobResult = {
   backendModel: string;
 };
 
-function getAllowedDurationsForVeoModel(model: string) {
+function getAllowedDurationsForVeoModel(model: string): readonly number[] {
   const normalized = model.trim().toLowerCase();
 
   if (normalized.startsWith("veo-3.1")) {
@@ -54,7 +54,7 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
   }
 
   const allowedDurations = getAllowedDurationsForVeoModel(backend.model);
-  if (!allowedDurations.includes(input.durationSeconds as (typeof allowedDurations)[number])) {
+  if (!allowedDurations.includes(input.durationSeconds)) {
     throw new Error(
       `Unsupported duration_seconds for backend '${backend.id}'. Supported values: ${allowedDurations.join(", ")}.`,
     );
