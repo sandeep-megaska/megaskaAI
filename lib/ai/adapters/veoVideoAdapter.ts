@@ -2,6 +2,9 @@ import { GoogleGenAI } from "@google/genai";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
+const SUPPORTED_VEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
+type VeoAspectRatio = (typeof SUPPORTED_VEO_ASPECT_RATIOS)[number];
+
 type VeoInput = {
   apiKey?: string;
   model: string;
@@ -38,6 +41,11 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     throw new Error("Missing GOOGLE_API_KEY or GEMINI_API_KEY environment variable.");
   }
 
+  const aspectRatio = (input.aspectRatio ?? "16:9") as StudioAspectRatio;
+  if (!SUPPORTED_VEO_ASPECT_RATIOS.includes(aspectRatio as VeoAspectRatio)) {
+    throw new Error("Video Project currently supports only 16:9 and 9:16 aspect ratios.");
+  }
+
   const ai = new GoogleGenAI({ apiKey });
 
   let operation;
@@ -47,7 +55,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       source: { prompt: input.prompt },
       config: {
         numberOfVideos: 1,
-        aspectRatio: input.aspectRatio ?? "1:1",
+        aspectRatio,
       },
     });
   } catch (error) {

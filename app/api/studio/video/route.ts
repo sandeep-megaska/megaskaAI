@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
-import { ProviderUnavailableError } from "@/lib/ai/providerErrors";
+import { ProviderInvalidArgumentError, ProviderUnavailableError, isGeminiUnavailableError } from "@/lib/ai/providerErrors";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   buildVideoPrompt,
@@ -32,6 +32,9 @@ type VideoGeneratePayload = {
   requested_thumbnail_url?: string | null;
 };
 
+const VIDEO_PROJECT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
+type VideoProjectAspectRatio = (typeof VIDEO_PROJECT_ASPECT_RATIOS)[number];
+
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
@@ -54,6 +57,10 @@ function isMotionStrength(value: unknown): value is VideoMotionStrength {
 
 function isDuration(value: unknown): value is VideoDurationSeconds {
   return typeof value === "number" && VIDEO_DURATIONS.includes(value as VideoDurationSeconds);
+}
+
+function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRatio {
+  return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
 }
 
 export async function POST(request: Request) {
@@ -101,6 +108,13 @@ export async function POST(request: Request) {
 
     if (!isStudioAspectRatio(aspectRatio)) {
       return asJson(400, { success: false, error: "Unsupported aspect_ratio value." });
+    }
+
+    if (!isVideoProjectAspectRatio(aspectRatio)) {
+      return asJson(400, {
+        success: false,
+        error: "Video Project currently supports only 16:9 and 9:16 aspect ratios.",
+      });
     }
 
     const prompt = buildVideoPrompt({
@@ -207,6 +221,13 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof ProviderInvalidArgumentError) {
+      return asJson(400, {
+        success: false,
+        error: error.message,
+      });
+    }
+
     if (error instanceof ProviderUnavailableError) {
       return asJson(503, {
         success: false,
@@ -215,7 +236,7 @@ export async function POST(request: Request) {
       });
     }
 
-    if (error instanceof Error && /(429|503|UNAVAILABLE|RATE)/i.test(error.message)) {
+    if (isGeminiUnavailableError(error)) {
       return asJson(503, { success: false, error: "AI video service is busy right now. Please retry." });
     }
 

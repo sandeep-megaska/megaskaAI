@@ -19,6 +19,24 @@ export type RunVideoJobResult = {
   backendModel: string;
 };
 
+function getAllowedDurationsForVeoModel(model: string) {
+  const normalized = model.trim().toLowerCase();
+
+  if (normalized.startsWith("veo-3.1")) {
+    return [4, 6, 8] as const;
+  }
+
+  if (normalized.startsWith("veo-3")) {
+    return [8] as const;
+  }
+
+  if (normalized.startsWith("veo-2")) {
+    return [5, 6, 7, 8] as const;
+  }
+
+  return [8] as const;
+}
+
 export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobResult> {
   const requestedBackend = findBackendById(input.backendId);
   if (input.backendId && !requestedBackend) {
@@ -33,6 +51,13 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
 
   if (!isVeoModel(backend.model)) {
     throw new Error(`Unsupported video backend family for model '${backend.model}'.`);
+  }
+
+  const allowedDurations = getAllowedDurationsForVeoModel(backend.model);
+  if (!allowedDurations.includes(input.durationSeconds as (typeof allowedDurations)[number])) {
+    throw new Error(
+      `Unsupported duration_seconds for backend '${backend.id}'. Supported values: ${allowedDurations.join(", ")}.`,
+    );
   }
 
   const output = await runVeoVideo({

@@ -17,7 +17,8 @@ import {
   type VideoMotionStrength,
   type VideoStyle,
 } from "@/lib/video/promptBuilder";
-import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16"] as const;
+type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIO_OPTIONS)[number];
 
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
 
@@ -55,11 +56,11 @@ export default function VideoProjectPage() {
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [masterSelection, setMasterSelection] = useState<MasterSelection | null>(null);
   const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-motion");
-  const [duration, setDuration] = useState<VideoDurationSeconds>(5);
+  const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
   const [motionStrength, setMotionStrength] = useState<VideoMotionStrength>("subtle");
   const [strictGarmentLock, setStrictGarmentLock] = useState(true);
-  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("9:16");
+  const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [creativeNotes, setCreativeNotes] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -458,12 +459,12 @@ export default function VideoProjectPage() {
                   <span className="text-zinc-300">Aspect ratio</span>
                   <select
                     value={aspectRatio}
-                    onChange={(event) => setAspectRatio(event.target.value as StudioAspectRatio)}
+                    onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)}
                     className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                   >
-                    {STUDIO_ASPECT_RATIO_OPTIONS.map((ratioOption) => (
-                      <option key={ratioOption.id} value={ratioOption.ratio}>
-                        {ratioOption.label} ({ratioOption.ratio})
+                    {VIDEO_ASPECT_RATIO_OPTIONS.map((ratioOption) => (
+                      <option key={ratioOption} value={ratioOption}>
+                        {ratioOption}
                       </option>
                     ))}
                   </select>
