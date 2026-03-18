@@ -21,6 +21,7 @@ type GeneratePayload = {
     masterGenerationId?: string | null;
     referenceKindsUsed?: string[];
     promptHash?: string;
+    backendModel?: string;
   };
 };
 
@@ -188,8 +189,17 @@ export async function POST(request: Request) {
 
     const hasOverlay = Boolean(overlay.headline || overlay.subtext || overlay.cta);
     const generationMetaBase = hasOverlay
-      ? { ...overlay, ai_backend_id: generationOutput.backend.id, ai_model: generationOutput.backendModel }
-      : { ai_backend_id: generationOutput.backend.id, ai_model: generationOutput.backendModel };
+      ? {
+          ...overlay,
+          ai_backend_id: generationOutput.backend.id,
+          ai_model: generationOutput.backendModel,
+          backendModel: generationOutput.backendModel,
+        }
+      : {
+          ai_backend_id: generationOutput.backend.id,
+          ai_model: generationOutput.backendModel,
+          backendModel: generationOutput.backendModel,
+        };
     const generationMeta = payload.studio_meta ? { ...generationMetaBase, ...payload.studio_meta } : generationMetaBase;
 
     const { data: insertedGeneration, error: insertError } = await supabase
