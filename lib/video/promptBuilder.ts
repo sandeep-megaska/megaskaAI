@@ -6,7 +6,7 @@ export const VIDEO_MOTION_PRESETS = [
   "detail-motion",
 ] as const;
 
-export const VIDEO_DURATIONS = [3, 5, 8, 10] as const;
+export const VIDEO_DURATIONS = [8] as const;
 
 export const VIDEO_STYLES = ["realistic", "editorial", "ad-style"] as const;
 
