@@ -17,6 +17,7 @@ type VeoOutput = {
   mimeType: string;
   model: string;
   rawOutputUri: string | null;
+  providerResponseMeta: Record<string, unknown>;
 };
 
 async function resolveVideoBytes(video: { videoBytes?: string; uri?: string }) {
@@ -93,5 +94,15 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     mimeType: generatedVideo.mimeType ?? "video/mp4",
     model: input.model,
     rawOutputUri: generatedVideo.uri ?? null,
+    providerResponseMeta: {
+      operationName: typeof operation.name === "string" ? operation.name : null,
+      done: Boolean(operation.done),
+      pollCount,
+      generatedVideoCount: operation.response?.generatedVideos?.length ?? 0,
+      generatedVideo: {
+        uri: generatedVideo.uri ?? null,
+        mimeType: generatedVideo.mimeType ?? "video/mp4",
+      },
+    },
   };
 }

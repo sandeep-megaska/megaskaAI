@@ -164,7 +164,7 @@ export async function POST(request: Request) {
     }
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
-    const outputUrl = publicData.publicUrl;
+    const canonicalVideoUrl = publicData.publicUrl;
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
     const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
     const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
@@ -188,8 +188,8 @@ export async function POST(request: Request) {
         type: "Video",
         media_type: "Video",
         aspect_ratio: aspectRatio,
-        asset_url: outputUrl,
-        url: outputUrl,
+        asset_url: canonicalVideoUrl,
+        url: canonicalVideoUrl,
         overlay_json: {
           ai_backend_id: videoResult.backendId,
           ai_model: videoResult.backendModel,
@@ -209,13 +209,14 @@ export async function POST(request: Request) {
             provider: "supabase",
             bucket: supabaseBucket,
             objectPath: filePath,
-            publicUrl: outputUrl,
+            publicUrl: canonicalVideoUrl,
             copySucceeded: true,
           },
           sourceOutput: {
             provider: rawOutputUriFormat,
             uri: rawOutputUri,
           },
+          providerResponse: videoResult.providerResponseMeta,
           debug: debugMeta,
         },
       })
@@ -229,10 +230,10 @@ export async function POST(request: Request) {
     console.log("[studio/video] success", {
       generationId: inserted.id,
       backendId: videoResult.backendId,
-      outputUriFormat: classifyStoredVideoUri(outputUrl),
+      outputUriFormat: classifyStoredVideoUri(canonicalVideoUrl),
       rawOutputUriFormat,
       rawOutputUri,
-      outputUrl,
+      outputUrl: canonicalVideoUrl,
       canonicalStorageProvider: "supabase",
       canonicalBucket: supabaseBucket,
       storagePath: filePath,
@@ -243,7 +244,7 @@ export async function POST(request: Request) {
     return asJson(200, {
       success: true,
       generationId: inserted.id,
-      outputUrl,
+      outputUrl: canonicalVideoUrl,
       downloadUrl: `/api/studio/video/${inserted.id}/download`,
       thumbnailUrl,
       backend: videoResult.backendId,
