@@ -12,7 +12,8 @@ type CostSummary = {
 };
 
 const navItems = [
-  { href: "/", label: "Studio" },
+  { href: "/", label: "Image Project" },
+  { href: "/studio/video", label: "Video Project" },
   { href: "/models", label: "Models" },
   { href: "/garments", label: "Garments" },
   { href: "/try-on", label: "Try-On" },

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { Download, Sparkles, Trash2, X } from "lucide-react";
@@ -340,7 +341,19 @@ export default function Home() {
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
         <section className="rounded-xl border border-white/10 bg-zinc-900/50 p-6 space-y-6">
-          <div className="space-y-2">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-indigo-300">Studio Project</p>
+                <h1 className="text-2xl font-semibold text-white">Image Project</h1>
+                <p className="text-sm text-zinc-400">Generate master candidates, select the strongest result as master, and expand into more views.</p>
+              </div>
+              <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
+                <Link href="/" className="rounded-md bg-indigo-500 px-4 py-2 text-sm text-white">Image Project</Link>
+                <Link href="/studio/video" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Video Project</Link>
+              </div>
+            </div>
+
             <p className="text-sm font-medium text-zinc-300">Studio Workflow</p>
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
               <button type="button" onClick={() => setWorkflowMode("master-candidates")} className={`rounded-md px-4 py-2 text-sm ${workflowMode === "master-candidates" ? "bg-indigo-500 text-white" : "text-zinc-300"}`}>
