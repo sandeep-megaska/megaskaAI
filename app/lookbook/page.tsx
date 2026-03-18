@@ -12,6 +12,8 @@ type ContactSheetItem = {
   outputUrl: string;
   generationId: string;
   shotOrder: number;
+  updatedAt?: string | null;
+  regenerateCount?: number;
 };
 
 const CATALOG_SHOT_PACK = [
@@ -73,6 +75,7 @@ export default function LookbookPage() {
   const [error, setError] = useState<string | null>(null);
   const [lookbookJobId, setLookbookJobId] = useState<string>("");
   const [contactSheet, setContactSheet] = useState<ContactSheetItem[]>([]);
+  const [regeneratingShots, setRegeneratingShots] = useState<Record<string, boolean>>({});
 
   const enabledBackends = useMemo(
     () => backends.filter((backend) => backend.type === "image" && !getLookbookBackendDisabledReason(backend)),
@@ -139,11 +142,44 @@ export default function LookbookPage() {
       }
 
       setLookbookJobId(json.lookbookJobId ?? "");
+      setRegeneratingShots({});
       setContactSheet((json.shots ?? []).sort((a: ContactSheetItem, b: ContactSheetItem) => a.shotOrder - b.shotOrder));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Failed to generate lookbook.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function regenerateShot(shotKey: string) {
+    if (!lookbookJobId || regeneratingShots[shotKey]) return;
+
+    setError(null);
+    setRegeneratingShots((prev) => ({ ...prev, [shotKey]: true }));
+
+    try {
+      const res = await fetch(`/api/lookbook/${lookbookJobId}/shots/${shotKey}/regenerate`, {
+        method: "POST",
+      });
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        setError(json.error ?? `Failed to regenerate shot '${shotKey}'.`);
+        return;
+      }
+
+      const updatedShot = json.shot as ContactSheetItem | undefined;
+      if (!updatedShot) return;
+
+      setContactSheet((prev) =>
+        prev
+          .map((item) => (item.shotKey === shotKey ? { ...item, ...updatedShot } : item))
+          .sort((a, b) => a.shotOrder - b.shotOrder),
+      );
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : `Failed to regenerate shot '${shotKey}'.`);
+    } finally {
+      setRegeneratingShots((prev) => ({ ...prev, [shotKey]: false }));
     }
   }
 
@@ -241,13 +277,23 @@ export default function LookbookPage() {
           <h2 className="text-xl font-semibold">Results Contact Sheet</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {contactSheet.map((item) => (
-              <article key={`${item.generationId}-${item.shotKey}`} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-900/60">
+              <article key={`${item.shotKey}`} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-900/60">
                 <div className="aspect-square bg-zinc-900">
                   <img src={item.outputUrl} alt={item.title} className="h-full w-full object-cover" />
                 </div>
-                <div className="space-y-1 p-3">
-                  <p className="text-sm font-semibold text-zinc-200">{item.title}</p>
-                  <p className="text-xs text-zinc-400">{item.shotKey}</p>
+                <div className="space-y-2 p-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-zinc-200">{item.title}</p>
+                    <p className="text-xs text-zinc-400">{item.shotKey}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => regenerateShot(item.shotKey)}
+                    disabled={Boolean(regeneratingShots[item.shotKey])}
+                    className="rounded-md border border-white/20 px-2 py-1 text-xs font-medium text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {regeneratingShots[item.shotKey] ? "Regenerating..." : "Regenerate"}
+                  </button>
                 </div>
               </article>
             ))}

@@ -219,6 +219,10 @@ export async function POST(request: Request) {
         pose_key: shot.poseKey ?? null,
         mood_key: shot.moodKey ?? null,
         status: "queued",
+        debug_trace: {
+          shotSpecSnapshot: shot,
+          regenerateCount: 0,
+        },
       })),
     );
 
@@ -233,7 +237,7 @@ export async function POST(request: Request) {
       shotSpecs,
     });
 
-    const contactSheet: Array<{ shotKey: string; title: string; outputUrl: string; generationId: string; shotOrder: number }> = [];
+    const contactSheet: Array<{ shotKey: string; title: string; outputUrl: string; generationId: string; shotOrder: number; regenerateCount: number }> = [];
     const generationIds: string[] = [];
 
     for (let index = 0; index < result.shots.length; index += 1) {
@@ -288,7 +292,11 @@ export async function POST(request: Request) {
           output_url: publicData.publicUrl,
           generation_id: generation.id,
           prompt_hash: String(shotResult.debugTrace.promptHash ?? ""),
-          debug_trace: shotResult.debugTrace,
+          debug_trace: {
+            ...shotResult.debugTrace,
+            shotSpecSnapshot: shotResult.shot,
+            regenerateCount: 0,
+          },
           error_message: null,
         })
         .eq("lookbook_job_id", jobId)
@@ -300,6 +308,7 @@ export async function POST(request: Request) {
         outputUrl: publicData.publicUrl,
         generationId: generation.id,
         shotOrder: index,
+        regenerateCount: 0,
       });
     }
 
