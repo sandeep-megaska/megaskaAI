@@ -20,21 +20,109 @@ type VeoOutput = {
   providerResponseMeta: Record<string, unknown>;
 };
 
-async function resolveVideoBytes(video: { videoBytes?: string; uri?: string }) {
-  if (video.videoBytes) {
-    return Buffer.from(video.videoBytes, "base64");
-  }
+type GeneratedVideoLike = {
+  videoBytes?: string;
+  uri?: string;
+  mimeType?: string;
+  downloadUri?: string;
+  name?: string;
+};
 
-  if (!video.uri) {
+type ResolveVideoBytesDiagnostics = {
+  hasInlineVideoBytes: boolean;
+  uri: string | null;
+  downloadUri: string | null;
+  fileName: string | null;
+  attemptedDownloadUrl: string | null;
+  attemptedDownloadSource: "inline-bytes" | "downloadUri" | "uri" | null;
+  attemptedWithAuthHeaders: boolean;
+  fetchStatus: number | null;
+  fetchStatusText: string | null;
+  bytesLength: number;
+};
+
+function extractFileNameFromVideoUri(uri: string | undefined): string | null {
+  if (!uri) {
     return null;
   }
 
-  const response = await fetch(video.uri);
-  if (!response.ok) {
-    throw new Error(`Unable to download generated video from URI (${response.status})`);
+  const directFilesNameMatch = uri.match(/\/files\/([^/?#]+)/i);
+  if (directFilesNameMatch?.[1]) {
+    return `files/${decodeURIComponent(directFilesNameMatch[1])}`;
   }
 
-  return Buffer.from(await response.arrayBuffer());
+  return null;
+}
+
+async function resolveVideoBytes({
+  ai,
+  apiKey,
+  video,
+}: {
+  ai: GoogleGenAI;
+  apiKey: string;
+  video: GeneratedVideoLike;
+}): Promise<{ bytes: Buffer | null; diagnostics: ResolveVideoBytesDiagnostics }> {
+  const diagnostics: ResolveVideoBytesDiagnostics = {
+    hasInlineVideoBytes: Boolean(video.videoBytes),
+    uri: video.uri ?? null,
+    downloadUri: video.downloadUri ?? null,
+    fileName: video.name ?? extractFileNameFromVideoUri(video.uri) ?? null,
+    attemptedDownloadUrl: null,
+    attemptedDownloadSource: null,
+    attemptedWithAuthHeaders: false,
+    fetchStatus: null,
+    fetchStatusText: null,
+    bytesLength: 0,
+  };
+
+  if (video.videoBytes) {
+    const bytes = Buffer.from(video.videoBytes, "base64");
+    diagnostics.attemptedDownloadSource = "inline-bytes";
+    diagnostics.bytesLength = bytes.length;
+    return { bytes, diagnostics };
+  }
+
+  let downloadUri = video.downloadUri?.trim() || null;
+  if (!downloadUri && diagnostics.fileName) {
+    try {
+      const fileInfo = await ai.files.get({ name: diagnostics.fileName });
+      downloadUri = fileInfo.downloadUri?.trim() || null;
+      diagnostics.downloadUri = downloadUri;
+    } catch (error) {
+      console.error("[veo-video-adapter] files.get for generated video failed", {
+        fileName: diagnostics.fileName,
+        error,
+      });
+    }
+  }
+
+  const downloadUrl = downloadUri ?? video.uri?.trim() ?? null;
+  if (!downloadUrl) {
+    return { bytes: null, diagnostics };
+  }
+
+  diagnostics.attemptedDownloadUrl = downloadUrl;
+  diagnostics.attemptedDownloadSource = downloadUri ? "downloadUri" : "uri";
+  diagnostics.attemptedWithAuthHeaders = true;
+
+  const response = await fetch(downloadUrl, {
+    headers: {
+      "x-goog-api-key": apiKey,
+    },
+  });
+  diagnostics.fetchStatus = response.status;
+  diagnostics.fetchStatusText = response.statusText;
+
+  if (!response.ok) {
+    throw new Error(
+      `Unable to download generated video bytes from provider (${response.status} ${response.statusText})`,
+    );
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  diagnostics.bytesLength = bytes.length;
+  return { bytes, diagnostics };
 }
 
 export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput> {
@@ -98,7 +186,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     throw new Error("Video generation timed out before completion.");
   }
 
-  const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+  const generatedVideo = operation.response?.generatedVideos?.[0]?.video as GeneratedVideoLike | undefined;
   if (!generatedVideo) {
     console.error("[veo-video-adapter] completed operation missing generated video", {
       pollCount,
@@ -113,10 +201,19 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
     mimeType: generatedVideo.mimeType ?? "video/mp4",
     outputVideoUri: generatedVideo.uri ?? null,
+    outputVideoDownloadUri: generatedVideo.downloadUri ?? null,
+    outputVideoFileName:
+      generatedVideo.name ?? extractFileNameFromVideoUri(generatedVideo.uri ?? undefined) ?? null,
     hasInlineVideoBytes: Boolean(generatedVideo.videoBytes),
   });
 
-  const bytes = await resolveVideoBytes(generatedVideo);
+  const { bytes, diagnostics } = await resolveVideoBytes({
+    ai,
+    apiKey,
+    video: generatedVideo,
+  });
+  console.log("[veo-video-adapter] resolved provider video bytes diagnostics", diagnostics);
+
   if (!bytes) {
     throw new Error("Unable to resolve generated video bytes.");
   }
@@ -133,8 +230,11 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       generatedVideoCount: operation.response?.generatedVideos?.length ?? 0,
       generatedVideo: {
         uri: generatedVideo.uri ?? null,
+        downloadUri: generatedVideo.downloadUri ?? null,
+        fileName: generatedVideo.name ?? extractFileNameFromVideoUri(generatedVideo.uri ?? undefined) ?? null,
         mimeType: generatedVideo.mimeType ?? "video/mp4",
       },
+      downloadDiagnostics: diagnostics,
     },
   };
 }
