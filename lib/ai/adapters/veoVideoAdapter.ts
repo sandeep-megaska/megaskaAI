@@ -1,15 +1,22 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, type VideoGenerationReferenceImage } from "@google/genai";
+import { loadImageReference } from "@/lib/ai/loadImageReference";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 const SUPPORTED_VEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 type VeoAspectRatio = (typeof SUPPORTED_VEO_ASPECT_RATIOS)[number];
 
+const MAX_REFERENCE_IMAGES = 3;
+
 type VeoInput = {
   apiKey?: string;
   model: string;
   prompt: string;
+  firstFrameUrl?: string | null;
+  lastFrameUrl?: string | null;
+  referenceImageUrls?: string[];
   aspectRatio?: StudioAspectRatio;
+  durationSeconds?: number;
 };
 
 type VeoOutput = {
@@ -41,6 +48,11 @@ type ResolveVideoBytesDiagnostics = {
   bytesLength: number;
 };
 
+type FrameSupport = {
+  supportsFrameAnchors: boolean;
+  supportsReferenceImages: boolean;
+};
+
 function extractFileNameFromVideoUri(uri: string | undefined): string | null {
   if (!uri) {
     return null;
@@ -52,6 +64,76 @@ function extractFileNameFromVideoUri(uri: string | undefined): string | null {
   }
 
   return null;
+}
+
+function getVeoFrameSupport(model: string): FrameSupport {
+  const normalized = model.trim().toLowerCase();
+
+  if (normalized.startsWith("veo-3.1")) {
+    return { supportsFrameAnchors: true, supportsReferenceImages: true };
+  }
+
+  if (normalized.startsWith("veo-2")) {
+    return { supportsFrameAnchors: true, supportsReferenceImages: true };
+  }
+
+  return { supportsFrameAnchors: false, supportsReferenceImages: false };
+}
+
+async function loadInlineImage(url: string, role: string) {
+  const loaded = await loadImageReference({ url, role });
+  if (!loaded.ok) {
+    throw new Error(`Unable to load ${role} image (${loaded.reason}).`);
+  }
+
+  return {
+    imageBytes: loaded.image.base64Data,
+    mimeType: loaded.image.mimeType,
+  };
+}
+
+async function buildFrameInputs(input: {
+  model: string;
+  firstFrameUrl?: string | null;
+  lastFrameUrl?: string | null;
+  referenceImageUrls?: string[];
+}) {
+  const support = getVeoFrameSupport(input.model);
+  const firstFrameUrl = input.firstFrameUrl?.trim() || null;
+  const lastFrameUrl = input.lastFrameUrl?.trim() || null;
+
+  const uniqueReferenceUrls = Array.from(
+    new Set((input.referenceImageUrls ?? []).map((value) => value.trim()).filter(Boolean)),
+  )
+    .filter((url) => url !== firstFrameUrl && url !== lastFrameUrl)
+    .slice(0, MAX_REFERENCE_IMAGES);
+
+  const sourceImage = support.supportsFrameAnchors && firstFrameUrl ? await loadInlineImage(firstFrameUrl, "first-frame") : null;
+  const lastFrame = support.supportsFrameAnchors && lastFrameUrl ? await loadInlineImage(lastFrameUrl, "last-frame") : null;
+
+  const referenceImages: VideoGenerationReferenceImage[] = [];
+  if (support.supportsReferenceImages) {
+    for (const url of uniqueReferenceUrls) {
+      const image = await loadInlineImage(url, "reference-frame");
+      referenceImages.push({ image, referenceType: "ASSET" });
+    }
+  }
+
+  return {
+    support,
+    sourceImage,
+    lastFrame,
+    referenceImages,
+    diagnostics: {
+      firstFrameRequested: Boolean(firstFrameUrl),
+      lastFrameRequested: Boolean(lastFrameUrl),
+      sourceImageAttached: Boolean(sourceImage),
+      lastFrameAttached: Boolean(lastFrame),
+      requestedReferenceCount: (input.referenceImageUrls ?? []).length,
+      attachedReferenceCount: referenceImages.length,
+      droppedReferenceCount: Math.max((input.referenceImageUrls ?? []).length - referenceImages.length, 0),
+    },
+  };
 }
 
 async function resolveVideoBytes({
@@ -137,6 +219,38 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   }
 
   const ai = new GoogleGenAI({ apiKey });
+  const frameInput = await buildFrameInputs({
+    model: input.model,
+    firstFrameUrl: input.firstFrameUrl,
+    lastFrameUrl: input.lastFrameUrl,
+    referenceImageUrls: input.referenceImageUrls,
+  });
+
+  const source = frameInput.sourceImage
+    ? {
+        image: frameInput.sourceImage,
+        prompt: input.prompt,
+      }
+    : {
+        prompt: input.prompt,
+      };
+
+  const config: Record<string, unknown> = {
+    numberOfVideos: 1,
+    aspectRatio,
+  };
+
+  if (typeof input.durationSeconds === "number") {
+    config.durationSeconds = input.durationSeconds;
+  }
+
+  if (frameInput.lastFrame) {
+    config.lastFrame = frameInput.lastFrame;
+  }
+
+  if (frameInput.referenceImages.length) {
+    config.referenceImages = frameInput.referenceImages;
+  }
 
   let operation;
   try {
@@ -144,14 +258,13 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       model: input.model,
       aspectRatio,
       promptLength: input.prompt.length,
+      frameInputDiagnostics: frameInput.diagnostics,
+      modelFrameSupport: frameInput.support,
     });
     operation = await ai.models.generateVideos({
       model: input.model,
-      source: { prompt: input.prompt },
-      config: {
-        numberOfVideos: 1,
-        aspectRatio,
-      },
+      source,
+      config,
     });
   } catch (error) {
     console.error("[veo-video-adapter] generateVideos request failed", error);
@@ -234,6 +347,8 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
         fileName: generatedVideo.name ?? extractFileNameFromVideoUri(generatedVideo.uri ?? undefined) ?? null,
         mimeType: generatedVideo.mimeType ?? "video/mp4",
       },
+      frameInputDiagnostics: frameInput.diagnostics,
+      modelFrameSupport: frameInput.support,
       downloadDiagnostics: diagnostics,
     },
   };
