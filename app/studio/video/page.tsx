@@ -151,7 +151,7 @@ export default function VideoProjectPage() {
 
   useEffect(() => {
     const allowed = getPresetOptions(videoMode);
-    if (!allowed.includes(motionPreset)) {
+    if (!allowed.some((preset) => preset === motionPreset)) {
       setMotionPreset(allowed[0]);
     }
 
