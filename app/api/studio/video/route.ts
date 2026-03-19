@@ -36,6 +36,11 @@ import { runVideoJob } from "@/lib/video/runVideoJob";
 import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
 import { runVideoEvaluation } from "@/lib/video/evaluator/runVideoEvaluation";
+import { decomposePromptToShots } from "@/lib/video/sequence/decomposePromptToShots";
+import { planShots } from "@/lib/video/sequence/planShots";
+import { selectShotCandidate } from "@/lib/video/sequence/selectShotCandidate";
+import { stitchVideoClips } from "@/lib/video/sequence/stitchVideoClips";
+import type { VideoSequenceResult, VideoShotCandidate, VideoShotPlanItem } from "@/lib/video/sequence/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -79,6 +84,7 @@ type VideoGeneratePayload = {
   aspect_ratio?: StudioAspectRatio;
   creative_notes?: string;
   requested_thumbnail_url?: string | null;
+  decomposition_enabled?: boolean;
 
   // v2 fields
   input_mode?: VideoInputMode;
@@ -88,6 +94,8 @@ type VideoGeneratePayload = {
   fidelity_priority?: VideoFidelityPriority;
   video_goal?: string;
 };
+
+type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
 
 const VIDEO_PROJECT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 const FRAME_MODE_REFERENCE_LIMIT = 3;
@@ -210,7 +218,38 @@ function dedupeReferenceUrls(urls: string[]) {
   return deduped;
 }
 
-type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
+function selectBackendForShot(shot: VideoShotPlanItem, requestedBackendId?: string | null) {
+  if (requestedBackendId) return requestedBackendId;
+  if (shot.providerPreference === "motion-strong") return "veo-3.1";
+  if (shot.providerPreference === "experimental") return "veo-3-fast";
+  if (shot.providerPreference === "continuity") return "veo-2";
+  return "veo-2";
+}
+
+async function uploadVideoBytes(input: {
+  bucket: string;
+  bytes: Buffer;
+  fileName: string;
+  mimeType: string;
+}) {
+  const supabase = getSupabaseAdminClient();
+  const filePath = `video/${input.fileName}`;
+  const { error: uploadError } = await supabase.storage.from(input.bucket).upload(filePath, input.bytes, {
+    contentType: input.mimeType || "video/mp4",
+    upsert: false,
+  });
+
+  if (uploadError) {
+    throw new Error(`Supabase upload failed: ${uploadError.message}`);
+  }
+
+  const { data: publicData } = supabase.storage.from(input.bucket).getPublicUrl(filePath);
+
+  return {
+    filePath,
+    publicUrl: publicData.publicUrl,
+  };
+}
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -242,6 +281,7 @@ export async function POST(request: Request) {
     const aspectRatio = payload.aspect_ratio ?? "9:16";
     const inputMode = isInputMode(payload.input_mode) ? payload.input_mode : "anchor-based";
     const fidelityPriority = isFidelityPriority(payload.fidelity_priority) ? payload.fidelity_priority : "balanced";
+    const decompositionEnabled = Boolean(payload.decomposition_enabled);
 
     if (!isVideoMode(videoMode) || !isCameraMotion(cameraMotion) || !isSubjectMotion(subjectMotion)) {
       return asJson(400, { success: false, error: "Unsupported mode settings." });
@@ -306,14 +346,6 @@ export async function POST(request: Request) {
       return asJson(400, { success: false, error: "animated-still-strict mode requires fit_anchor.url in anchor-based mode." });
     }
 
-    const prompt = buildMegaskaFidelityPrompt({
-      durationSeconds: payload.duration_seconds,
-      fidelityPriority,
-      motionRiskLevel,
-      actionPrompt,
-      styleHint: payload.style_hint,
-    });
-
     let firstFrameUrl: string | null = null;
     let lastFrameUrl: string | null = null;
     let referenceImageUrls: string[] = [];
@@ -366,56 +398,324 @@ export async function POST(request: Request) {
       pushCompatibilityWarning(compatibilityWarnings, selectedCapability.warning);
     }
 
-    let videoResult;
-    try {
-      videoResult = await runVideoJob({
-        apiKey: googleApiKey,
-        backendId: payload.ai_backend_id,
-        prompt,
-        durationSeconds: payload.duration_seconds,
-        firstFrameUrl,
-        lastFrameUrl,
-        referenceImageUrls,
-        identityAnchorUrl: identityAnchor.url,
-        garmentAnchorUrl: garmentAnchor.url,
-        fitAnchorUrl: fitAnchor.url,
-        inputMode,
-        requestedFidelityPriority: fidelityPriority,
-        aspectRatio,
+    const invariantPromptBlock = buildInvariantPromptBlock();
+    const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter((value): value is string => Boolean(value));
+    const thumbnailUrl = payload.requested_thumbnail_url ?? firstFrameUrl ?? fitAnchor.url ?? boundedMultiReferenceUrls[0] ?? null;
+
+    if (decompositionEnabled) {
+      const decomposition = decomposePromptToShots(actionPrompt, { minShots: 2, maxShots: 5 });
+      const { sequenceId, shotPlan } = planShots({
+        beats: decomposition.beats,
+        invariantsPrompt: invariantPromptBlock,
+        inputStrategy: inputMode,
+        styleHint: payload.style_hint,
+        selectedReferenceSubset: referenceImageUrls,
+        selectedAnchorIds: attachedReferenceRoles,
       });
-    } catch (videoError) {
-      console.error("[studio/video] generation failed", {
-        error: videoError,
-        diagnostics: {
-          inputMode,
+
+      const shotCandidates: VideoShotCandidate[] = [];
+      const providerUsageSummary: Record<string, number> = {};
+      const sequenceDiagnostics: Record<string, unknown> = {
+        decompositionDiagnostics: decomposition.diagnostics,
+      };
+
+      for (const shot of shotPlan) {
+        shot.status = "running";
+        const shotBackendId = selectBackendForShot(shot, payload.ai_backend_id);
+        const shotPrompt = buildMegaskaFidelityPrompt({
+          durationSeconds: payload.duration_seconds,
+          fidelityPriority,
+          motionRiskLevel: shot.motionRiskLevel,
+          actionPrompt: shot.actionPrompt,
+          styleHint: shot.styleHint ?? undefined,
+        });
+
+        try {
+          const shotResult = await runVideoJob({
+            apiKey: googleApiKey,
+            backendId: shotBackendId,
+            prompt: shotPrompt,
+            durationSeconds: payload.duration_seconds,
+            firstFrameUrl,
+            lastFrameUrl: null,
+            referenceImageUrls,
+            identityAnchorUrl: identityAnchor.url,
+            garmentAnchorUrl: garmentAnchor.url,
+            fitAnchorUrl: fitAnchor.url,
+            inputMode,
+            requestedFidelityPriority: fidelityPriority,
+            aspectRatio,
+          });
+
+          providerUsageSummary[shotResult.backendId] = (providerUsageSummary[shotResult.backendId] ?? 0) + 1;
+
+          const evaluation = await runVideoEvaluation({
+            videoBytes: shotResult.bytes,
+            anchors: {
+              identityAnchorUrl: identityAnchor.url,
+              garmentAnchorUrl: garmentAnchor.url,
+              fitAnchorUrl: fitAnchor.url,
+              firstFrameUrl,
+              selectedReferenceSubset: shotResult.diagnostics.selectedReferenceSubset,
+              referenceUrls: sourceReferenceUrls,
+            },
+          });
+
+          const shotFileName = `${Date.now()}-${sequenceId}-${shot.shotId}.mp4`;
+          const uploaded = await uploadVideoBytes({
+            bucket: supabaseBucket,
+            bytes: shotResult.bytes,
+            fileName: shotFileName,
+            mimeType: shotResult.mimeType || "video/mp4",
+          });
+
+          const candidateId = `${shot.shotId}-candidate-1`;
+          const candidate: VideoShotCandidate = {
+            candidateId,
+            shotId: shot.shotId,
+            outputUrl: uploaded.publicUrl,
+            storagePath: uploaded.filePath,
+            mimeType: shotResult.mimeType || "video/mp4",
+            provider: shotResult.provider,
+            backendId: shotResult.backendId,
+            backendLabel: shotResult.backendLabel,
+            backendModel: shotResult.backendModel,
+            providerModelId: shotResult.providerModelId,
+            evaluationStatus: evaluation.evaluationStatus,
+            evaluator: evaluation,
+            diagnostics: {
+              rawOutputUri: shotResult.rawOutputUri,
+              providerResponse: shotResult.providerResponseMeta,
+              selectedReferenceSubset: shotResult.diagnostics.selectedReferenceSubset,
+              droppedAnchors: shotResult.diagnostics.droppedAnchors,
+              attempts: shotResult.diagnostics.attempts,
+            },
+          };
+          shotCandidates.push(candidate);
+
+          const selected = selectShotCandidate([candidate]);
+          shot.generatedCandidateIds = [candidateId];
+          shot.selectedCandidateId = selected?.candidateId ?? null;
+          shot.status = "completed";
+          shot.diagnostics = {
+            backendId: shotResult.backendId,
+            backendLabel: shotResult.backendLabel,
+            evaluationStatus: evaluation.evaluationStatus,
+          };
+        } catch (shotError) {
+          shot.status = "failed";
+          shot.diagnostics = {
+            error: shotError instanceof Error ? shotError.message : "Unknown error",
+          };
+        }
+      }
+
+      const selectedCandidatesByShot: Record<string, string | null> = {};
+      const selectedShotIds: string[] = [];
+      const selectedClips: Array<{ clipId: string; bytes: Buffer }> = [];
+
+      for (const shot of shotPlan) {
+        selectedCandidatesByShot[shot.shotId] = shot.selectedCandidateId ?? null;
+        if (!shot.selectedCandidateId) continue;
+        const selected = shotCandidates.find((candidate) => candidate.candidateId === shot.selectedCandidateId);
+        if (!selected) continue;
+
+        selectedShotIds.push(shot.shotId);
+
+        const response = await fetch(selected.outputUrl);
+        const bytes = Buffer.from(await response.arrayBuffer());
+        selectedClips.push({ clipId: selected.candidateId, bytes });
+      }
+
+      let stitchedVideoUrl: string | null = null;
+      let stitchedVideoStoragePath: string | null = null;
+      let stitchStatus: VideoSequenceResult["stitchStatus"] = "pending";
+      let stitchDiagnostics: Record<string, unknown> = {};
+
+      if (selectedClips.length > 0) {
+        try {
+          const stitched = await stitchVideoClips(selectedClips);
+          const stitchedFileName = `${Date.now()}-${sequenceId}-stitched.mp4`;
+          const uploadedStitched = await uploadVideoBytes({
+            bucket: supabaseBucket,
+            bytes: stitched.bytes,
+            fileName: stitchedFileName,
+            mimeType: stitched.mimeType,
+          });
+
+          stitchedVideoUrl = uploadedStitched.publicUrl;
+          stitchedVideoStoragePath = uploadedStitched.filePath;
+          stitchStatus = "completed";
+          stitchDiagnostics = stitched.diagnostics;
+          for (const shot of shotPlan) {
+            shot.stitchedIntoFinalVideo = Boolean(shot.selectedCandidateId);
+          }
+        } catch (stitchError) {
+          stitchStatus = "failed";
+          stitchDiagnostics = {
+            error: stitchError instanceof Error ? stitchError.message : "Unknown stitch failure",
+          };
+        }
+      }
+
+      const sequenceStatus: VideoSequenceResult["sequenceStatus"] =
+        shotPlan.every((shot) => shot.status === "completed") && stitchStatus === "completed"
+          ? "completed"
+          : shotPlan.some((shot) => shot.status === "completed")
+            ? "partial-failed"
+            : "failed";
+
+      const sequenceResult: VideoSequenceResult = {
+        sequenceId,
+        originalPrompt: actionPrompt,
+        decompositionEnabled: true,
+        shotCount: shotPlan.length,
+        sequenceStatus,
+        selectedShotIds,
+        selectedCandidatePerShot: selectedCandidatesByShot,
+        stitchedVideoUrl,
+        stitchedVideoStoragePath,
+        stitchStatus,
+        stitchedShotOrder: selectedShotIds,
+        stitchDiagnostics,
+        sequenceDiagnostics,
+        providerUsageSummary,
+        evaluatorSummary: {
+          selectedCount: selectedShotIds.length,
+        },
+      };
+
+      const canonicalOutput = stitchedVideoUrl ?? shotCandidates[0]?.outputUrl ?? null;
+      if (!canonicalOutput) {
+        return asJson(500, { success: false, error: "Shot sequence generated no output clips.", shotPlan, sequence: sequenceResult });
+      }
+
+      const supabase = getSupabaseAdminClient();
+      const generationInsertPayload = {
+        prompt: buildMegaskaFidelityPrompt({
+          durationSeconds: payload.duration_seconds,
           fidelityPriority,
           motionRiskLevel,
-          attachedReferenceCount: referenceImageUrls.length,
-          attachedReferenceRoles,
+          actionPrompt,
+          styleHint: payload.style_hint,
+        }),
+        type: "Video",
+        media_type: "Video",
+        status: sequenceStatus === "completed" ? "completed" : "failed",
+        aspect_ratio: aspectRatio,
+        asset_url: canonicalOutput,
+        url: canonicalOutput,
+        overlay_json: {
+          ai_backend_id: payload.ai_backend_id ?? null,
+          ai_model: payload.ai_backend_id ?? null,
+          backendModel: payload.ai_backend_id ?? null,
+        },
+        reference_urls: sourceReferenceUrls,
+        generation_kind: "video",
+        source_generation_id: firstFrame.generationId ?? fitAnchor.generationId ?? payload.source_generation_id ?? null,
+        thumbnail_url: thumbnailUrl,
+        video_meta: {
+          ...sequenceResult,
+          decompositionEnabled: true,
+          originalPrompt: actionPrompt,
+          invariantsPromptVersion: "invariants-v1",
+          shotPlanVersion: "shot-plan-v1",
+          shotPlan,
+          providerPerShot: shotPlan.map((shot) => ({ shotId: shot.shotId, providerPreference: shot.providerPreference, status: shot.status })),
+          selectedCandidatePerShot: selectedCandidatesByShot,
+          continuitySourcePerShot: shotPlan.map((shot) => ({ shotId: shot.shotId, continuitySource: shot.continuitySource ?? null })),
+          stitchedVideoInfo: {
+            stitchedVideoUrl,
+            stitchedVideoStoragePath,
+            stitchStatus,
+          },
+          stitchDiagnostics,
+          decompositionDiagnostics: decomposition.diagnostics,
+          shotCandidates,
+          motionPreset: effectiveMotionPreset,
+          durationSeconds: payload.duration_seconds,
+          style: payload.style,
+          motionStrength: payload.motion_strength,
+          strictGarmentLock,
+          strictAnchor,
+          videoMode,
+          cameraMotion,
+          subjectMotion: effectiveSubjectMotion,
+          motionRiskLevel,
+          compatibilityWarnings,
+          inputMode,
+          fidelityPriority,
+          invariantPromptBlock,
+        },
+      } satisfies Record<string, unknown>;
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("generations")
+        .insert(generationInsertPayload)
+        .select("id,url,asset_url,type,media_type,status")
+        .single();
+
+      if (insertError) return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
+
+      return asJson(200, {
+        success: sequenceStatus !== "failed",
+        generationId: inserted.id,
+        outputUrl: canonicalOutput,
+        downloadUrl: `/api/studio/video/${inserted.id}/download`,
+        thumbnailUrl,
+        prompt: actionPrompt,
+        sourceGenerationId: payload.source_generation_id ?? null,
+        videoMeta: {
+          motionPreset: effectiveMotionPreset,
+          durationSeconds: payload.duration_seconds,
+          motionStrength: payload.motion_strength,
+          motionRiskLevel,
+          compatibilityWarnings,
+          decompositionEnabled: true,
+          shotPlan,
+          shotCandidates,
+          sequence: sequenceResult,
+          evaluationStatus: "completed",
+          evaluator: undefined,
         },
       });
-      throw videoError;
     }
+
+    const prompt = buildMegaskaFidelityPrompt({
+      durationSeconds: payload.duration_seconds,
+      fidelityPriority,
+      motionRiskLevel,
+      actionPrompt,
+      styleHint: payload.style_hint,
+    });
+
+    const videoResult = await runVideoJob({
+      apiKey: googleApiKey,
+      backendId: payload.ai_backend_id,
+      prompt,
+      durationSeconds: payload.duration_seconds,
+      firstFrameUrl,
+      lastFrameUrl,
+      referenceImageUrls,
+      identityAnchorUrl: identityAnchor.url,
+      garmentAnchorUrl: garmentAnchor.url,
+      fitAnchorUrl: fitAnchor.url,
+      inputMode,
+      requestedFidelityPriority: fidelityPriority,
+      aspectRatio,
+    });
 
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
     const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
-    const thumbnailUrl = payload.requested_thumbnail_url ?? firstFrameUrl ?? fitAnchor.url ?? boundedMultiReferenceUrls[0] ?? null;
 
     const fileName = `${Date.now()}-${sanitizeForPath(effectiveMotionPreset)}-${payload.duration_seconds}s.mp4`;
-    const filePath = `video/${fileName}`;
-
-    const supabase = getSupabaseAdminClient();
-    const { error: uploadError } = await supabase.storage.from(supabaseBucket).upload(filePath, videoResult.bytes, {
-      contentType: videoResult.mimeType || "video/mp4",
-      upsert: false,
+    const uploaded = await uploadVideoBytes({
+      bucket: supabaseBucket,
+      bytes: videoResult.bytes,
+      fileName,
+      mimeType: videoResult.mimeType || "video/mp4",
     });
 
-    if (uploadError) return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
-
-    const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
-    const canonicalVideoUrl = publicData.publicUrl;
-
-    const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter((value): value is string => Boolean(value));
     const evaluation = await runVideoEvaluation({
       videoBytes: videoResult.bytes,
       anchors: {
@@ -434,8 +734,8 @@ export async function POST(request: Request) {
       media_type: "Video",
       status: "completed",
       aspect_ratio: aspectRatio,
-      asset_url: canonicalVideoUrl,
-      url: canonicalVideoUrl,
+      asset_url: uploaded.publicUrl,
+      url: uploaded.publicUrl,
       overlay_json: {
         ai_backend_id: videoResult.backendId,
         ai_model: videoResult.backendModel,
@@ -471,6 +771,8 @@ export async function POST(request: Request) {
         fidelityPriority,
         actionPrompt: actionPrompt,
         invariantPromptVersion: "invariants-v1",
+        decompositionEnabled: false,
+        shotPlanVersion: "shot-plan-v1",
         selectedReferenceSubset: videoResult.diagnostics.selectedReferenceSubset,
         droppedAnchors: videoResult.diagnostics.droppedAnchors,
         attemptDiagnostics: videoResult.diagnostics.attempts,
@@ -481,7 +783,7 @@ export async function POST(request: Request) {
         usedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
         requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
         actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
-        invariantPromptBlock: buildInvariantPromptBlock(),
+        invariantPromptBlock,
         requestedReferenceCount: boundedMultiReferenceUrls.length,
         evaluator: evaluation,
         evaluationStatus: evaluation.evaluationStatus,
@@ -503,6 +805,7 @@ export async function POST(request: Request) {
       },
     } satisfies Record<string, unknown>;
 
+    const supabase = getSupabaseAdminClient();
     const { data: inserted, error: insertError } = await supabase
       .from("generations")
       .insert(generationInsertPayload)
@@ -514,7 +817,7 @@ export async function POST(request: Request) {
     return asJson(200, {
       success: true,
       generationId: inserted.id,
-      outputUrl: canonicalVideoUrl,
+      outputUrl: uploaded.publicUrl,
       downloadUrl: `/api/studio/video/${inserted.id}/download`,
       thumbnailUrl,
       backend: videoResult.backendId,
@@ -543,6 +846,7 @@ export async function POST(request: Request) {
         fidelityPriority,
         actionPrompt,
         invariantPromptVersion: "invariants-v1",
+        decompositionEnabled: false,
         selectedReferenceSubset: videoResult.diagnostics.selectedReferenceSubset,
         droppedAnchors: videoResult.diagnostics.droppedAnchors,
         attemptDiagnostics: videoResult.diagnostics.attempts,
