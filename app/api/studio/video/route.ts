@@ -29,10 +29,20 @@ import { runVideoJob } from "@/lib/video/runVideoJob";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+type VideoFrameRef = {
+  url?: string;
+  generationId?: string | null;
+};
+
 type VideoGeneratePayload = {
   ai_backend_id?: string | null;
   master_image_url?: string;
   source_generation_id?: string | null;
+  start_frame_url?: string;
+  start_frame_generation_id?: string | null;
+  end_frame_url?: string;
+  end_frame_generation_id?: string | null;
+  reference_frames?: VideoFrameRef[];
   motion_preset?: VideoMotionPreset;
   duration_seconds?: VideoDurationSeconds;
   style?: VideoStyle;
@@ -49,6 +59,7 @@ type VideoGeneratePayload = {
 
 const VIDEO_PROJECT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 type VideoProjectAspectRatio = (typeof VIDEO_PROJECT_ASPECT_RATIOS)[number];
+const FRAME_MODE_REFERENCE_LIMIT = 3;
 
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -92,7 +103,6 @@ function isDuration(value: unknown): value is VideoDurationSeconds {
   return typeof value === "number" && VIDEO_DURATIONS.includes(value as VideoDurationSeconds);
 }
 
-
 function isVideoMode(value: unknown): value is VideoMode {
   return typeof value === "string" && VIDEO_MODES.includes(value as VideoMode);
 }
@@ -107,6 +117,10 @@ function isSubjectMotion(value: unknown): value is VideoSubjectMotion {
 
 function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRatio {
   return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
+}
+
+function cleanUrl(value?: string | null) {
+  return value?.trim() || null;
 }
 
 type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
@@ -130,11 +144,6 @@ export async function POST(request: Request) {
       return asJson(400, { success: false, error: "Invalid JSON body." });
     }
 
-    const masterImageUrl = payload.master_image_url?.trim();
-    if (!masterImageUrl) {
-      return asJson(400, { success: false, error: "master_image_url is required." });
-    }
-
     if (!isMotionPreset(payload.motion_preset)) {
       return asJson(400, { success: false, error: "Unsupported motion_preset." });
     }
@@ -153,7 +162,7 @@ export async function POST(request: Request) {
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
     const strictAnchor = payload.strict_anchor ?? true;
-    const videoMode = payload.video_mode ?? "animate-master-shot";
+    const videoMode = payload.video_mode ?? "frame-based-megaska";
     const cameraMotion = payload.camera_motion ?? "push";
     const subjectMotion = payload.subject_motion ?? "subtle";
     const aspectRatio = payload.aspect_ratio ?? "9:16";
@@ -183,11 +192,36 @@ export async function POST(request: Request) {
 
     const strictMegaskaFidelity = strictAnchor && strictGarmentLock;
     const motionPresetCategory = getMotionPresetCategory(payload.motion_preset);
-    const effectiveVideoMode = strictMegaskaFidelity ? "animate-master-shot" : videoMode;
+    const effectiveVideoMode = strictMegaskaFidelity && videoMode !== "creative-reinterpretation" ? videoMode : videoMode;
     const effectiveMotionPreset =
       strictMegaskaFidelity && motionPresetCategory === "experimental" ? "subtle-breathing" : payload.motion_preset;
     const effectiveMotionPresetCategory = getMotionPresetCategory(effectiveMotionPreset);
     const effectiveSubjectMotion = strictMegaskaFidelity && subjectMotion === "moderate" ? "subtle" : subjectMotion;
+
+    const isFrameBasedMode = effectiveVideoMode === "frame-based-megaska";
+
+    const startFrameUrl = cleanUrl(payload.start_frame_url);
+    const endFrameUrl = cleanUrl(payload.end_frame_url);
+    const masterImageUrl = cleanUrl(payload.master_image_url);
+
+    if (isFrameBasedMode) {
+      if (!startFrameUrl || !endFrameUrl) {
+        return asJson(400, {
+          success: false,
+          error: "Frame-based Megaska mode requires start_frame_url and end_frame_url.",
+        });
+      }
+    } else if (!masterImageUrl) {
+      return asJson(400, { success: false, error: "master_image_url is required." });
+    }
+
+    const referenceFrames = (payload.reference_frames ?? [])
+      .map((ref) => ({
+        url: cleanUrl(ref.url),
+        generationId: ref.generationId?.trim() || null,
+      }))
+      .filter((ref): ref is { url: string; generationId: string | null } => Boolean(ref.url))
+      .slice(0, FRAME_MODE_REFERENCE_LIMIT);
 
     const prompt = buildMegaskaFidelityPrompt({
       videoMode: effectiveVideoMode,
@@ -199,12 +233,17 @@ export async function POST(request: Request) {
       userPrompt: payload.creative_notes,
     });
 
+    const legacyReferenceUrls = [masterImageUrl].filter((value): value is string => Boolean(value));
+    const frameReferenceUrls = referenceFrames.map((ref) => ref.url);
+
     const videoResult = await runVideoJob({
       apiKey: googleApiKey,
       backendId: payload.ai_backend_id,
       prompt,
       durationSeconds: payload.duration_seconds,
-      referenceImageUrls: [masterImageUrl],
+      firstFrameUrl: isFrameBasedMode ? startFrameUrl : masterImageUrl,
+      lastFrameUrl: isFrameBasedMode ? endFrameUrl : null,
+      referenceImageUrls: isFrameBasedMode ? frameReferenceUrls : legacyReferenceUrls,
       aspectRatio,
     });
 
@@ -212,7 +251,7 @@ export async function POST(request: Request) {
     const rawOutputUriFormat: UriClassification = rawOutputUri
       ? classifyStoredVideoUri(rawOutputUri)
       : "unknown-uri";
-    const thumbnailUrl = payload.requested_thumbnail_url ?? masterImageUrl;
+    const thumbnailUrl = payload.requested_thumbnail_url ?? startFrameUrl ?? masterImageUrl;
 
     console.log("[studio/video] provider output extracted", {
       backendId: videoResult.backendId,
@@ -247,15 +286,12 @@ export async function POST(request: Request) {
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const canonicalVideoUrl = publicData.publicUrl;
 
-    console.log("[studio/video] canonical storage upload succeeded", {
-      bucket: supabaseBucket,
-      filePath,
-      canonicalVideoUrl,
-      copyUploadSucceeded: true,
-    });
+    const sourceReferenceUrls = isFrameBasedMode
+      ? [startFrameUrl, endFrameUrl, ...frameReferenceUrls].filter((value): value is string => Boolean(value))
+      : legacyReferenceUrls;
 
     const debugMeta = {
-      source: "video-project-phase-1",
+      source: "video-project-frame-engine",
       prompt,
       motionStrength: payload.motion_strength,
       motionPresetCategory: effectiveMotionPresetCategory,
@@ -266,6 +302,8 @@ export async function POST(request: Request) {
       subjectMotion: effectiveSubjectMotion,
       creativeNotes: payload.creative_notes ?? null,
       masterImageUrl,
+      startFrameUrl,
+      endFrameUrl,
       backendModel: videoResult.backendModel,
       rawOutputUri,
       rawOutputUriFormat,
@@ -285,9 +323,11 @@ export async function POST(request: Request) {
         ai_model: videoResult.backendModel,
         backendModel: videoResult.backendModel,
       },
-      reference_urls: [masterImageUrl],
+      reference_urls: sourceReferenceUrls,
       generation_kind: "video",
-      source_generation_id: payload.source_generation_id ?? null,
+      source_generation_id: isFrameBasedMode
+        ? payload.start_frame_generation_id ?? payload.source_generation_id ?? null
+        : payload.source_generation_id ?? null,
       thumbnail_url: thumbnailUrl,
       video_meta: {
         motionPreset: effectiveMotionPreset,
@@ -301,6 +341,14 @@ export async function POST(request: Request) {
         videoMode: effectiveVideoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
+        startFrameGenerationId: payload.start_frame_generation_id ?? null,
+        endFrameGenerationId: payload.end_frame_generation_id ?? null,
+        referenceFrameIds: referenceFrames.map((ref) => ref.generationId).filter((value): value is string => Boolean(value)),
+        sourceMasterGenerationId: payload.source_generation_id ?? null,
+        sourceMasterImageUrl: masterImageUrl,
+        startFrameUrl,
+        endFrameUrl,
+        referenceFrameUrls: frameReferenceUrls,
         storage: {
           provider: "supabase",
           bucket: supabaseBucket,
@@ -313,23 +361,9 @@ export async function POST(request: Request) {
           uri: rawOutputUri,
         },
         providerResponse: videoResult.providerResponseMeta,
-        sourceMasterGenerationId: payload.source_generation_id ?? null,
-        sourceMasterImageUrl: masterImageUrl,
         debug: debugMeta,
       },
     } satisfies Record<string, unknown>;
-
-    console.log("[studio/video] generations insert payload", {
-      type: generationInsertPayload.type,
-      mediaType: generationInsertPayload.media_type,
-      status: generationInsertPayload.status,
-      generationKind: generationInsertPayload.generation_kind,
-      canonicalUrl: generationInsertPayload.url,
-      canonicalAssetUrl: generationInsertPayload.asset_url,
-      thumbnailUrl: generationInsertPayload.thumbnail_url,
-      sourceGenerationId: generationInsertPayload.source_generation_id,
-      hasVideoMeta: true,
-    });
 
     const { data: inserted, error: insertError } = await supabase
       .from("generations")
@@ -338,37 +372,14 @@ export async function POST(request: Request) {
       .single();
 
     if (insertError) {
-      console.error("[studio/video] generations insert failed", {
-        error: insertError.message,
-        type: generationInsertPayload.type,
-        mediaType: generationInsertPayload.media_type,
-        generationKind: generationInsertPayload.generation_kind,
-        canonicalUrl: generationInsertPayload.url,
-        canonicalAssetUrl: generationInsertPayload.asset_url,
-      });
       return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
     }
-
-    console.log("[studio/video] generations insert succeeded", {
-      generationId: inserted.id,
-      type: inserted.type,
-      mediaType: inserted.media_type,
-      status: inserted.status,
-      canonicalUrl: inserted.url,
-      canonicalAssetUrl: inserted.asset_url,
-    });
 
     console.log("[studio/video] success", {
       generationId: inserted.id,
       backendId: videoResult.backendId,
       outputUriFormat: classifyStoredVideoUri(canonicalVideoUrl),
       rawOutputUriFormat,
-      rawOutputUri,
-      outputUrl: canonicalVideoUrl,
-      canonicalStorageProvider: "supabase",
-      canonicalBucket: supabaseBucket,
-      storagePath: filePath,
-      appOwnedCopyUploadSucceeded: true,
       elapsedMs: Date.now() - startedAt,
     });
 
@@ -394,6 +405,9 @@ export async function POST(request: Request) {
         videoMode: effectiveVideoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
+        startFrameGenerationId: payload.start_frame_generation_id ?? null,
+        endFrameGenerationId: payload.end_frame_generation_id ?? null,
+        referenceFrameIds: referenceFrames.map((ref) => ref.generationId).filter((value): value is string => Boolean(value)),
       },
     });
   } catch (error) {

@@ -8,7 +8,9 @@ export type RunVideoJobInput = {
   backendId?: string | null;
   prompt: string;
   durationSeconds: number;
-  referenceImageUrls: string[];
+  firstFrameUrl?: string | null;
+  lastFrameUrl?: string | null;
+  referenceImageUrls?: string[];
   aspectRatio?: StudioAspectRatio;
 };
 
@@ -39,6 +41,10 @@ function getAllowedDurationsForVeoModel(model: string): readonly number[] {
   return [8] as const;
 }
 
+function normalizeUrl(value?: string | null) {
+  return value?.trim() || null;
+}
+
 export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobResult> {
   const requestedBackend = findBackendById(input.backendId);
   if (input.backendId && !requestedBackend) {
@@ -62,18 +68,20 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     );
   }
 
-  const normalizedReferenceImageUrls = input.referenceImageUrls
-    .map((url) => url.trim())
-    .filter(Boolean);
+  const firstFrameUrl = normalizeUrl(input.firstFrameUrl);
+  const lastFrameUrl = normalizeUrl(input.lastFrameUrl);
+  const normalizedReferenceImageUrls = (input.referenceImageUrls ?? []).map((url) => url.trim()).filter(Boolean);
 
-  if (!normalizedReferenceImageUrls.length) {
-    throw new Error("At least one master reference image is required for Video Project generation.");
+  if (!firstFrameUrl && !normalizedReferenceImageUrls.length) {
+    throw new Error("At least one anchor frame or reference image is required for Video Project generation.");
   }
 
   const output = await runVeoVideo({
     apiKey: input.apiKey,
     model: backend.model,
     prompt: input.prompt,
+    firstFrameUrl,
+    lastFrameUrl,
     referenceImageUrls: normalizedReferenceImageUrls,
     aspectRatio: input.aspectRatio,
     durationSeconds: input.durationSeconds,

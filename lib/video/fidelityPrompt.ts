@@ -34,6 +34,29 @@ const SAFE_MOTION_GUIDANCE: Record<VideoMotionPreset, string> = {
 
 export function buildMegaskaFidelityPrompt(input: BuildMegaskaFidelityPromptInput) {
   const category = getMotionPresetCategory(input.motionPreset);
+
+  if (input.videoMode === "frame-based-megaska") {
+    const shortLines: string[] = [
+      "Megaska frame-based motion.",
+      "Preserve same model identity, exact swimsuit, and same environment.",
+      "Use provided start/end frames as hard anchors.",
+      `${getMotionPresetLabel(input.motionPreset)}.`,
+      `Camera: ${getCameraMotionLabel(input.cameraMotion)}.`,
+      `Subject: ${getSubjectMotionLabel(input.subjectMotion)}.`,
+      `Duration ${input.durationSeconds}s.`,
+    ];
+
+    if (input.strictMegaskaFidelity) {
+      shortLines.push("Strict fidelity on. No redesign, no scene change, no wardrobe drift.");
+    }
+
+    if (input.userPrompt?.trim()) {
+      shortLines.push(`Instruction: ${input.userPrompt.trim()}`);
+    }
+
+    return shortLines.join(" ");
+  }
+
   const lines: string[] = [
     "Megaska Shot Animation Engine.",
     "The provided image is the FIRST FRAME and PRIMARY SOURCE OF TRUTH.",

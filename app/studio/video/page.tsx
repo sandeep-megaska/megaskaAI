@@ -14,7 +14,6 @@ import {
   VIDEO_CAMERA_MOTIONS,
   VIDEO_DURATIONS,
   VIDEO_MODES,
-  VIDEO_EXPERIMENTAL_MOTION_PRESETS,
   VIDEO_SAFE_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
   VIDEO_STYLES,
@@ -27,8 +26,11 @@ import {
   type VideoStyle,
   type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
+
 const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16"] as const;
+const MAX_REFERENCE_FRAMES = 3;
 type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIO_OPTIONS)[number];
+type FrameSlot = "start" | "end" | "reference";
 
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
 
@@ -41,7 +43,7 @@ type GalleryImageItem = {
   generation_kind?: "image" | "video";
 };
 
-type MasterSelection = {
+type FrameSelection = {
   sourceGenerationId: string | null;
   imageUrl: string;
   label: string;
@@ -52,7 +54,6 @@ type VideoResult = {
   outputUrl: string;
   downloadUrl: string;
   thumbnailUrl?: string;
-  sourceGenerationId: string | null;
   videoMode: VideoMode;
   motionPreset: VideoMotionPreset;
   durationSeconds: VideoDurationSeconds;
@@ -69,8 +70,11 @@ export default function VideoProjectPage() {
   const [backends, setBackends] = useState<AIBackend[]>([]);
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
-  const [masterSelection, setMasterSelection] = useState<MasterSelection | null>(null);
-  const [videoMode, setVideoMode] = useState<VideoMode>("animate-master-shot");
+  const [startFrameSelection, setStartFrameSelection] = useState<FrameSelection | null>(null);
+  const [endFrameSelection, setEndFrameSelection] = useState<FrameSelection | null>(null);
+  const [referenceFrameSelections, setReferenceFrameSelections] = useState<FrameSelection[]>([]);
+  const [uploadSlot, setUploadSlot] = useState<FrameSlot>("start");
+  const [videoMode, setVideoMode] = useState<VideoMode>("frame-based-megaska");
   const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-breathing");
   const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
@@ -107,7 +111,8 @@ export default function VideoProjectPage() {
 
   useEffect(() => {
     if (videoBackends.length && !videoBackends.some((backend) => backend.id === selectedBackendId)) {
-      setSelectedBackendId(videoBackends[0].id);
+      const preferred = videoBackends.find((backend) => backend.id === "veo-3.1") ?? videoBackends[0];
+      setSelectedBackendId(preferred.id);
     }
   }, [videoBackends, selectedBackendId]);
 
@@ -119,7 +124,7 @@ export default function VideoProjectPage() {
       .select("id,prompt,created_at,asset_url,url,generation_kind")
       .eq("generation_kind", "image")
       .order("created_at", { ascending: false })
-      .limit(18);
+      .limit(30);
 
     setGalleryImages((data ?? []) as GalleryImageItem[]);
   }, [supabase]);
@@ -150,7 +155,28 @@ export default function VideoProjectPage() {
     }).format(parsed);
   }
 
-  async function handleUploadMasterImage(file: File | null) {
+  function applyFrameSelection(slot: FrameSlot, frame: FrameSelection) {
+    if (slot === "start") {
+      setStartFrameSelection(frame);
+      return;
+    }
+    if (slot === "end") {
+      setEndFrameSelection(frame);
+      return;
+    }
+
+    setReferenceFrameSelections((current) => {
+      if (current.some((item) => item.imageUrl === frame.imageUrl)) {
+        return current;
+      }
+      if (current.length >= MAX_REFERENCE_FRAMES) {
+        return current;
+      }
+      return [...current, frame];
+    });
+  }
+
+  async function handleUploadFrame(file: File | null) {
     if (!file) return;
 
     const form = new FormData();
@@ -164,7 +190,7 @@ export default function VideoProjectPage() {
       return;
     }
 
-    setMasterSelection({
+    applyFrameSelection(uploadSlot, {
       sourceGenerationId: null,
       imageUrl: payload.public_url,
       label: file.name,
@@ -173,7 +199,7 @@ export default function VideoProjectPage() {
   }
 
   async function handleGenerate() {
-    if (!masterSelection?.imageUrl || isGenerating) return;
+    if (!startFrameSelection?.imageUrl || !endFrameSelection?.imageUrl || isGenerating) return;
 
     try {
       setIsGenerating(true);
@@ -184,9 +210,17 @@ export default function VideoProjectPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ai_backend_id: selectedBackendId || null,
-          master_image_url: masterSelection.imageUrl,
-          source_generation_id: masterSelection.sourceGenerationId,
           video_mode: videoMode,
+          start_frame_url: startFrameSelection.imageUrl,
+          start_frame_generation_id: startFrameSelection.sourceGenerationId,
+          end_frame_url: endFrameSelection.imageUrl,
+          end_frame_generation_id: endFrameSelection.sourceGenerationId,
+          reference_frames: referenceFrameSelections.map((ref) => ({
+            url: ref.imageUrl,
+            generationId: ref.sourceGenerationId,
+          })),
+          master_image_url: startFrameSelection.imageUrl,
+          source_generation_id: startFrameSelection.sourceGenerationId,
           motion_preset: motionPreset,
           duration_seconds: duration,
           style,
@@ -197,7 +231,7 @@ export default function VideoProjectPage() {
           strict_anchor: strictAnchor,
           aspect_ratio: aspectRatio,
           creative_notes: creativeNotes,
-          requested_thumbnail_url: masterSelection.imageUrl,
+          requested_thumbnail_url: startFrameSelection.imageUrl,
         }),
       });
 
@@ -207,7 +241,6 @@ export default function VideoProjectPage() {
         outputUrl?: string;
         downloadUrl?: string;
         thumbnailUrl?: string;
-        sourceGenerationId?: string | null;
         videoMeta?: {
           videoMode: VideoMode;
           motionPreset: VideoMotionPreset;
@@ -216,7 +249,6 @@ export default function VideoProjectPage() {
           motionStrength: VideoMotionStrength;
           cameraMotion: VideoCameraMotion;
           subjectMotion: VideoSubjectMotion;
-          motionPresetCategory: "safe" | "experimental";
           strictGarmentLock: boolean;
           strictAnchor: boolean;
         };
@@ -232,7 +264,6 @@ export default function VideoProjectPage() {
         outputUrl: payload.outputUrl,
         downloadUrl: payload.downloadUrl || `/api/studio/video/${payload.generationId}/download`,
         thumbnailUrl: payload.thumbnailUrl,
-        sourceGenerationId: payload.sourceGenerationId ?? null,
         videoMode: payload.videoMeta.videoMode,
         motionPreset: payload.videoMeta.motionPreset,
         durationSeconds: payload.videoMeta.durationSeconds,
@@ -255,7 +286,6 @@ export default function VideoProjectPage() {
     }
   }
 
-
   async function handleExtractFrame() {
     if (!latestResult || isExtractingFrame) return null;
 
@@ -263,7 +293,7 @@ export default function VideoProjectPage() {
       setIsExtractingFrame(true);
       setError(null);
 
-      const frameUrl = latestResult.thumbnailUrl || masterSelection?.imageUrl || latestResult.outputUrl;
+      const frameUrl = latestResult.thumbnailUrl || startFrameSelection?.imageUrl || latestResult.outputUrl;
 
       const response = await fetch("/api/studio/video/extract-frame", {
         method: "POST",
@@ -285,7 +315,14 @@ export default function VideoProjectPage() {
         error?: string;
       };
 
-      if (!response.ok || !payload.success || !payload.generationId || !payload.frameUrl || !payload.sourceVideoGenerationId || !payload.extractedAt) {
+      if (
+        !response.ok ||
+        !payload.success ||
+        !payload.generationId ||
+        !payload.frameUrl ||
+        !payload.sourceVideoGenerationId ||
+        !payload.extractedAt
+      ) {
         throw new Error(payload.error ?? "Frame extraction failed.");
       }
 
@@ -324,12 +361,8 @@ export default function VideoProjectPage() {
   useEffect(() => {
     if (!strictMegaskaFidelity) return;
 
-    if (videoMode !== "animate-master-shot") {
-      setVideoMode("animate-master-shot");
-    }
-
-    if (VIDEO_EXPERIMENTAL_MOTION_PRESETS.includes(motionPreset)) {
-      setMotionPreset("subtle-breathing");
+    if (videoMode !== "frame-based-megaska") {
+      setVideoMode("frame-based-megaska");
     }
 
     if (motionStrength !== "subtle") {
@@ -339,9 +372,9 @@ export default function VideoProjectPage() {
     if (subjectMotion === "moderate") {
       setSubjectMotion("subtle");
     }
-  }, [motionPreset, motionStrength, strictMegaskaFidelity, subjectMotion, videoMode]);
+  }, [motionStrength, strictMegaskaFidelity, subjectMotion, videoMode]);
 
-  const canGenerate = Boolean(masterSelection?.imageUrl && selectedBackendId);
+  const canGenerate = Boolean(startFrameSelection?.imageUrl && endFrameSelection?.imageUrl && selectedBackendId);
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
@@ -352,8 +385,7 @@ export default function VideoProjectPage() {
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Studio Project</p>
               <h1 className="text-3xl font-semibold text-white">Video Project</h1>
               <p className="text-sm text-zinc-300">
-                Structured image-to-video workflow focused on fidelity-safe animation. Start from a master image and animate the same
-                shot with subtle motion by default.
+                Frame-based Megaska Video Engine. Select start/end frames from Image Project and animate with safe motion only.
               </p>
             </div>
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
@@ -370,28 +402,95 @@ export default function VideoProjectPage() {
         <section className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
           <div className="space-y-6 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
             <div className="space-y-3">
-              <h2 className="text-lg font-semibold text-white">1) Master image</h2>
-              <p className="text-sm text-zinc-400">Select from image history or upload a new master image.</p>
+              <h2 className="text-lg font-semibold text-white">1) Frame anchors</h2>
+              <p className="text-sm text-zinc-400">
+                Pick Start + End frames from Image Project history, then optionally add up to {MAX_REFERENCE_FRAMES} extra reference frames.
+              </p>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-cyan-400/30 bg-zinc-950/50 p-3">
+                  <p className="text-xs uppercase text-cyan-300">Start frame (required)</p>
+                  {startFrameSelection ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={startFrameSelection.imageUrl} alt="Start frame" className="mt-2 h-40 w-full rounded-md object-cover" />
+                  ) : (
+                    <div className="mt-2 h-40 rounded-md border border-dashed border-white/20" />
+                  )}
+                </div>
+                <div className="rounded-lg border border-cyan-400/30 bg-zinc-950/50 p-3">
+                  <p className="text-xs uppercase text-cyan-300">End frame (required)</p>
+                  {endFrameSelection ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={endFrameSelection.imageUrl} alt="End frame" className="mt-2 h-40 w-full rounded-md object-cover" />
+                  ) : (
+                    <div className="mt-2 h-40 rounded-md border border-dashed border-white/20" />
+                  )}
+                </div>
+              </div>
+
+              {referenceFrameSelections.length ? (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {referenceFrameSelections.map((ref) => (
+                    <div key={ref.imageUrl} className="rounded-md border border-white/10 p-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={ref.imageUrl} alt="Reference frame" className="h-24 w-full rounded object-cover" />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReferenceFrameSelections((current) => current.filter((item) => item.imageUrl !== ref.imageUrl))
+                        }
+                        className="mt-2 w-full rounded border border-white/20 px-2 py-1 text-xs"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200 hover:bg-cyan-500/20"
+                  onClick={() => {
+                    setUploadSlot("start");
+                    fileInputRef.current?.click();
+                  }}
+                  className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200"
                 >
-                  Upload master image
+                  Upload Start Frame
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadSlot("end");
+                    fileInputRef.current?.click();
+                  }}
+                  className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200"
+                >
+                  Upload End Frame
+                </button>
+                <button
+                  type="button"
+                  disabled={referenceFrameSelections.length >= MAX_REFERENCE_FRAMES}
+                  onClick={() => {
+                    setUploadSlot("reference");
+                    fileInputRef.current?.click();
+                  }}
+                  className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50"
+                >
+                  Upload Reference Frame
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
                   className="hidden"
-                  onChange={(event) => handleUploadMasterImage(event.target.files?.[0] ?? null)}
+                  onChange={(event) => handleUploadFrame(event.target.files?.[0] ?? null)}
                 />
                 <button
                   type="button"
                   onClick={() => void loadGalleryImages()}
-                  className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-300 hover:text-white"
+                  className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-300"
                 >
                   Refresh history
                 </button>
@@ -401,38 +500,66 @@ export default function VideoProjectPage() {
                 {galleryImages.map((item) => {
                   const imageUrl = item.asset_url || item.url;
                   if (!imageUrl) return null;
-                  const isSelected = masterSelection?.sourceGenerationId === item.id;
 
                   return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() =>
-                        setMasterSelection({
-                          sourceGenerationId: item.id,
-                          imageUrl,
-                          label: item.prompt || "Gallery image",
-                        })
-                      }
-                      className={`overflow-hidden rounded-lg border text-left transition ${
-                        isSelected ? "border-cyan-300" : "border-white/10 hover:border-white/30"
-                      }`}
-                    >
+                    <div key={item.id} className="overflow-hidden rounded-lg border border-white/10">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={imageUrl} alt="Master candidate" className="h-36 w-full object-cover" />
+                      <img src={imageUrl} alt="Frame candidate" className="h-32 w-full object-cover" />
                       <div className="space-y-1 p-2 text-xs">
                         <p className="line-clamp-2 text-zinc-200">{item.prompt || "Untitled"}</p>
                         {item.created_at ? <p className="text-zinc-400">{formatGeneratedAt(item.created_at)}</p> : null}
+                        <div className="grid grid-cols-3 gap-1 pt-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              applyFrameSelection("start", {
+                                sourceGenerationId: item.id,
+                                imageUrl,
+                                label: item.prompt || "Gallery image",
+                              })
+                            }
+                            className="rounded border border-cyan-400/40 px-1 py-1 text-[10px] text-cyan-200"
+                          >
+                            Start
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              applyFrameSelection("end", {
+                                sourceGenerationId: item.id,
+                                imageUrl,
+                                label: item.prompt || "Gallery image",
+                              })
+                            }
+                            className="rounded border border-cyan-400/40 px-1 py-1 text-[10px] text-cyan-200"
+                          >
+                            End
+                          </button>
+                          <button
+                            type="button"
+                            disabled={referenceFrameSelections.length >= MAX_REFERENCE_FRAMES}
+                            onClick={() =>
+                              applyFrameSelection("reference", {
+                                sourceGenerationId: item.id,
+                                imageUrl,
+                                label: item.prompt || "Gallery image",
+                              })
+                            }
+                            className="rounded border border-white/20 px-1 py-1 text-[10px] text-zinc-200 disabled:opacity-50"
+                          >
+                            Ref
+                          </button>
+                        </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
             </div>
 
             <div className="space-y-4 border-t border-white/10 pt-5">
-              <h2 className="text-lg font-semibold text-white">2-5) Video controls</h2>
-              <p className="text-xs text-cyan-200">Default mode is fidelity-first: animate the uploaded Megaska master shot.</p>
+              <h2 className="text-lg font-semibold text-white">2-5) Motion controls</h2>
+              <p className="text-xs text-cyan-200">Default mode is the Frame-based Megaska Engine for maximum fidelity stability.</p>
 
               <label className="block space-y-2 text-sm">
                 <span className="text-zinc-300">Video backend</span>
@@ -456,55 +583,33 @@ export default function VideoProjectPage() {
                   onChange={(event) => setVideoMode(event.target.value as VideoMode)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  {VIDEO_MODES.map((modeOption) => {
-                    const isExperimentalMode = modeOption === "creative-reinterpretation";
-                    return (
-                      <option
-                        key={modeOption}
-                        value={modeOption}
-                        disabled={strictMegaskaFidelity && isExperimentalMode}
-                      >
-                        {getVideoModeLabel(modeOption)}
-                      </option>
-                    );
-                  })}
+                  {VIDEO_MODES.map((modeOption) => (
+                    <option key={modeOption} value={modeOption} disabled={strictMegaskaFidelity && modeOption === "creative-reinterpretation"}>
+                      {getVideoModeLabel(modeOption)}
+                    </option>
+                  ))}
                 </select>
               </label>
 
               <label className="block space-y-2 text-sm">
-                <span className="text-zinc-300">Motion preset</span>
+                <span className="text-zinc-300">Safe motion preset</span>
                 <select
                   value={motionPreset}
                   onChange={(event) => setMotionPreset(event.target.value as VideoMotionPreset)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  <optgroup label="Megaska-safe (recommended)">
-                    {VIDEO_SAFE_MOTION_PRESETS.map((preset) => (
-                      <option key={preset} value={preset}>
-                        {getMotionPresetLabel(preset)}
-                      </option>
-                    ))}
-                  </optgroup>
-                  {!strictMegaskaFidelity ? (
-                    <optgroup label="Experimental / high-risk drift">
-                      {VIDEO_EXPERIMENTAL_MOTION_PRESETS.map((preset) => (
-                        <option key={preset} value={preset}>
-                          {getMotionPresetLabel(preset)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ) : null}
+                  {VIDEO_SAFE_MOTION_PRESETS.map((preset) => (
+                    <option key={preset} value={preset}>
+                      {getMotionPresetLabel(preset)}
+                    </option>
+                  ))}
                 </select>
               </label>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Duration</span>
-                  <select
-                    value={duration}
-                    onChange={(event) => setDuration(Number(event.target.value) as VideoDurationSeconds)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
+                  <select value={duration} onChange={(event) => setDuration(Number(event.target.value) as VideoDurationSeconds)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
                     {VIDEO_DURATIONS.map((seconds) => (
                       <option key={seconds} value={seconds}>
                         {seconds}s
@@ -515,11 +620,7 @@ export default function VideoProjectPage() {
 
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Style</span>
-                  <select
-                    value={style}
-                    onChange={(event) => setStyle(event.target.value as VideoStyle)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
+                  <select value={style} onChange={(event) => setStyle(event.target.value as VideoStyle)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
                     {VIDEO_STYLES.map((styleOption) => (
                       <option key={styleOption} value={styleOption}>
                         {getStyleLabel(styleOption)}
@@ -532,29 +633,18 @@ export default function VideoProjectPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Motion strength</span>
-                  <select
-                    value={motionStrength}
-                    onChange={(event) => setMotionStrength(event.target.value as VideoMotionStrength)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
-                    {VIDEO_MOTION_STRENGTHS.map((strength) => {
-                      const isRiskyStrength = strength !== "subtle";
-                      return (
-                        <option key={strength} value={strength} disabled={strictMegaskaFidelity && isRiskyStrength}>
-                          {getMotionStrengthLabel(strength)}
-                        </option>
-                      );
-                    })}
+                  <select value={motionStrength} onChange={(event) => setMotionStrength(event.target.value as VideoMotionStrength)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
+                    {VIDEO_MOTION_STRENGTHS.map((strength) => (
+                      <option key={strength} value={strength} disabled={strictMegaskaFidelity && strength !== "subtle"}>
+                        {getMotionStrengthLabel(strength)}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Camera motion</span>
-                  <select
-                    value={cameraMotion}
-                    onChange={(event) => setCameraMotion(event.target.value as VideoCameraMotion)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
+                  <select value={cameraMotion} onChange={(event) => setCameraMotion(event.target.value as VideoCameraMotion)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
                     {VIDEO_CAMERA_MOTIONS.map((option) => (
                       <option key={option} value={option}>
                         {getCameraMotionLabel(option)}
@@ -567,11 +657,7 @@ export default function VideoProjectPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Subject motion</span>
-                  <select
-                    value={subjectMotion}
-                    onChange={(event) => setSubjectMotion(event.target.value as VideoSubjectMotion)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
+                  <select value={subjectMotion} onChange={(event) => setSubjectMotion(event.target.value as VideoSubjectMotion)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
                     {VIDEO_SUBJECT_MOTIONS.map((option) => (
                       <option key={option} value={option}>
                         {getSubjectMotionLabel(option)}
@@ -582,11 +668,7 @@ export default function VideoProjectPage() {
 
                 <label className="block space-y-2 text-sm">
                   <span className="text-zinc-300">Aspect ratio</span>
-                  <select
-                    value={aspectRatio}
-                    onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)}
-                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
-                  >
+                  <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
                     {VIDEO_ASPECT_RATIO_OPTIONS.map((ratioOption) => (
                       <option key={ratioOption} value={ratioOption}>
                         {ratioOption}
@@ -597,42 +679,27 @@ export default function VideoProjectPage() {
               </div>
 
               <label className="flex items-center gap-3 rounded-md border border-cyan-400/20 bg-cyan-500/5 px-3 py-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={strictAnchor}
-                  onChange={(event) => setStrictAnchor(event.target.checked)}
-                  className="h-4 w-4 accent-cyan-400"
-                />
-                <span className="text-zinc-200">Strict Megaska Fidelity (preserve same model, swimsuit, scene, and composition)</span>
+                <input type="checkbox" checked={strictAnchor} onChange={(event) => setStrictAnchor(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
+                <span className="text-zinc-200">Strict Megaska Fidelity (preserve same model, swimsuit, scene, composition)</span>
               </label>
 
               <label className="flex items-center gap-3 rounded-md border border-white/10 px-3 py-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={strictGarmentLock}
-                  onChange={(event) => setStrictGarmentLock(event.target.checked)}
-                  className="h-4 w-4 accent-cyan-400"
-                />
-                <span className="text-zinc-200">Strict Garment Lock (preserve exact apparel identity)</span>
+                <input type="checkbox" checked={strictGarmentLock} onChange={(event) => setStrictGarmentLock(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
+                <span className="text-zinc-200">Strict Garment Lock (exact swimsuit identity)</span>
               </label>
 
               <label className="block space-y-2 text-sm">
-                <span className="text-zinc-300">Creative notes (optional)</span>
+                <span className="text-zinc-300">Instruction-only note (optional)</span>
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={creativeNotes}
                   onChange={(event) => setCreativeNotes(event.target.value)}
-                  placeholder="Optional micro-motion notes. Keep this short for best fidelity."
+                  placeholder="e.g. subtle motion only, gentle pan, fabric breeze"
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 />
               </label>
 
-              <button
-                type="button"
-                disabled={!canGenerate || isGenerating}
-                onClick={() => void handleGenerate()}
-                className="w-full rounded-md bg-cyan-500 px-4 py-3 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-zinc-700"
-              >
+              <button type="button" disabled={!canGenerate || isGenerating} onClick={() => void handleGenerate()} className="w-full rounded-md bg-cyan-500 px-4 py-3 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-zinc-700">
                 {isGenerating ? "Generating video..." : "Generate Video"}
               </button>
               {error ? <p className="text-sm text-rose-300">{error}</p> : null}
@@ -641,29 +708,20 @@ export default function VideoProjectPage() {
 
           <div className="space-y-4 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
             <h2 className="text-lg font-semibold text-white">6-7) Preview output</h2>
-            {masterSelection ? (
+            {startFrameSelection ? (
               <div className="rounded-lg border border-white/10 bg-zinc-950/60 p-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-400">Master image</p>
+                <p className="text-xs uppercase tracking-wide text-zinc-400">Start frame</p>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={masterSelection.imageUrl} alt="Selected master" className="mt-2 h-44 w-full rounded-md object-cover" />
-                <p className="mt-2 line-clamp-2 text-xs text-zinc-300">{masterSelection.label}</p>
+                <img src={startFrameSelection.imageUrl} alt="Selected start" className="mt-2 h-44 w-full rounded-md object-cover" />
+                <p className="mt-2 line-clamp-2 text-xs text-zinc-300">{startFrameSelection.label}</p>
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">
-                Select or upload a master image to begin.
-              </div>
+              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">Select start and end frames to begin.</div>
             )}
 
             {latestResult ? (
               <div className="space-y-3 rounded-lg border border-cyan-400/30 bg-zinc-950/70 p-3">
-                <video
-                  ref={latestVideoRef}
-                  key={latestResult.outputUrl}
-                  src={latestResult.outputUrl}
-                  poster={latestResult.thumbnailUrl}
-                  controls
-                  className="h-auto w-full rounded-md"
-                />
+                <video ref={latestVideoRef} key={latestResult.outputUrl} src={latestResult.outputUrl} poster={latestResult.thumbnailUrl} controls className="h-auto w-full rounded-md" />
                 <div className="grid gap-2 text-xs text-zinc-300 sm:grid-cols-2">
                   <p>Mode: {getVideoModeLabel(latestResult.videoMode)}</p>
                   <p>Preset: {getMotionPresetLabel(latestResult.motionPreset)}</p>
@@ -672,73 +730,21 @@ export default function VideoProjectPage() {
                   <p>Strength: {getMotionStrengthLabel(latestResult.motionStrength)}</p>
                   <p>Camera motion: {getCameraMotionLabel(latestResult.cameraMotion)}</p>
                   <p>Subject motion: {getSubjectMotionLabel(latestResult.subjectMotion)}</p>
-                  <p>Garment lock: {latestResult.strictGarmentLock ? "On" : "Off"}</p>
-                  <p>Strict anchor: {latestResult.strictAnchor ? "On" : "Off"}</p>
                   <p>Generated: {formatGeneratedAt(latestResult.createdAt)}</p>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const video = latestVideoRef.current;
-                      if (video) {
-                        video.currentTime = 0;
-                        void video.play();
-                      }
-                    }}
-                    className="rounded-md border border-white/20 px-3 py-2 text-sm"
-                  >
-                    Replay
-                  </button>
-                  <a
-                    href={latestResult.downloadUrl}
-                    download
-                    className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100"
-                  >
-                    Download
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => void handleExtractFrame()}
-                    disabled={isExtractingFrame}
-                    className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
-                  >
+                  <a href={latestResult.downloadUrl} download className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100">Download</a>
+                  <button type="button" onClick={() => void handleExtractFrame()} disabled={isExtractingFrame} className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50">
                     {isExtractingFrame ? "Extracting..." : "Extract Frame"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleUseFrameAsMaster()}
-                    disabled={isExtractingFrame}
-                    className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200 disabled:opacity-50"
-                  >
-                    Use Frame as Master
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleGenerate()}
-                    disabled={isGenerating || !canGenerate}
-                    className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
-                  >
-                    Regenerate
+                  <button type="button" onClick={() => void handleUseFrameAsMaster()} disabled={isExtractingFrame} className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200 disabled:opacity-50">
+                    Use Frame in Image Project
                   </button>
                 </div>
-                {extractedFrame && extractedFrame.sourceVideoGenerationId === latestResult.generationId ? (
-                  <div className="rounded-md border border-emerald-400/40 bg-emerald-500/10 p-3">
-                    <p className="text-xs font-medium text-emerald-200">Frame extracted and saved to Image Project</p>
-                    <div className="mt-2 flex items-center gap-3">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={extractedFrame.frameUrl} alt="Extracted frame" className="h-14 w-14 rounded-md object-cover" />
-                      <p className="text-xs text-zinc-200">Use it as the next master to continue Generate More Views in Image Project.</p>
-                    </div>
-                  </div>
-                ) : null}
-
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">
-                Your generated video will appear here.
-              </div>
+              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">Your generated video will appear here.</div>
             )}
 
             {history.length > 0 ? (
@@ -746,18 +752,8 @@ export default function VideoProjectPage() {
                 <p className="text-xs uppercase tracking-wide text-zinc-400">Session history</p>
                 <div className="space-y-2">
                   {history.slice(0, 4).map((item) => (
-                    <button
-                      type="button"
-                      key={item.generationId}
-                      onClick={() => {
-                        setLatestResult(item);
-                        setExtractedFrame(null);
-                      }}
-                      className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-xs hover:border-white/30"
-                    >
-                      <p className="text-zinc-200">
-                        {getMotionPresetLabel(item.motionPreset)} · {item.durationSeconds}s · {getStyleLabel(item.style)}
-                      </p>
+                    <button type="button" key={item.generationId} onClick={() => setLatestResult(item)} className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-xs hover:border-white/30">
+                      <p className="text-zinc-200">{getMotionPresetLabel(item.motionPreset)} · {item.durationSeconds}s · {getStyleLabel(item.style)}</p>
                       <p className="text-zinc-400">{formatGeneratedAt(item.createdAt)}</p>
                     </button>
                   ))}

@@ -28,7 +28,7 @@ export const VIDEO_EXPERIMENTAL_MOTION_PRESETS = [
 export const VIDEO_DURATIONS = [8] as const;
 export const VIDEO_STYLES = ["realistic", "editorial", "ad-style"] as const;
 export const VIDEO_MOTION_STRENGTHS = ["subtle", "moderate", "dynamic"] as const;
-export const VIDEO_MODES = ["animate-master-shot", "creative-reinterpretation"] as const;
+export const VIDEO_MODES = ["frame-based-megaska", "animate-master-shot", "creative-reinterpretation"] as const;
 export const VIDEO_CAMERA_MOTIONS = ["none", "push", "pan"] as const;
 export const VIDEO_SUBJECT_MOTIONS = ["none", "subtle", "moderate"] as const;
 
@@ -104,8 +104,10 @@ export function getMotionStrengthLabel(strength: VideoMotionStrength) {
 
 export function getVideoModeLabel(mode: VideoMode) {
   switch (mode) {
+    case "frame-based-megaska":
+      return "Frame-based Megaska Engine (Recommended)";
     case "animate-master-shot":
-      return "Animate Master Shot (Megaska Recommended)";
+      return "Animate Single Master Shot (Legacy)";
     case "creative-reinterpretation":
       return "Creative Reinterpretation (Experimental)";
   }
