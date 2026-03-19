@@ -34,6 +34,7 @@ import {
 import { buildInvariantPromptBlock, buildMegaskaFidelityPrompt } from "@/lib/video/fidelityPrompt";
 import { runVideoJob } from "@/lib/video/runVideoJob";
 import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
+import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -359,6 +360,11 @@ export async function POST(request: Request) {
       lastFrame.url ? "lastFrame" : null,
     ].filter((value): value is string => Boolean(value));
 
+    const selectedCapability = getVideoCapabilityByBackendId(payload.ai_backend_id ?? null);
+    if (selectedCapability?.warning) {
+      pushCompatibilityWarning(compatibilityWarnings, selectedCapability.warning);
+    }
+
     let videoResult;
     try {
       videoResult = await runVideoJob({
@@ -369,6 +375,11 @@ export async function POST(request: Request) {
         firstFrameUrl,
         lastFrameUrl,
         referenceImageUrls,
+        identityAnchorUrl: identityAnchor.url,
+        garmentAnchorUrl: garmentAnchor.url,
+        fitAnchorUrl: fitAnchor.url,
+        inputMode,
+        requestedFidelityPriority: fidelityPriority,
         aspectRatio,
       });
     } catch (videoError) {
@@ -448,7 +459,16 @@ export async function POST(request: Request) {
         fidelityPriority,
         actionPrompt: actionPrompt,
         invariantPromptVersion: "invariants-v1",
-        selectedReferenceSubset: referenceImageUrls,
+        selectedReferenceSubset: videoResult.diagnostics.selectedReferenceSubset,
+        droppedAnchors: videoResult.diagnostics.droppedAnchors,
+        attemptDiagnostics: videoResult.diagnostics.attempts,
+        successAttemptNumber: videoResult.diagnostics.successAttemptNumber,
+        successVariantLabel: videoResult.diagnostics.successVariantLabel,
+        successComplexityTier: videoResult.diagnostics.successComplexityTier,
+        successUsedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
+        usedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
+        requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
+        actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
         invariantPromptBlock: buildInvariantPromptBlock(),
         requestedReferenceCount: boundedMultiReferenceUrls.length,
 
@@ -506,7 +526,16 @@ export async function POST(request: Request) {
         fidelityPriority,
         actionPrompt,
         invariantPromptVersion: "invariants-v1",
-        selectedReferenceSubset: referenceImageUrls,
+        selectedReferenceSubset: videoResult.diagnostics.selectedReferenceSubset,
+        droppedAnchors: videoResult.diagnostics.droppedAnchors,
+        attemptDiagnostics: videoResult.diagnostics.attempts,
+        successAttemptNumber: videoResult.diagnostics.successAttemptNumber,
+        successVariantLabel: videoResult.diagnostics.successVariantLabel,
+        successComplexityTier: videoResult.diagnostics.successComplexityTier,
+        successUsedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
+        usedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
+        requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
+        actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
       },
     });
   } catch (error) {
@@ -522,7 +551,7 @@ export async function POST(request: Request) {
       return asJson(400, {
         success: false,
         error_code: "rejected-params",
-        error: "This model rejected one or more generation settings. Try fewer anchors and safer motion.",
+        error: "This provider rejected all compatible request variants for the current settings. Try fewer anchors, safer motion, or the Megaska Fidelity Baseline mode.",
       });
     }
 

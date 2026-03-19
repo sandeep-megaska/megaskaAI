@@ -48,16 +48,17 @@ export const AI_BACKENDS: AIBackend[] = [
   },
   {
     id: "veo-2",
-    name: "Veo 2 (Legacy)",
+    name: "Megaska Fidelity Baseline (Veo 2 Legacy)",
     type: "video",
     model: "veo-2.0-generate-001",
     isLegacy: true,
   },
   {
     id: "veo-3",
-    name: "Veo 3",
+    name: "Veo 3 (Experimental Motion)",
     type: "video",
     model: "veo-3.0-generate-001",
+    isExperimental: true,
   },
   {
     id: "veo-3-fast",
@@ -68,15 +69,17 @@ export const AI_BACKENDS: AIBackend[] = [
   },
   {
     id: "veo-3.1",
-    name: "Veo 3.1",
+    name: "Veo 3.1 (Experimental Motion)",
     type: "video",
     model: "veo-3.1-generate-001",
+    isExperimental: true,
   },
   {
     id: "veo-3.1-fast",
-    name: "Veo 3.1 Fast",
+    name: "Veo 3.1 Fast (Experimental Motion)",
     type: "video",
     model: "veo-3.1-fast-generate-001",
+    isExperimental: true,
   },
 ];
 
@@ -87,7 +90,7 @@ export function findBackendById(id?: string | null) {
 
 export function getDefaultBackendForType(type: AIBackendType) {
   if (type === "video") {
-    return findBackendById("veo-3.1") ?? findBackendById("veo-3") ?? findBackendById("veo-2")!;
+    return findBackendById("veo-2") ?? findBackendById("veo-3.1") ?? findBackendById("veo-3")!;
   }
 
   return findBackendById("imagen-4")!;

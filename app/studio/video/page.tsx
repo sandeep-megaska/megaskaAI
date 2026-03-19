@@ -38,6 +38,8 @@ type AIBackend = {
   name: string;
   type: "image" | "video";
   model: string;
+  isExperimental?: boolean;
+  isLegacy?: boolean;
 };
 
 type GalleryImageItem = {
@@ -67,6 +69,7 @@ type VideoResult = {
   motionStrength: VideoMotionStrength;
   motionRiskLevel?: MotionRiskLevel;
   compatibilityWarnings?: string[];
+  usedCompatibilityFallback?: boolean;
   createdAt: string;
 };
 
@@ -112,11 +115,14 @@ export default function VideoProjectPage() {
   }, []);
 
   const videoBackends = useMemo(() => backends.filter((backend) => backend.type === "video"), [backends]);
+  const recommendedBackends = useMemo(() => videoBackends.filter((backend) => !backend.isExperimental), [videoBackends]);
+  const experimentalBackends = useMemo(() => videoBackends.filter((backend) => backend.isExperimental), [videoBackends]);
+  const selectedBackend = useMemo(() => videoBackends.find((backend) => backend.id === selectedBackendId) ?? null, [videoBackends, selectedBackendId]);
   const motionRiskLevel = useMemo(() => classifyMotionRiskFromActionPrompt(actionPrompt), [actionPrompt]);
 
   useEffect(() => {
     if (videoBackends.length && !videoBackends.some((backend) => backend.id === selectedBackendId)) {
-      setSelectedBackendId(videoBackends.find((backend) => backend.id === "veo-3.1")?.id ?? videoBackends[0].id);
+      setSelectedBackendId(videoBackends.find((backend) => backend.id === "veo-2")?.id ?? videoBackends[0].id);
     }
   }, [videoBackends, selectedBackendId]);
 
@@ -220,7 +226,7 @@ export default function VideoProjectPage() {
         }),
       });
 
-      const payload = (await response.json()) as { success?: boolean; generationId?: string; outputUrl?: string; downloadUrl?: string; thumbnailUrl?: string; error?: string; videoMeta?: { motionPreset: VideoMotionPreset; durationSeconds: VideoDurationSeconds; motionStrength: VideoMotionStrength; motionRiskLevel?: MotionRiskLevel; compatibilityWarnings?: string[] } };
+      const payload = (await response.json()) as { success?: boolean; generationId?: string; outputUrl?: string; downloadUrl?: string; thumbnailUrl?: string; error?: string; videoMeta?: { motionPreset: VideoMotionPreset; durationSeconds: VideoDurationSeconds; motionStrength: VideoMotionStrength; motionRiskLevel?: MotionRiskLevel; compatibilityWarnings?: string[]; usedCompatibilityFallback?: boolean } };
       if (!response.ok || !payload.success || !payload.outputUrl || !payload.generationId || !payload.videoMeta) {
         throw new Error(payload.error ?? "Video generation failed.");
       }
@@ -235,6 +241,7 @@ export default function VideoProjectPage() {
         motionStrength: payload.videoMeta.motionStrength,
         motionRiskLevel: payload.videoMeta.motionRiskLevel,
         compatibilityWarnings: payload.videoMeta.compatibilityWarnings,
+        usedCompatibilityFallback: payload.videoMeta.usedCompatibilityFallback,
         createdAt: new Date().toISOString(),
       };
 
@@ -411,10 +418,16 @@ export default function VideoProjectPage() {
             <label className="space-y-2 text-sm block">
               <span>Video backend</span>
               <select value={selectedBackendId} onChange={(e) => setSelectedBackendId(e.target.value)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2">
-                {videoBackends.map((backend) => <option key={backend.id} value={backend.id}>{backend.name}</option>)}
+                <optgroup label="Recommended">
+                  {recommendedBackends.map((backend) => <option key={backend.id} value={backend.id}>{backend.name}</option>)}
+                </optgroup>
+                <optgroup label="Experimental">
+                  {experimentalBackends.map((backend) => <option key={backend.id} value={backend.id}>{backend.name}</option>)}
+                </optgroup>
               </select>
             </label>
 
+            {selectedBackend?.isExperimental ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">This provider may require compatibility fallback and may drift more under complex motion.</p> : null}
             {motionRiskLevel === "high" ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">High motion increases garment and identity drift risk.</p> : null}
 
             <button type="button" disabled={!canGenerate || isGenerating} onClick={() => void handleGenerate()} className="w-full rounded-md bg-cyan-500 px-4 py-3 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-zinc-700">
@@ -429,6 +442,7 @@ export default function VideoProjectPage() {
               <div className="space-y-3 rounded-lg border border-cyan-400/30 bg-zinc-950/70 p-3">
                 <video key={latestResult.outputUrl} src={latestResult.outputUrl} poster={latestResult.thumbnailUrl} controls className="h-auto w-full rounded-md" />
                 <p className="text-xs">Risk: {latestResult.motionRiskLevel ?? "n/a"}</p>
+                {latestResult.usedCompatibilityFallback ? <p className="text-xs text-cyan-200">Used compatibility fallback for this provider.</p> : null}
                 {latestResult.compatibilityWarnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">• {warning}</p>)}
                 <div className="flex gap-2">
                   <a href={latestResult.downloadUrl} download className="rounded-md border border-white/20 px-3 py-2 text-sm">Download</a>
