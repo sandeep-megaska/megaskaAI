@@ -70,7 +70,7 @@ type VideoResult = {
   createdAt: string;
 };
 
-function getPresetOptions(priority: VideoFidelityPriority) {
+function getPresetOptions(priority: VideoFidelityPriority): readonly VideoMotionPreset[] {
   if (priority === "maximum-fidelity") return VIDEO_STRICT_SAFE_MOTION_PRESETS;
   if (priority === "maximum-motion") return [...VIDEO_ANCHORED_SAFE_MOTION_PRESETS, ...VIDEO_EXPERIMENTAL_MOTION_PRESETS];
   return VIDEO_ANCHORED_SAFE_MOTION_PRESETS;

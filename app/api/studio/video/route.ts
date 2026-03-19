@@ -90,6 +90,7 @@ type VideoGeneratePayload = {
 const VIDEO_PROJECT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 const FRAME_MODE_REFERENCE_LIMIT = 3;
 const MULTI_REFERENCE_MAX = 6;
+const VIDEO_STRICT_SAFE_MOTION_PRESETS_SET: ReadonlySet<VideoMotionPreset> = new Set(VIDEO_STRICT_SAFE_MOTION_PRESETS);
 type VideoProjectAspectRatio = (typeof VIDEO_PROJECT_ASPECT_RATIOS)[number];
 
 function asJson(status: number, body: Record<string, unknown>) {
@@ -285,7 +286,7 @@ export async function POST(request: Request) {
     let effectiveSubjectMotion = subjectMotion;
 
     if (fidelityPriority === "maximum-fidelity") {
-      if (!VIDEO_STRICT_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
+      if (!VIDEO_STRICT_SAFE_MOTION_PRESETS_SET.has(effectiveMotionPreset)) {
         effectiveMotionPreset = "subtle-breathing";
         pushCompatibilityWarning(compatibilityWarnings, "Motion preset adjusted to subtle-breathing for maximum fidelity.");
       }
