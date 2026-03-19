@@ -5,32 +5,28 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
-  getCameraMotionLabel,
   getMotionPresetLabel,
   getMotionStrengthLabel,
   getStyleLabel,
-  getSubjectMotionLabel,
+  getVideoModeDescription,
   getVideoModeLabel,
-  VIDEO_CAMERA_MOTIONS,
+  VIDEO_ANCHORED_SAFE_MOTION_PRESETS,
   VIDEO_DURATIONS,
+  VIDEO_EXPERIMENTAL_MOTION_PRESETS,
   VIDEO_MODES,
-  VIDEO_SAFE_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
   VIDEO_STYLES,
-  VIDEO_SUBJECT_MOTIONS,
-  type VideoCameraMotion,
+  VIDEO_STRICT_SAFE_MOTION_PRESETS,
   type VideoDurationSeconds,
   type VideoMode,
   type VideoMotionPreset,
   type VideoMotionStrength,
   type VideoStyle,
-  type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
 
 const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16"] as const;
-const MAX_REFERENCE_FRAMES = 3;
 type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIO_OPTIONS)[number];
-type FrameSlot = "start" | "end" | "reference";
+type AnchorSlot = "identity" | "garment" | "fit" | "first" | "last";
 
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
 
@@ -59,32 +55,42 @@ type VideoResult = {
   durationSeconds: VideoDurationSeconds;
   style: VideoStyle;
   motionStrength: VideoMotionStrength;
-  cameraMotion: VideoCameraMotion;
-  subjectMotion: VideoSubjectMotion;
-  strictGarmentLock: boolean;
-  strictAnchor: boolean;
+  motionRiskLevel?: "low" | "medium" | "high";
+  compatibilityWarnings?: string[];
   createdAt: string;
 };
+
+function getPresetOptions(mode: VideoMode) {
+  if (mode === "animated-still-strict") return VIDEO_STRICT_SAFE_MOTION_PRESETS;
+  if (mode === "anchored-short-shot") return VIDEO_ANCHORED_SAFE_MOTION_PRESETS;
+  return [...VIDEO_ANCHORED_SAFE_MOTION_PRESETS, ...VIDEO_EXPERIMENTAL_MOTION_PRESETS];
+}
+
+function getModeBadge(mode: VideoMode) {
+  if (mode === "animated-still-strict") {
+    return <span className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-200">Recommended</span>;
+  }
+  if (mode === "anchored-short-shot") {
+    return <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">More motion, higher drift risk</span>;
+  }
+  return <span className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">Experimental, not fidelity-safe</span>;
+}
 
 export default function VideoProjectPage() {
   const [backends, setBackends] = useState<AIBackend[]>([]);
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
-  const [startFrameSelection, setStartFrameSelection] = useState<FrameSelection | null>(null);
-  const [endFrameSelection, setEndFrameSelection] = useState<FrameSelection | null>(null);
-  const [referenceFrameSelections, setReferenceFrameSelections] = useState<FrameSelection[]>([]);
-  const [uploadSlot, setUploadSlot] = useState<FrameSlot>("start");
-  const [videoMode, setVideoMode] = useState<VideoMode>("frame-based-megaska");
+  const [identityAnchor, setIdentityAnchor] = useState<FrameSelection | null>(null);
+  const [garmentAnchor, setGarmentAnchor] = useState<FrameSelection | null>(null);
+  const [fitAnchor, setFitAnchor] = useState<FrameSelection | null>(null);
+  const [firstFrame, setFirstFrame] = useState<FrameSelection | null>(null);
+  const [lastFrame, setLastFrame] = useState<FrameSelection | null>(null);
+  const [uploadSlot, setUploadSlot] = useState<AnchorSlot>("fit");
+  const [videoMode, setVideoMode] = useState<VideoMode>("animated-still-strict");
   const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-breathing");
   const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
   const [motionStrength, setMotionStrength] = useState<VideoMotionStrength>("subtle");
-  const [cameraMotion, setCameraMotion] = useState<VideoCameraMotion>("push");
-  const [subjectMotion, setSubjectMotion] = useState<VideoSubjectMotion>("subtle");
-  const [strictGarmentLock, setStrictGarmentLock] = useState(true);
-  const [strictAnchor, setStrictAnchor] = useState(true);
-
-  const strictMegaskaFidelity = strictAnchor && strictGarmentLock;
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [creativeNotes, setCreativeNotes] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -143,6 +149,17 @@ export default function VideoProjectPage() {
     loadBackends();
   }, []);
 
+  useEffect(() => {
+    const allowed = getPresetOptions(videoMode);
+    if (!allowed.includes(motionPreset)) {
+      setMotionPreset(allowed[0]);
+    }
+
+    if (videoMode === "animated-still-strict") {
+      setMotionStrength("subtle");
+    }
+  }, [videoMode, motionPreset]);
+
   function formatGeneratedAt(value: string) {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return "Just now";
@@ -155,25 +172,12 @@ export default function VideoProjectPage() {
     }).format(parsed);
   }
 
-  function applyFrameSelection(slot: FrameSlot, frame: FrameSelection) {
-    if (slot === "start") {
-      setStartFrameSelection(frame);
-      return;
-    }
-    if (slot === "end") {
-      setEndFrameSelection(frame);
-      return;
-    }
-
-    setReferenceFrameSelections((current) => {
-      if (current.some((item) => item.imageUrl === frame.imageUrl)) {
-        return current;
-      }
-      if (current.length >= MAX_REFERENCE_FRAMES) {
-        return current;
-      }
-      return [...current, frame];
-    });
+  function applyFrameSelection(slot: AnchorSlot, frame: FrameSelection) {
+    if (slot === "identity") setIdentityAnchor(frame);
+    if (slot === "garment") setGarmentAnchor(frame);
+    if (slot === "fit") setFitAnchor(frame);
+    if (slot === "first") setFirstFrame(frame);
+    if (slot === "last") setLastFrame(frame);
   }
 
   async function handleUploadFrame(file: File | null) {
@@ -199,7 +203,7 @@ export default function VideoProjectPage() {
   }
 
   async function handleGenerate() {
-    if (!startFrameSelection?.imageUrl || !endFrameSelection?.imageUrl || isGenerating) return;
+    if (!canGenerate || isGenerating) return;
 
     try {
       setIsGenerating(true);
@@ -211,27 +215,32 @@ export default function VideoProjectPage() {
         body: JSON.stringify({
           ai_backend_id: selectedBackendId || null,
           video_mode: videoMode,
-          start_frame_url: startFrameSelection.imageUrl,
-          start_frame_generation_id: startFrameSelection.sourceGenerationId,
-          end_frame_url: endFrameSelection.imageUrl,
-          end_frame_generation_id: endFrameSelection.sourceGenerationId,
-          reference_frames: referenceFrameSelections.map((ref) => ({
-            url: ref.imageUrl,
-            generationId: ref.sourceGenerationId,
-          })),
-          master_image_url: startFrameSelection.imageUrl,
-          source_generation_id: startFrameSelection.sourceGenerationId,
+          identity_anchor: identityAnchor
+            ? { url: identityAnchor.imageUrl, generation_id: identityAnchor.sourceGenerationId }
+            : undefined,
+          garment_anchor: garmentAnchor
+            ? { url: garmentAnchor.imageUrl, generation_id: garmentAnchor.sourceGenerationId }
+            : undefined,
+          fit_anchor: fitAnchor ? { url: fitAnchor.imageUrl, generation_id: fitAnchor.sourceGenerationId } : undefined,
+          first_frame: firstFrame ? { url: firstFrame.imageUrl, generation_id: firstFrame.sourceGenerationId } : undefined,
+          last_frame: lastFrame ? { url: lastFrame.imageUrl, generation_id: lastFrame.sourceGenerationId } : undefined,
+          master_image_url: fitAnchor?.imageUrl,
+          source_generation_id: fitAnchor?.sourceGenerationId,
+          start_frame_url: firstFrame?.imageUrl,
+          start_frame_generation_id: firstFrame?.sourceGenerationId,
+          end_frame_url: lastFrame?.imageUrl,
+          end_frame_generation_id: lastFrame?.sourceGenerationId,
           motion_preset: motionPreset,
           duration_seconds: duration,
           style,
           motion_strength: motionStrength,
-          camera_motion: cameraMotion,
-          subject_motion: subjectMotion,
-          strict_garment_lock: strictGarmentLock,
-          strict_anchor: strictAnchor,
+          camera_motion: "push",
+          subject_motion: motionStrength === "subtle" ? "subtle" : "moderate",
+          strict_garment_lock: true,
+          strict_anchor: true,
           aspect_ratio: aspectRatio,
           creative_notes: creativeNotes,
-          requested_thumbnail_url: startFrameSelection.imageUrl,
+          requested_thumbnail_url: firstFrame?.imageUrl || fitAnchor?.imageUrl,
         }),
       });
 
@@ -247,10 +256,8 @@ export default function VideoProjectPage() {
           durationSeconds: VideoDurationSeconds;
           style: VideoStyle;
           motionStrength: VideoMotionStrength;
-          cameraMotion: VideoCameraMotion;
-          subjectMotion: VideoSubjectMotion;
-          strictGarmentLock: boolean;
-          strictAnchor: boolean;
+          motionRiskLevel?: "low" | "medium" | "high";
+          compatibilityWarnings?: string[];
         };
         error?: string;
       };
@@ -269,10 +276,8 @@ export default function VideoProjectPage() {
         durationSeconds: payload.videoMeta.durationSeconds,
         style: payload.videoMeta.style,
         motionStrength: payload.videoMeta.motionStrength,
-        cameraMotion: payload.videoMeta.cameraMotion,
-        subjectMotion: payload.videoMeta.subjectMotion,
-        strictGarmentLock: payload.videoMeta.strictGarmentLock,
-        strictAnchor: payload.videoMeta.strictAnchor,
+        motionRiskLevel: payload.videoMeta.motionRiskLevel,
+        compatibilityWarnings: payload.videoMeta.compatibilityWarnings,
         createdAt: new Date().toISOString(),
       };
 
@@ -293,7 +298,7 @@ export default function VideoProjectPage() {
       setIsExtractingFrame(true);
       setError(null);
 
-      const frameUrl = latestResult.thumbnailUrl || startFrameSelection?.imageUrl || latestResult.outputUrl;
+      const frameUrl = latestResult.thumbnailUrl || fitAnchor?.imageUrl || latestResult.outputUrl;
 
       const response = await fetch("/api/studio/video/extract-frame", {
         method: "POST",
@@ -358,23 +363,14 @@ export default function VideoProjectPage() {
     router.push(`/?${query.toString()}`);
   }
 
-  useEffect(() => {
-    if (!strictMegaskaFidelity) return;
+  const canGenerate = Boolean(
+    selectedBackendId &&
+      ((videoMode === "animated-still-strict" && fitAnchor?.imageUrl) ||
+        (videoMode === "anchored-short-shot" && firstFrame?.imageUrl && lastFrame?.imageUrl) ||
+        (videoMode === "creative-reinterpretation" && (fitAnchor?.imageUrl || firstFrame?.imageUrl || identityAnchor?.imageUrl))),
+  );
 
-    if (videoMode !== "frame-based-megaska") {
-      setVideoMode("frame-based-megaska");
-    }
-
-    if (motionStrength !== "subtle") {
-      setMotionStrength("subtle");
-    }
-
-    if (subjectMotion === "moderate") {
-      setSubjectMotion("subtle");
-    }
-  }, [motionStrength, strictMegaskaFidelity, subjectMotion, videoMode]);
-
-  const canGenerate = Boolean(startFrameSelection?.imageUrl && endFrameSelection?.imageUrl && selectedBackendId);
+  const modePresets = getPresetOptions(videoMode);
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
@@ -385,7 +381,7 @@ export default function VideoProjectPage() {
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Studio Project</p>
               <h1 className="text-3xl font-semibold text-white">Video Project</h1>
               <p className="text-sm text-zinc-300">
-                Frame-based Megaska Video Engine. Select start/end frames from Image Project and animate with safe motion only.
+                Fidelity-first motion generation for Megaska subject packages. Use strict mode for highest consistency.
               </p>
             </div>
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
@@ -402,84 +398,49 @@ export default function VideoProjectPage() {
         <section className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
           <div className="space-y-6 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
             <div className="space-y-3">
-              <h2 className="text-lg font-semibold text-white">1) Frame anchors</h2>
-              <p className="text-sm text-zinc-400">
-                Pick Start + End frames from Image Project history, then optionally add up to {MAX_REFERENCE_FRAMES} extra reference frames.
-              </p>
+              <h2 className="text-lg font-semibold text-white">1) Subject package anchors</h2>
+              <p className="text-sm text-zinc-400">Best results come from anchors with same model, garment, and scene. Large pose changes increase drift risk.</p>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-lg border border-cyan-400/30 bg-zinc-950/50 p-3">
-                  <p className="text-xs uppercase text-cyan-300">Start frame (required)</p>
-                  {startFrameSelection ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={startFrameSelection.imageUrl} alt="Start frame" className="mt-2 h-40 w-full rounded-md object-cover" />
-                  ) : (
-                    <div className="mt-2 h-40 rounded-md border border-dashed border-white/20" />
-                  )}
-                </div>
-                <div className="rounded-lg border border-cyan-400/30 bg-zinc-950/50 p-3">
-                  <p className="text-xs uppercase text-cyan-300">End frame (required)</p>
-                  {endFrameSelection ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={endFrameSelection.imageUrl} alt="End frame" className="mt-2 h-40 w-full rounded-md object-cover" />
-                  ) : (
-                    <div className="mt-2 h-40 rounded-md border border-dashed border-white/20" />
-                  )}
-                </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {[
+                  { key: "identity", label: "Identity Anchor (optional)", value: identityAnchor },
+                  { key: "garment", label: "Garment Anchor (optional)", value: garmentAnchor },
+                  { key: "fit", label: "Fit Anchor (required for strict mode)", value: fitAnchor },
+                  { key: "first", label: "First Frame (required for anchored-short-shot)", value: firstFrame },
+                  { key: "last", label: "Last Frame (required for anchored-short-shot)", value: lastFrame },
+                ].map((slot) => (
+                  <div key={slot.key} className="rounded-lg border border-cyan-400/30 bg-zinc-950/50 p-3">
+                    <p className="text-xs uppercase text-cyan-300">{slot.label}</p>
+                    {slot.value ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={slot.value.imageUrl} alt={slot.label} className="mt-2 h-32 w-full rounded-md object-cover" />
+                    ) : (
+                      <div className="mt-2 h-32 rounded-md border border-dashed border-white/20" />
+                    )}
+                  </div>
+                ))}
               </div>
 
-              {referenceFrameSelections.length ? (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  {referenceFrameSelections.map((ref) => (
-                    <div key={ref.imageUrl} className="rounded-md border border-white/10 p-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={ref.imageUrl} alt="Reference frame" className="h-24 w-full rounded object-cover" />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setReferenceFrameSelections((current) => current.filter((item) => item.imageUrl !== ref.imageUrl))
-                        }
-                        className="mt-2 w-full rounded border border-white/20 px-2 py-1 text-xs"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadSlot("start");
-                    fileInputRef.current?.click();
-                  }}
-                  className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200"
-                >
-                  Upload Start Frame
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadSlot("end");
-                    fileInputRef.current?.click();
-                  }}
-                  className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200"
-                >
-                  Upload End Frame
-                </button>
-                <button
-                  type="button"
-                  disabled={referenceFrameSelections.length >= MAX_REFERENCE_FRAMES}
-                  onClick={() => {
-                    setUploadSlot("reference");
-                    fileInputRef.current?.click();
-                  }}
-                  className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50"
-                >
-                  Upload Reference Frame
-                </button>
+                {([
+                  ["identity", "Upload Identity Anchor"],
+                  ["garment", "Upload Garment Anchor"],
+                  ["fit", "Upload Fit Anchor"],
+                  ["first", "Upload First Frame"],
+                  ["last", "Upload Last Frame"],
+                ] as Array<[AnchorSlot, string]>).map(([slot, label]) => (
+                  <button
+                    key={slot}
+                    type="button"
+                    onClick={() => {
+                      setUploadSlot(slot);
+                      fileInputRef.current?.click();
+                    }}
+                    className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200"
+                  >
+                    {label}
+                  </button>
+                ))}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -504,51 +465,32 @@ export default function VideoProjectPage() {
                   return (
                     <div key={item.id} className="overflow-hidden rounded-lg border border-white/10">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={imageUrl} alt="Frame candidate" className="h-32 w-full object-cover" />
+                      <img src={imageUrl} alt="Anchor candidate" className="h-28 w-full object-cover" />
                       <div className="space-y-1 p-2 text-xs">
                         <p className="line-clamp-2 text-zinc-200">{item.prompt || "Untitled"}</p>
-                        {item.created_at ? <p className="text-zinc-400">{formatGeneratedAt(item.created_at)}</p> : null}
-                        <div className="grid grid-cols-3 gap-1 pt-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              applyFrameSelection("start", {
-                                sourceGenerationId: item.id,
-                                imageUrl,
-                                label: item.prompt || "Gallery image",
-                              })
-                            }
-                            className="rounded border border-cyan-400/40 px-1 py-1 text-[10px] text-cyan-200"
-                          >
-                            Start
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              applyFrameSelection("end", {
-                                sourceGenerationId: item.id,
-                                imageUrl,
-                                label: item.prompt || "Gallery image",
-                              })
-                            }
-                            className="rounded border border-cyan-400/40 px-1 py-1 text-[10px] text-cyan-200"
-                          >
-                            End
-                          </button>
-                          <button
-                            type="button"
-                            disabled={referenceFrameSelections.length >= MAX_REFERENCE_FRAMES}
-                            onClick={() =>
-                              applyFrameSelection("reference", {
-                                sourceGenerationId: item.id,
-                                imageUrl,
-                                label: item.prompt || "Gallery image",
-                              })
-                            }
-                            className="rounded border border-white/20 px-1 py-1 text-[10px] text-zinc-200 disabled:opacity-50"
-                          >
-                            Ref
-                          </button>
+                        <div className="grid grid-cols-5 gap-1 pt-1">
+                          {([
+                            ["identity", "ID"],
+                            ["garment", "GAR"],
+                            ["fit", "FIT"],
+                            ["first", "FIRST"],
+                            ["last", "LAST"],
+                          ] as Array<[AnchorSlot, string]>).map(([slot, label]) => (
+                            <button
+                              key={`${item.id}-${slot}`}
+                              type="button"
+                              onClick={() =>
+                                applyFrameSelection(slot, {
+                                  sourceGenerationId: item.id,
+                                  imageUrl,
+                                  label: item.prompt || "Gallery image",
+                                })
+                              }
+                              className="rounded border border-cyan-400/40 px-1 py-1 text-[10px] text-cyan-200"
+                            >
+                              {label}
+                            </button>
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -558,8 +500,10 @@ export default function VideoProjectPage() {
             </div>
 
             <div className="space-y-4 border-t border-white/10 pt-5">
-              <h2 className="text-lg font-semibold text-white">2-5) Motion controls</h2>
-              <p className="text-xs text-cyan-200">Default mode is the Frame-based Megaska Engine for maximum fidelity stability.</p>
+              <h2 className="text-lg font-semibold text-white">2) Mode and motion</h2>
+              <p className="text-xs text-cyan-200">
+                Strict mode is best for subtle motion from one approved image. Anchored short shot is for short transitions between very similar approved frames. Creative mode may redesign details.
+              </p>
 
               <label className="block space-y-2 text-sm">
                 <span className="text-zinc-300">Video backend</span>
@@ -584,21 +528,26 @@ export default function VideoProjectPage() {
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
                   {VIDEO_MODES.map((modeOption) => (
-                    <option key={modeOption} value={modeOption} disabled={strictMegaskaFidelity && modeOption === "creative-reinterpretation"}>
+                    <option key={modeOption} value={modeOption}>
                       {getVideoModeLabel(modeOption)}
                     </option>
                   ))}
                 </select>
               </label>
 
+              <div className="flex items-center gap-2">
+                {getModeBadge(videoMode)}
+                <p className="text-xs text-zinc-400">{getVideoModeDescription(videoMode)}</p>
+              </div>
+
               <label className="block space-y-2 text-sm">
-                <span className="text-zinc-300">Safe motion preset</span>
+                <span className="text-zinc-300">Motion preset</span>
                 <select
                   value={motionPreset}
                   onChange={(event) => setMotionPreset(event.target.value as VideoMotionPreset)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  {VIDEO_SAFE_MOTION_PRESETS.map((preset) => (
+                  {modePresets.map((preset) => (
                     <option key={preset} value={preset}>
                       {getMotionPresetLabel(preset)}
                     </option>
@@ -630,71 +579,35 @@ export default function VideoProjectPage() {
                 </label>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block space-y-2 text-sm">
-                  <span className="text-zinc-300">Motion strength</span>
-                  <select value={motionStrength} onChange={(event) => setMotionStrength(event.target.value as VideoMotionStrength)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
-                    {VIDEO_MOTION_STRENGTHS.map((strength) => (
-                      <option key={strength} value={strength} disabled={strictMegaskaFidelity && strength !== "subtle"}>
-                        {getMotionStrengthLabel(strength)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="block space-y-2 text-sm">
-                  <span className="text-zinc-300">Camera motion</span>
-                  <select value={cameraMotion} onChange={(event) => setCameraMotion(event.target.value as VideoCameraMotion)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
-                    {VIDEO_CAMERA_MOTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {getCameraMotionLabel(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block space-y-2 text-sm">
-                  <span className="text-zinc-300">Subject motion</span>
-                  <select value={subjectMotion} onChange={(event) => setSubjectMotion(event.target.value as VideoSubjectMotion)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
-                    {VIDEO_SUBJECT_MOTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {getSubjectMotionLabel(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="block space-y-2 text-sm">
-                  <span className="text-zinc-300">Aspect ratio</span>
-                  <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
-                    {VIDEO_ASPECT_RATIO_OPTIONS.map((ratioOption) => (
-                      <option key={ratioOption} value={ratioOption}>
-                        {ratioOption}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <label className="flex items-center gap-3 rounded-md border border-cyan-400/20 bg-cyan-500/5 px-3 py-3 text-sm">
-                <input type="checkbox" checked={strictAnchor} onChange={(event) => setStrictAnchor(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
-                <span className="text-zinc-200">Strict Megaska Fidelity (preserve same model, swimsuit, scene, composition)</span>
-              </label>
-
-              <label className="flex items-center gap-3 rounded-md border border-white/10 px-3 py-3 text-sm">
-                <input type="checkbox" checked={strictGarmentLock} onChange={(event) => setStrictGarmentLock(event.target.checked)} className="h-4 w-4 accent-cyan-400" />
-                <span className="text-zinc-200">Strict Garment Lock (exact swimsuit identity)</span>
+              <label className="block space-y-2 text-sm">
+                <span className="text-zinc-300">Motion strength</span>
+                <select value={motionStrength} onChange={(event) => setMotionStrength(event.target.value as VideoMotionStrength)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
+                  {VIDEO_MOTION_STRENGTHS.map((strength) => (
+                    <option key={strength} value={strength} disabled={videoMode === "animated-still-strict" && strength !== "subtle"}>
+                      {getMotionStrengthLabel(strength)}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="block space-y-2 text-sm">
-                <span className="text-zinc-300">Instruction-only note (optional)</span>
+                <span className="text-zinc-300">Aspect ratio</span>
+                <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)} className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm">
+                  {VIDEO_ASPECT_RATIO_OPTIONS.map((ratioOption) => (
+                    <option key={ratioOption} value={ratioOption}>
+                      {ratioOption}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block space-y-2 text-sm">
+                <span className="text-zinc-300">Creative notes (optional)</span>
                 <textarea
                   rows={2}
                   value={creativeNotes}
                   onChange={(event) => setCreativeNotes(event.target.value)}
-                  placeholder="e.g. subtle motion only, gentle pan, fabric breeze"
+                  placeholder="Ignored in strict mode; used for anchored and creative modes"
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 />
               </label>
@@ -707,16 +620,16 @@ export default function VideoProjectPage() {
           </div>
 
           <div className="space-y-4 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
-            <h2 className="text-lg font-semibold text-white">6-7) Preview output</h2>
-            {startFrameSelection ? (
+            <h2 className="text-lg font-semibold text-white">3) Preview output</h2>
+            {fitAnchor ? (
               <div className="rounded-lg border border-white/10 bg-zinc-950/60 p-3">
-                <p className="text-xs uppercase tracking-wide text-zinc-400">Start frame</p>
+                <p className="text-xs uppercase tracking-wide text-zinc-400">Primary anchor preview</p>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={startFrameSelection.imageUrl} alt="Selected start" className="mt-2 h-44 w-full rounded-md object-cover" />
-                <p className="mt-2 line-clamp-2 text-xs text-zinc-300">{startFrameSelection.label}</p>
+                <img src={fitAnchor.imageUrl} alt="Selected fit anchor" className="mt-2 h-44 w-full rounded-md object-cover" />
+                <p className="mt-2 line-clamp-2 text-xs text-zinc-300">{fitAnchor.label}</p>
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">Select start and end frames to begin.</div>
+              <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">Select anchors to begin.</div>
             )}
 
             {latestResult ? (
@@ -728,10 +641,16 @@ export default function VideoProjectPage() {
                   <p>Duration: {latestResult.durationSeconds}s</p>
                   <p>Style: {getStyleLabel(latestResult.style)}</p>
                   <p>Strength: {getMotionStrengthLabel(latestResult.motionStrength)}</p>
-                  <p>Camera motion: {getCameraMotionLabel(latestResult.cameraMotion)}</p>
-                  <p>Subject motion: {getSubjectMotionLabel(latestResult.subjectMotion)}</p>
+                  <p>Risk level: {latestResult.motionRiskLevel ?? "n/a"}</p>
                   <p>Generated: {formatGeneratedAt(latestResult.createdAt)}</p>
                 </div>
+                {latestResult.compatibilityWarnings?.length ? (
+                  <div className="rounded-md border border-amber-400/30 bg-amber-500/10 p-2 text-xs text-amber-100">
+                    {latestResult.compatibilityWarnings.map((warning) => (
+                      <p key={warning}>• {warning}</p>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="flex flex-wrap gap-2">
                   <a href={latestResult.downloadUrl} download className="rounded-md border border-white/20 px-3 py-2 text-sm text-zinc-100">Download</a>

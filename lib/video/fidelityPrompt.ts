@@ -1,92 +1,85 @@
 import {
-  getCameraMotionLabel,
-  getMotionPresetCategory,
-  getMotionPresetLabel,
-  getSubjectMotionLabel,
-  type VideoCameraMotion,
   type VideoDurationSeconds,
   type VideoMode,
   type VideoMotionPreset,
-  type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
 
 export type BuildMegaskaFidelityPromptInput = {
   videoMode: VideoMode;
   motionPreset: VideoMotionPreset;
   durationSeconds: VideoDurationSeconds;
-  cameraMotion: VideoCameraMotion;
-  subjectMotion: VideoSubjectMotion;
   strictMegaskaFidelity: boolean;
   userPrompt?: string | null;
 };
 
-const SAFE_MOTION_GUIDANCE: Record<VideoMotionPreset, string> = {
-  "subtle-breathing": "Allow only natural breathing micro-movement.",
-  "slow-camera-push": "Keep subject nearly still; apply very slow push-in.",
-  "gentle-pan": "Keep subject nearly still; apply gentle pan.",
-  "hair-movement": "Only slight natural hair movement from soft airflow.",
-  "fabric-breeze": "Only slight breeze movement on loose fabric edges.",
-  "minimal-editorial-motion": "Only restrained editorial micro-motion with stable framing.",
-  "walk-turn": "Large body motion is high-risk; keep minimal unless explicitly requested.",
-  "lifestyle-motion": "Lifestyle movement is high-risk; keep controlled and limited.",
-  "scene-transformation": "Scene transformation is high-risk; do not change location unless explicitly requested.",
-};
+const ANTI_DRIFT_BLOCK =
+  "Anti-drift: no wardrobe change, outfit change, different swimsuit, logo change, trim change, pattern change, print change, colorway change, different person, face change, hairstyle change, background change, location change, framing change, redesign, or restyling.";
 
-export function buildMegaskaFidelityPrompt(input: BuildMegaskaFidelityPromptInput) {
-  const category = getMotionPresetCategory(input.motionPreset);
-
-  if (input.videoMode === "frame-based-megaska") {
-    const shortLines: string[] = [
-      "Megaska frame-based motion.",
-      "Preserve same model identity, exact swimsuit, and same environment.",
-      "Use provided start/end frames as hard anchors.",
-      `${getMotionPresetLabel(input.motionPreset)}.`,
-      `Camera: ${getCameraMotionLabel(input.cameraMotion)}.`,
-      `Subject: ${getSubjectMotionLabel(input.subjectMotion)}.`,
-      `Duration ${input.durationSeconds}s.`,
-    ];
-
-    if (input.strictMegaskaFidelity) {
-      shortLines.push("Strict fidelity on. No redesign, no scene change, no wardrobe drift.");
-    }
-
-    if (input.userPrompt?.trim()) {
-      shortLines.push(`Instruction: ${input.userPrompt.trim()}`);
-    }
-
-    return shortLines.join(" ");
+function getStrictMotionLine(preset: VideoMotionPreset) {
+  switch (preset) {
+    case "subtle-breathing":
+      return "Allow slight natural breathing only.";
+    case "slow-camera-push":
+      return "Allow a very slow push-in only.";
+    case "hair-movement":
+      return "Allow slight hair movement only.";
+    case "fabric-breeze":
+      return "Allow slight breeze on loose fabric edges only.";
+    case "gentle-pan":
+      return "Allow a gentle pan only.";
+    default:
+      return "Allow only subtle motion.";
   }
+}
 
-  const lines: string[] = [
-    "Megaska Shot Animation Engine.",
-    "The provided image is the FIRST FRAME and PRIMARY SOURCE OF TRUTH.",
-    "Animate this exact Megaska swimwear shot; do not reinterpret a new shot.",
-    "Preserve same model identity.",
-    "Preserve exact same swimsuit identity.",
-    "Preserve garment structure: silhouette, neckline, seam/panel layout, trim placement, print/colorway.",
-    "Preserve same environment and background.",
-    "Preserve same composition and framing unless camera motion is explicitly requested.",
-    "Do not replace model, swimsuit, or location.",
-    "Do not redesign or restyle garment.",
-    `Duration: ${input.durationSeconds}s.`,
-    `Motion preset: ${getMotionPresetLabel(input.motionPreset)} (${category}). ${SAFE_MOTION_GUIDANCE[input.motionPreset]}`,
-    `Camera motion: ${getCameraMotionLabel(input.cameraMotion)}.`,
-    `Subject motion: ${getSubjectMotionLabel(input.subjectMotion)}.`,
+export function buildAnimatedStillStrictPrompt(input: BuildMegaskaFidelityPromptInput) {
+  return [
+    "Animate the provided Megaska image with minimal natural motion only.",
+    "Preserve the same person, swimsuit, background, framing, colors, and garment details.",
+    "No reinterpretation, redesign, wardrobe change, or scene change.",
+    getStrictMotionLine(input.motionPreset),
+    ANTI_DRIFT_BLOCK,
+  ].join(" ");
+}
+
+export function buildAnchoredShortShotPrompt(input: BuildMegaskaFidelityPromptInput) {
+  const lines = [
+    "Create a short Megaska transition using the provided frames as the visual basis.",
+    "Preserve them as closely as possible with the same model, same garment, and same scene.",
+    "Keep motion conservative and avoid reinterpretation.",
+    `Target duration: ${input.durationSeconds}s.`,
+    ANTI_DRIFT_BLOCK,
   ];
 
-  if (input.strictMegaskaFidelity) {
-    lines.push("Strict Megaska Fidelity: ON. Subtle motion only; prioritize anchor preservation over creativity.");
+  if (input.userPrompt?.trim()) {
+    lines.push(`Extra note: ${input.userPrompt.trim()}`);
   }
 
-  if (input.videoMode === "creative-reinterpretation") {
-    lines.push("Creative reinterpretation mode: still preserve model, garment, and scene continuity as much as possible.");
-  }
+  return lines.join(" ");
+}
+
+export function buildCreativeReinterpretationPrompt(input: BuildMegaskaFidelityPromptInput) {
+  const lines = [
+    "Creative reinterpretation mode for Megaska.",
+    `Motion preset: ${input.motionPreset}.`,
+    `Target duration: ${input.durationSeconds}s.`,
+  ];
 
   if (input.userPrompt?.trim()) {
-    lines.push(`User notes: ${input.userPrompt.trim()}`);
+    lines.push(`Creative direction: ${input.userPrompt.trim()}`);
   }
 
-  lines.push("Target result: the original Megaska image has come to life.");
+  return lines.join(" ");
+}
 
-  return lines.join("\n");
+export function buildMegaskaFidelityPrompt(input: BuildMegaskaFidelityPromptInput) {
+  if (input.videoMode === "animated-still-strict") {
+    return buildAnimatedStillStrictPrompt(input);
+  }
+
+  if (input.videoMode === "anchored-short-shot") {
+    return buildAnchoredShortShotPrompt(input);
+  }
+
+  return buildCreativeReinterpretationPrompt(input);
 }
