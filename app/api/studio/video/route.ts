@@ -8,11 +8,14 @@ import {
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   getMotionPresetCategory,
+  getMotionRiskLevel,
+  VIDEO_ANCHORED_SAFE_MOTION_PRESETS,
   VIDEO_DURATIONS,
+  VIDEO_MODES,
   VIDEO_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
+  VIDEO_STRICT_SAFE_MOTION_PRESETS,
   VIDEO_STYLES,
-  VIDEO_MODES,
   VIDEO_CAMERA_MOTIONS,
   VIDEO_SUBJECT_MOTIONS,
   type VideoCameraMotion,
@@ -29,20 +32,28 @@ import { runVideoJob } from "@/lib/video/runVideoJob";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-type VideoFrameRef = {
+type VideoAnchorRef = {
   url?: string;
   generationId?: string | null;
+  generation_id?: string | null;
 };
 
 type VideoGeneratePayload = {
   ai_backend_id?: string | null;
+  // legacy fields
   master_image_url?: string;
   source_generation_id?: string | null;
   start_frame_url?: string;
   start_frame_generation_id?: string | null;
   end_frame_url?: string;
   end_frame_generation_id?: string | null;
-  reference_frames?: VideoFrameRef[];
+  reference_frames?: VideoAnchorRef[];
+  // subject package fields
+  identity_anchor?: VideoAnchorRef;
+  garment_anchor?: VideoAnchorRef;
+  fit_anchor?: VideoAnchorRef;
+  first_frame?: VideoAnchorRef;
+  last_frame?: VideoAnchorRef;
   motion_preset?: VideoMotionPreset;
   duration_seconds?: VideoDurationSeconds;
   style?: VideoStyle;
@@ -123,6 +134,19 @@ function cleanUrl(value?: string | null) {
   return value?.trim() || null;
 }
 
+function normalizeAnchorRef(anchor?: VideoAnchorRef | null, fallbackUrl?: string | null, fallbackGenerationId?: string | null) {
+  return {
+    url: cleanUrl(anchor?.url) ?? cleanUrl(fallbackUrl),
+    generationId: anchor?.generationId?.trim() || anchor?.generation_id?.trim() || fallbackGenerationId?.trim() || null,
+  };
+}
+
+function pushCompatibilityWarning(warnings: string[], warning: string) {
+  if (!warnings.includes(warning)) {
+    warnings.push(warning);
+  }
+}
+
 type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
 
 export async function POST(request: Request) {
@@ -162,7 +186,7 @@ export async function POST(request: Request) {
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
     const strictAnchor = payload.strict_anchor ?? true;
-    const videoMode = payload.video_mode ?? "frame-based-megaska";
+    const videoMode = payload.video_mode ?? "animated-still-strict";
     const cameraMotion = payload.camera_motion ?? "push";
     const subjectMotion = payload.subject_motion ?? "subtle";
     const aspectRatio = payload.aspect_ratio ?? "9:16";
@@ -190,60 +214,143 @@ export async function POST(request: Request) {
       });
     }
 
-    const strictMegaskaFidelity = strictAnchor && strictGarmentLock;
-    const motionPresetCategory = getMotionPresetCategory(payload.motion_preset);
-    const effectiveVideoMode = strictMegaskaFidelity && videoMode !== "creative-reinterpretation" ? videoMode : videoMode;
-    const effectiveMotionPreset =
-      strictMegaskaFidelity && motionPresetCategory === "experimental" ? "subtle-breathing" : payload.motion_preset;
-    const effectiveMotionPresetCategory = getMotionPresetCategory(effectiveMotionPreset);
-    const effectiveSubjectMotion = strictMegaskaFidelity && subjectMotion === "moderate" ? "subtle" : subjectMotion;
+    const strictMegaskaFidelity = strictAnchor && strictGarmentLock && videoMode !== "creative-reinterpretation";
+    const compatibilityWarnings: string[] = [];
 
-    const isFrameBasedMode = effectiveVideoMode === "frame-based-megaska";
+    const fitAnchor = normalizeAnchorRef(payload.fit_anchor, payload.master_image_url, payload.source_generation_id ?? null);
+    const identityAnchor = normalizeAnchorRef(payload.identity_anchor);
+    const garmentAnchor = normalizeAnchorRef(payload.garment_anchor);
+    const firstFrame = normalizeAnchorRef(payload.first_frame, payload.start_frame_url, payload.start_frame_generation_id ?? null);
+    const lastFrame = normalizeAnchorRef(payload.last_frame, payload.end_frame_url, payload.end_frame_generation_id ?? null);
 
-    const startFrameUrl = cleanUrl(payload.start_frame_url);
-    const endFrameUrl = cleanUrl(payload.end_frame_url);
-    const masterImageUrl = cleanUrl(payload.master_image_url);
+    const legacyReferenceFrames = (payload.reference_frames ?? [])
+      .map((ref) => normalizeAnchorRef(ref))
+      .filter((ref): ref is { url: string; generationId: string | null } => Boolean(ref.url));
 
-    if (isFrameBasedMode) {
-      if (!startFrameUrl || !endFrameUrl) {
+    const effectiveMotionPreset = payload.motion_preset;
+    let effectiveSubjectMotion = subjectMotion;
+
+    if (videoMode === "animated-still-strict") {
+      if (!fitAnchor.url) {
+        return asJson(400, { success: false, error: "animated-still-strict mode requires fit_anchor.url." });
+      }
+
+      if (!VIDEO_STRICT_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
         return asJson(400, {
           success: false,
-          error: "Frame-based Megaska mode requires start_frame_url and end_frame_url.",
+          error: `Motion preset '${effectiveMotionPreset}' is not allowed in animated-still-strict mode.`,
         });
       }
-    } else if (!masterImageUrl) {
-      return asJson(400, { success: false, error: "master_image_url is required." });
+
+      if (effectiveSubjectMotion !== "none" && effectiveSubjectMotion !== "subtle") {
+        return asJson(400, {
+          success: false,
+          error: "animated-still-strict mode allows only none/subtle subject_motion.",
+        });
+      }
+
+      if (cameraMotion === "pan" && effectiveMotionPreset !== "gentle-pan") {
+        pushCompatibilityWarning(compatibilityWarnings, "Gentle pan camera motion is best paired with gentle-pan preset.");
+      }
     }
 
-    const referenceFrames = (payload.reference_frames ?? [])
-      .map((ref) => ({
-        url: cleanUrl(ref.url),
-        generationId: ref.generationId?.trim() || null,
-      }))
-      .filter((ref): ref is { url: string; generationId: string | null } => Boolean(ref.url))
-      .slice(0, FRAME_MODE_REFERENCE_LIMIT);
+    if (videoMode === "anchored-short-shot") {
+      if (!firstFrame.url || !lastFrame.url) {
+        return asJson(400, { success: false, error: "anchored-short-shot mode requires first_frame.url and last_frame.url." });
+      }
+
+      if (!VIDEO_ANCHORED_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
+        return asJson(400, {
+          success: false,
+          error: `Motion preset '${effectiveMotionPreset}' is not allowed in anchored-short-shot mode.`,
+        });
+      }
+
+      if (effectiveSubjectMotion === "moderate") {
+        effectiveSubjectMotion = "subtle";
+        pushCompatibilityWarning(compatibilityWarnings, "Moderate subject motion was reduced to subtle for anchored-short-shot mode.");
+      }
+
+      if (firstFrame.url === lastFrame.url) {
+        pushCompatibilityWarning(compatibilityWarnings, "First Frame and Last Frame are identical; motion may be minimal.");
+      }
+    }
+
+    if (videoMode === "creative-reinterpretation") {
+      const hasAnyAnchor = Boolean(
+        fitAnchor.url || firstFrame.url || lastFrame.url || identityAnchor.url || garmentAnchor.url || legacyReferenceFrames.length,
+      );
+      if (!hasAnyAnchor) {
+        return asJson(400, { success: false, error: "Provide at least one anchor image for creative-reinterpretation mode." });
+      }
+    }
 
     const prompt = buildMegaskaFidelityPrompt({
-      videoMode: effectiveVideoMode,
+      videoMode,
       motionPreset: effectiveMotionPreset,
       durationSeconds: payload.duration_seconds,
-      cameraMotion,
-      subjectMotion: effectiveSubjectMotion,
       strictMegaskaFidelity,
-      userPrompt: payload.creative_notes,
+      userPrompt: videoMode === "animated-still-strict" ? null : payload.creative_notes,
     });
 
-    const legacyReferenceUrls = [masterImageUrl].filter((value): value is string => Boolean(value));
-    const frameReferenceUrls = referenceFrames.map((ref) => ref.url);
+    const rawReferenceCandidates = [
+      identityAnchor.url,
+      garmentAnchor.url,
+      ...legacyReferenceFrames.map((ref) => ref.url),
+    ].filter((value): value is string => Boolean(value));
+
+    let firstFrameUrl: string | null = null;
+    let lastFrameUrl: string | null = null;
+    let referenceImageUrls: string[] = [];
+
+    if (videoMode === "animated-still-strict") {
+      firstFrameUrl = fitAnchor.url;
+      lastFrameUrl = null;
+      referenceImageUrls = Array.from(new Set([identityAnchor.url, garmentAnchor.url].filter((value): value is string => Boolean(value))));
+    } else if (videoMode === "anchored-short-shot") {
+      firstFrameUrl = firstFrame.url;
+      lastFrameUrl = lastFrame.url;
+      referenceImageUrls = Array.from(
+        new Set([
+          identityAnchor.url,
+          garmentAnchor.url,
+          fitAnchor.url && fitAnchor.url !== firstFrame.url ? fitAnchor.url : null,
+        ].filter((value): value is string => Boolean(value))),
+      );
+    } else {
+      firstFrameUrl = firstFrame.url ?? fitAnchor.url;
+      lastFrameUrl = lastFrame.url;
+      referenceImageUrls = Array.from(new Set(rawReferenceCandidates));
+    }
+
+    if (referenceImageUrls.length > FRAME_MODE_REFERENCE_LIMIT) {
+      pushCompatibilityWarning(compatibilityWarnings, `Reference anchor count exceeds provider limit (${FRAME_MODE_REFERENCE_LIMIT}); extras were dropped.`);
+      referenceImageUrls = referenceImageUrls.slice(0, FRAME_MODE_REFERENCE_LIMIT);
+    }
+
+    const attachedReferenceRoles = [
+      identityAnchor.url ? "identityAnchor" : null,
+      garmentAnchor.url ? "garmentAnchor" : null,
+      videoMode === "anchored-short-shot" && fitAnchor.url && fitAnchor.url !== firstFrame.url ? "fitAnchor" : null,
+    ].filter((value): value is string => Boolean(value));
+
+    if (videoMode !== "creative-reinterpretation" && getMotionPresetCategory(effectiveMotionPreset) === "experimental") {
+      pushCompatibilityWarning(compatibilityWarnings, "Experimental motion preset selected in a fidelity-oriented mode.");
+    }
+
+    if (videoMode === "anchored-short-shot") {
+      pushCompatibilityWarning(compatibilityWarnings, "Best results come from anchors with same model, garment, and scene.");
+      pushCompatibilityWarning(compatibilityWarnings, "Large pose changes increase drift risk.");
+    }
 
     const videoResult = await runVideoJob({
       apiKey: googleApiKey,
       backendId: payload.ai_backend_id,
       prompt,
       durationSeconds: payload.duration_seconds,
-      firstFrameUrl: isFrameBasedMode ? startFrameUrl : masterImageUrl,
-      lastFrameUrl: isFrameBasedMode ? endFrameUrl : null,
-      referenceImageUrls: isFrameBasedMode ? frameReferenceUrls : legacyReferenceUrls,
+      firstFrameUrl,
+      lastFrameUrl,
+      referenceImageUrls,
       aspectRatio,
     });
 
@@ -251,16 +358,8 @@ export async function POST(request: Request) {
     const rawOutputUriFormat: UriClassification = rawOutputUri
       ? classifyStoredVideoUri(rawOutputUri)
       : "unknown-uri";
-    const thumbnailUrl = payload.requested_thumbnail_url ?? startFrameUrl ?? masterImageUrl;
-
-    console.log("[studio/video] provider output extracted", {
-      backendId: videoResult.backendId,
-      backendModel: videoResult.backendModel,
-      mimeType: videoResult.mimeType,
-      outputVideoUri: rawOutputUri,
-      outputVideoUriFormat: rawOutputUriFormat,
-      outputThumbnailUri: thumbnailUrl,
-    });
+    const thumbnailUrl =
+      payload.requested_thumbnail_url ?? firstFrameUrl ?? fitAnchor.url ?? null;
 
     const fileName = `${Date.now()}-${sanitizeForPath(effectiveMotionPreset)}-${payload.duration_seconds}s.mp4`;
     const filePath = `video/${fileName}`;
@@ -275,40 +374,17 @@ export async function POST(request: Request) {
       });
 
     if (uploadError) {
-      console.error("[studio/video] canonical storage upload failed", {
-        bucket: supabaseBucket,
-        filePath,
-        error: uploadError.message,
-      });
       return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
     }
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const canonicalVideoUrl = publicData.publicUrl;
 
-    const sourceReferenceUrls = isFrameBasedMode
-      ? [startFrameUrl, endFrameUrl, ...frameReferenceUrls].filter((value): value is string => Boolean(value))
-      : legacyReferenceUrls;
+    const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter(
+      (value): value is string => Boolean(value),
+    );
 
-    const debugMeta = {
-      source: "video-project-frame-engine",
-      prompt,
-      motionStrength: payload.motion_strength,
-      motionPresetCategory: effectiveMotionPresetCategory,
-      strictMegaskaFidelity,
-      strictAnchor,
-      videoMode: effectiveVideoMode,
-      cameraMotion,
-      subjectMotion: effectiveSubjectMotion,
-      creativeNotes: payload.creative_notes ?? null,
-      masterImageUrl,
-      startFrameUrl,
-      endFrameUrl,
-      backendModel: videoResult.backendModel,
-      rawOutputUri,
-      rawOutputUriFormat,
-      generatedAt: new Date().toISOString(),
-    };
+    const motionRiskLevel = getMotionRiskLevel(videoMode, effectiveMotionPreset);
 
     const generationInsertPayload = {
       prompt,
@@ -325,43 +401,42 @@ export async function POST(request: Request) {
       },
       reference_urls: sourceReferenceUrls,
       generation_kind: "video",
-      source_generation_id: isFrameBasedMode
-        ? payload.start_frame_generation_id ?? payload.source_generation_id ?? null
-        : payload.source_generation_id ?? null,
+      source_generation_id: firstFrame.generationId ?? fitAnchor.generationId ?? payload.source_generation_id ?? null,
       thumbnail_url: thumbnailUrl,
       video_meta: {
         motionPreset: effectiveMotionPreset,
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
-        motionPresetCategory: effectiveMotionPresetCategory,
+        motionPresetCategory: getMotionPresetCategory(effectiveMotionPreset),
         strictGarmentLock,
         strictMegaskaFidelity,
         strictAnchor,
-        videoMode: effectiveVideoMode,
+        videoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
-        startFrameGenerationId: payload.start_frame_generation_id ?? null,
-        endFrameGenerationId: payload.end_frame_generation_id ?? null,
-        referenceFrameIds: referenceFrames.map((ref) => ref.generationId).filter((value): value is string => Boolean(value)),
-        sourceMasterGenerationId: payload.source_generation_id ?? null,
-        sourceMasterImageUrl: masterImageUrl,
-        startFrameUrl,
-        endFrameUrl,
-        referenceFrameUrls: frameReferenceUrls,
-        storage: {
-          provider: "supabase",
-          bucket: supabaseBucket,
-          objectPath: filePath,
-          publicUrl: canonicalVideoUrl,
-          copySucceeded: true,
-        },
         sourceOutput: {
           provider: rawOutputUriFormat,
           uri: rawOutputUri,
         },
+        promptVersion: "video-prompt-v2",
+        antiDriftEnabled: videoMode !== "creative-reinterpretation",
+        motionRiskLevel,
+        compatibilityWarnings,
+        identityAnchorGenerationId: identityAnchor.generationId,
+        identityAnchorUrl: identityAnchor.url,
+        garmentAnchorGenerationId: garmentAnchor.generationId,
+        garmentAnchorUrl: garmentAnchor.url,
+        fitAnchorGenerationId: fitAnchor.generationId,
+        fitAnchorUrl: fitAnchor.url,
+        firstFrameGenerationId: firstFrame.generationId,
+        firstFrameUrl,
+        lastFrameGenerationId: lastFrame.generationId,
+        lastFrameUrl,
+        attachedReferenceRoles,
+        attachedReferenceCount: referenceImageUrls.length,
+        requestedReferenceCount: rawReferenceCandidates.length,
         providerResponse: videoResult.providerResponseMeta,
-        debug: debugMeta,
       },
     } satisfies Record<string, unknown>;
 
@@ -374,14 +449,6 @@ export async function POST(request: Request) {
     if (insertError) {
       return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
     }
-
-    console.log("[studio/video] success", {
-      generationId: inserted.id,
-      backendId: videoResult.backendId,
-      outputUriFormat: classifyStoredVideoUri(canonicalVideoUrl),
-      rawOutputUriFormat,
-      elapsedMs: Date.now() - startedAt,
-    });
 
     return asJson(200, {
       success: true,
@@ -398,21 +465,24 @@ export async function POST(request: Request) {
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
-        motionPresetCategory: effectiveMotionPresetCategory,
+        motionPresetCategory: getMotionPresetCategory(effectiveMotionPreset),
         strictGarmentLock,
         strictMegaskaFidelity,
         strictAnchor,
-        videoMode: effectiveVideoMode,
+        videoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
-        startFrameGenerationId: payload.start_frame_generation_id ?? null,
-        endFrameGenerationId: payload.end_frame_generation_id ?? null,
-        referenceFrameIds: referenceFrames.map((ref) => ref.generationId).filter((value): value is string => Boolean(value)),
+        motionRiskLevel,
+        compatibilityWarnings,
+        identityAnchorGenerationId: identityAnchor.generationId,
+        garmentAnchorGenerationId: garmentAnchor.generationId,
+        fitAnchorGenerationId: fitAnchor.generationId,
+        firstFrameGenerationId: firstFrame.generationId,
+        lastFrameGenerationId: lastFrame.generationId,
+        attachedReferenceRoles,
       },
     });
   } catch (error) {
-    console.error("[studio/video] unhandled error", error);
-
     if (error instanceof ProviderInvalidArgumentError) {
       return asJson(400, {
         success: false,
@@ -439,5 +509,7 @@ export async function POST(request: Request) {
       success: false,
       error: error instanceof Error ? error.message : "Unexpected server error.",
     });
+  } finally {
+    console.log("[studio/video] completed", { elapsedMs: Date.now() - startedAt });
   }
 }
