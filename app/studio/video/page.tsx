@@ -5,18 +5,27 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
+  getCameraMotionLabel,
   getMotionPresetCategory,
   getMotionPresetLabel,
   getMotionStrengthLabel,
   getStyleLabel,
+  getSubjectMotionLabel,
+  getVideoModeLabel,
+  VIDEO_CAMERA_MOTIONS,
   VIDEO_DURATIONS,
+  VIDEO_MODES,
   VIDEO_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
   VIDEO_STYLES,
+  VIDEO_SUBJECT_MOTIONS,
+  type VideoCameraMotion,
   type VideoDurationSeconds,
+  type VideoMode,
   type VideoMotionPreset,
   type VideoMotionStrength,
   type VideoStyle,
+  type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
 const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16"] as const;
 type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIO_OPTIONS)[number];
@@ -44,10 +53,13 @@ type VideoResult = {
   downloadUrl: string;
   thumbnailUrl?: string;
   sourceGenerationId: string | null;
+  videoMode: VideoMode;
   motionPreset: VideoMotionPreset;
   durationSeconds: VideoDurationSeconds;
   style: VideoStyle;
   motionStrength: VideoMotionStrength;
+  cameraMotion: VideoCameraMotion;
+  subjectMotion: VideoSubjectMotion;
   strictGarmentLock: boolean;
   strictAnchor: boolean;
   createdAt: string;
@@ -58,10 +70,13 @@ export default function VideoProjectPage() {
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [masterSelection, setMasterSelection] = useState<MasterSelection | null>(null);
+  const [videoMode, setVideoMode] = useState<VideoMode>("animate-existing-shot");
   const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-breathing");
   const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
   const [motionStrength, setMotionStrength] = useState<VideoMotionStrength>("subtle");
+  const [cameraMotion, setCameraMotion] = useState<VideoCameraMotion>("none");
+  const [subjectMotion, setSubjectMotion] = useState<VideoSubjectMotion>("subtle");
   const [strictGarmentLock, setStrictGarmentLock] = useState(true);
   const [strictAnchor, setStrictAnchor] = useState(true);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
@@ -169,10 +184,13 @@ export default function VideoProjectPage() {
           ai_backend_id: selectedBackendId || null,
           master_image_url: masterSelection.imageUrl,
           source_generation_id: masterSelection.sourceGenerationId,
+          video_mode: videoMode,
           motion_preset: motionPreset,
           duration_seconds: duration,
           style,
           motion_strength: motionStrength,
+          camera_motion: cameraMotion,
+          subject_motion: subjectMotion,
           strict_garment_lock: strictGarmentLock,
           strict_anchor: strictAnchor,
           aspect_ratio: aspectRatio,
@@ -189,10 +207,13 @@ export default function VideoProjectPage() {
         thumbnailUrl?: string;
         sourceGenerationId?: string | null;
         videoMeta?: {
+          videoMode: VideoMode;
           motionPreset: VideoMotionPreset;
           durationSeconds: VideoDurationSeconds;
           style: VideoStyle;
           motionStrength: VideoMotionStrength;
+          cameraMotion: VideoCameraMotion;
+          subjectMotion: VideoSubjectMotion;
           motionPresetCategory: "safe" | "experimental";
           strictGarmentLock: boolean;
           strictAnchor: boolean;
@@ -210,10 +231,13 @@ export default function VideoProjectPage() {
         downloadUrl: payload.downloadUrl || `/api/studio/video/${payload.generationId}/download`,
         thumbnailUrl: payload.thumbnailUrl,
         sourceGenerationId: payload.sourceGenerationId ?? null,
+        videoMode: payload.videoMeta.videoMode,
         motionPreset: payload.videoMeta.motionPreset,
         durationSeconds: payload.videoMeta.durationSeconds,
         style: payload.videoMeta.style,
         motionStrength: payload.videoMeta.motionStrength,
+        cameraMotion: payload.videoMeta.cameraMotion,
+        subjectMotion: payload.videoMeta.subjectMotion,
         strictGarmentLock: payload.videoMeta.strictGarmentLock,
         strictAnchor: payload.videoMeta.strictAnchor,
         createdAt: new Date().toISOString(),
@@ -403,6 +427,21 @@ export default function VideoProjectPage() {
               </label>
 
               <label className="block space-y-2 text-sm">
+                <span className="text-zinc-300">Video mode</span>
+                <select
+                  value={videoMode}
+                  onChange={(event) => setVideoMode(event.target.value as VideoMode)}
+                  className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
+                >
+                  {VIDEO_MODES.map((modeOption) => (
+                    <option key={modeOption} value={modeOption}>
+                      {getVideoModeLabel(modeOption)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block space-y-2 text-sm">
                 <span className="text-zinc-300">Motion preset</span>
                 <select
                   value={motionPreset}
@@ -469,6 +508,38 @@ export default function VideoProjectPage() {
                     {VIDEO_MOTION_STRENGTHS.map((strength) => (
                       <option key={strength} value={strength}>
                         {getMotionStrengthLabel(strength)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block space-y-2 text-sm">
+                  <span className="text-zinc-300">Camera motion</span>
+                  <select
+                    value={cameraMotion}
+                    onChange={(event) => setCameraMotion(event.target.value as VideoCameraMotion)}
+                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
+                  >
+                    {VIDEO_CAMERA_MOTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {getCameraMotionLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block space-y-2 text-sm">
+                  <span className="text-zinc-300">Subject motion</span>
+                  <select
+                    value={subjectMotion}
+                    onChange={(event) => setSubjectMotion(event.target.value as VideoSubjectMotion)}
+                    className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
+                  >
+                    {VIDEO_SUBJECT_MOTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {getSubjectMotionLabel(option)}
                       </option>
                     ))}
                   </select>
@@ -559,10 +630,13 @@ export default function VideoProjectPage() {
                   className="h-auto w-full rounded-md"
                 />
                 <div className="grid gap-2 text-xs text-zinc-300 sm:grid-cols-2">
+                  <p>Mode: {getVideoModeLabel(latestResult.videoMode)}</p>
                   <p>Preset: {getMotionPresetLabel(latestResult.motionPreset)}</p>
                   <p>Duration: {latestResult.durationSeconds}s</p>
                   <p>Style: {getStyleLabel(latestResult.style)}</p>
                   <p>Strength: {getMotionStrengthLabel(latestResult.motionStrength)}</p>
+                  <p>Camera motion: {getCameraMotionLabel(latestResult.cameraMotion)}</p>
+                  <p>Subject motion: {getSubjectMotionLabel(latestResult.subjectMotion)}</p>
                   <p>Garment lock: {latestResult.strictGarmentLock ? "On" : "Off"}</p>
                   <p>Strict anchor: {latestResult.strictAnchor ? "On" : "Off"}</p>
                   <p>Generated: {formatGeneratedAt(latestResult.createdAt)}</p>

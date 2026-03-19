@@ -13,10 +13,16 @@ import {
   VIDEO_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
   VIDEO_STYLES,
+  VIDEO_MODES,
+  VIDEO_CAMERA_MOTIONS,
+  VIDEO_SUBJECT_MOTIONS,
+  type VideoCameraMotion,
   type VideoDurationSeconds,
+  type VideoMode,
   type VideoMotionPreset,
   type VideoMotionStrength,
   type VideoStyle,
+  type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
 import { runVideoJob } from "@/lib/video/runVideoJob";
 
@@ -33,6 +39,9 @@ type VideoGeneratePayload = {
   motion_strength?: VideoMotionStrength;
   strict_garment_lock?: boolean;
   strict_anchor?: boolean;
+  video_mode?: VideoMode;
+  camera_motion?: VideoCameraMotion;
+  subject_motion?: VideoSubjectMotion;
   aspect_ratio?: StudioAspectRatio;
   creative_notes?: string;
   requested_thumbnail_url?: string | null;
@@ -83,6 +92,19 @@ function isDuration(value: unknown): value is VideoDurationSeconds {
   return typeof value === "number" && VIDEO_DURATIONS.includes(value as VideoDurationSeconds);
 }
 
+
+function isVideoMode(value: unknown): value is VideoMode {
+  return typeof value === "string" && VIDEO_MODES.includes(value as VideoMode);
+}
+
+function isCameraMotion(value: unknown): value is VideoCameraMotion {
+  return typeof value === "string" && VIDEO_CAMERA_MOTIONS.includes(value as VideoCameraMotion);
+}
+
+function isSubjectMotion(value: unknown): value is VideoSubjectMotion {
+  return typeof value === "string" && VIDEO_SUBJECT_MOTIONS.includes(value as VideoSubjectMotion);
+}
+
 function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRatio {
   return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
 }
@@ -131,7 +153,22 @@ export async function POST(request: Request) {
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
     const strictAnchor = payload.strict_anchor ?? true;
+    const videoMode = payload.video_mode ?? "animate-existing-shot";
+    const cameraMotion = payload.camera_motion ?? "none";
+    const subjectMotion = payload.subject_motion ?? "subtle";
     const aspectRatio = payload.aspect_ratio ?? "9:16";
+
+    if (!isVideoMode(videoMode)) {
+      return asJson(400, { success: false, error: "Unsupported video_mode." });
+    }
+
+    if (!isCameraMotion(cameraMotion)) {
+      return asJson(400, { success: false, error: "Unsupported camera_motion." });
+    }
+
+    if (!isSubjectMotion(subjectMotion)) {
+      return asJson(400, { success: false, error: "Unsupported subject_motion." });
+    }
 
     if (!isStudioAspectRatio(aspectRatio)) {
       return asJson(400, { success: false, error: "Unsupported aspect_ratio value." });
@@ -146,10 +183,13 @@ export async function POST(request: Request) {
 
     const prompt = buildVideoPrompt({
       masterImageUrl,
+      videoMode,
       motionPreset: payload.motion_preset,
       durationSeconds: payload.duration_seconds,
       style: payload.style,
       motionStrength: payload.motion_strength,
+      cameraMotion,
+      subjectMotion,
       strictGarmentLock,
       strictAnchor,
       userPrompt: payload.creative_notes,
@@ -216,6 +256,9 @@ export async function POST(request: Request) {
       motionStrength: payload.motion_strength,
       motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
       strictAnchor,
+      videoMode,
+      cameraMotion,
+      subjectMotion,
       creativeNotes: payload.creative_notes ?? null,
       masterImageUrl,
       backendModel: videoResult.backendModel,
@@ -249,6 +292,9 @@ export async function POST(request: Request) {
         motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
         strictGarmentLock,
         strictAnchor,
+        videoMode,
+        cameraMotion,
+        subjectMotion,
         storage: {
           provider: "supabase",
           bucket: supabaseBucket,
@@ -261,6 +307,7 @@ export async function POST(request: Request) {
           uri: rawOutputUri,
         },
         providerResponse: videoResult.providerResponseMeta,
+        sourceMasterGenerationId: payload.source_generation_id ?? null,
         debug: debugMeta,
       },
     } satisfies Record<string, unknown>;
@@ -336,6 +383,9 @@ export async function POST(request: Request) {
         motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
         strictGarmentLock,
         strictAnchor,
+        videoMode,
+        cameraMotion,
+        subjectMotion,
       },
     });
   } catch (error) {
