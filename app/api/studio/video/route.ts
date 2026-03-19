@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import {
   ProviderInvalidArgumentError,
+  ProviderModelNotFoundError,
   ProviderUnavailableError,
   isGeminiUnavailableError,
 } from "@/lib/ai/providerErrors";
@@ -28,6 +29,7 @@ import {
 } from "@/lib/video/promptBuilder";
 import { buildMegaskaFidelityPrompt } from "@/lib/video/fidelityPrompt";
 import { runVideoJob } from "@/lib/video/runVideoJob";
+import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -139,6 +141,28 @@ function isAllowedMotionPreset<TPreset extends VideoMotionPreset>(
 
 function cleanUrl(value?: string | null) {
   return value?.trim() || null;
+}
+
+function normalizeUrlForComparison(value?: string | null) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return trimmed.split(/[?#]/, 1)[0] ?? trimmed;
+  }
+}
+
+function isMeaningfullyDifferentUrl(left?: string | null, right?: string | null) {
+  const leftNormalized = normalizeUrlForComparison(left);
+  const rightNormalized = normalizeUrlForComparison(right);
+  if (!leftNormalized || !rightNormalized) return true;
+  return leftNormalized !== rightNormalized;
 }
 
 function normalizeAnchorRef(anchor?: VideoAnchorRef | null, fallbackUrl?: string | null, fallbackGenerationId?: string | null) {
@@ -256,8 +280,11 @@ export async function POST(request: Request) {
         });
       }
 
-      if (cameraMotion === "pan" && effectiveMotionPreset !== "gentle-pan") {
-        pushCompatibilityWarning(compatibilityWarnings, "Gentle pan camera motion is best paired with gentle-pan preset.");
+      if (cameraMotion === "pan") {
+        return asJson(400, {
+          success: false,
+          error: "animated-still-strict mode does not allow camera pan.",
+        });
       }
     }
 
@@ -313,7 +340,18 @@ export async function POST(request: Request) {
     if (videoMode === "animated-still-strict") {
       firstFrameUrl = fitAnchor.url;
       lastFrameUrl = null;
-      referenceImageUrls = Array.from(new Set([identityAnchor.url, garmentAnchor.url].filter((value): value is string => Boolean(value))));
+      const strictReferences: string[] = [];
+      if (identityAnchor.url && isMeaningfullyDifferentUrl(identityAnchor.url, fitAnchor.url)) {
+        strictReferences.push(identityAnchor.url);
+      }
+      if (
+        garmentAnchor.url &&
+        isMeaningfullyDifferentUrl(garmentAnchor.url, fitAnchor.url) &&
+        strictReferences.every((url) => isMeaningfullyDifferentUrl(url, garmentAnchor.url))
+      ) {
+        strictReferences.push(garmentAnchor.url);
+      }
+      referenceImageUrls = strictReferences;
     } else if (videoMode === "anchored-short-shot") {
       firstFrameUrl = firstFrame.url;
       lastFrameUrl = lastFrame.url;
@@ -336,8 +374,12 @@ export async function POST(request: Request) {
     }
 
     const attachedReferenceRoles = [
-      identityAnchor.url ? "identityAnchor" : null,
-      garmentAnchor.url ? "garmentAnchor" : null,
+      referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url))
+        ? "identityAnchor"
+        : null,
+      referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url))
+        ? "garmentAnchor"
+        : null,
       videoMode === "anchored-short-shot" && fitAnchor.url && fitAnchor.url !== firstFrame.url ? "fitAnchor" : null,
     ].filter((value): value is string => Boolean(value));
 
@@ -350,16 +392,38 @@ export async function POST(request: Request) {
       pushCompatibilityWarning(compatibilityWarnings, "Large pose changes increase drift risk.");
     }
 
-    const videoResult = await runVideoJob({
-      apiKey: googleApiKey,
-      backendId: payload.ai_backend_id,
-      prompt,
-      durationSeconds: payload.duration_seconds,
-      firstFrameUrl,
-      lastFrameUrl,
-      referenceImageUrls,
-      aspectRatio,
-    });
+    let videoResult;
+    try {
+      videoResult = await runVideoJob({
+        apiKey: googleApiKey,
+        backendId: payload.ai_backend_id,
+        prompt,
+        durationSeconds: payload.duration_seconds,
+        firstFrameUrl,
+        lastFrameUrl,
+        referenceImageUrls,
+        aspectRatio,
+      });
+    } catch (videoError) {
+      const diagnosticSummary = {
+        backendId: payload.ai_backend_id ?? null,
+        videoMode,
+        motionPreset: effectiveMotionPreset,
+        durationSeconds: payload.duration_seconds,
+        fitAnchorAttached: Boolean(firstFrameUrl),
+        identityAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url)),
+        garmentAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
+        firstFrameAttached: Boolean(firstFrameUrl),
+        lastFrameAttached: Boolean(lastFrameUrl),
+        attachedReferenceRoles,
+        attachedReferenceCount: referenceImageUrls.length,
+      };
+      console.error("[studio/video] generation failed", {
+        error: videoError,
+        diagnostics: diagnosticSummary,
+      });
+      throw videoError;
+    }
 
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
     const rawOutputUriFormat: UriClassification = rawOutputUri
@@ -426,6 +490,10 @@ export async function POST(request: Request) {
           provider: rawOutputUriFormat,
           uri: rawOutputUri,
         },
+        provider: videoResult.provider,
+        selectedBackendId: videoResult.backendId,
+        selectedBackendLabel: videoResult.backendLabel,
+        requestedProviderModelId: videoResult.providerModelId,
         promptVersion: "video-prompt-v2",
         antiDriftEnabled: videoMode !== "creative-reinterpretation",
         motionRiskLevel,
@@ -443,6 +511,17 @@ export async function POST(request: Request) {
         attachedReferenceRoles,
         attachedReferenceCount: referenceImageUrls.length,
         requestedReferenceCount: rawReferenceCandidates.length,
+        requestDiagnostics: {
+          videoMode,
+          motionPreset: effectiveMotionPreset,
+          durationSeconds: payload.duration_seconds,
+          fitAnchorAttached: Boolean(firstFrameUrl),
+          identityAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url)),
+          garmentAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
+          firstFrameAttached: Boolean(firstFrameUrl),
+          lastFrameAttached: Boolean(lastFrameUrl),
+          attachedReferenceRoles,
+        },
         providerResponse: videoResult.providerResponseMeta,
       },
     } satisfies Record<string, unknown>;
@@ -464,7 +543,10 @@ export async function POST(request: Request) {
       downloadUrl: `/api/studio/video/${inserted.id}/download`,
       thumbnailUrl,
       backend: videoResult.backendId,
+      backendLabel: videoResult.backendLabel,
       backendModel: videoResult.backendModel,
+      provider: videoResult.provider,
+      providerModelId: videoResult.providerModelId,
       prompt,
       sourceGenerationId: payload.source_generation_id ?? null,
       videoMeta: {
@@ -490,10 +572,28 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof ProviderModelNotFoundError) {
+      return asJson(404, {
+        success: false,
+        error_code: "model-not-found",
+        error: "This model ID is not available on the current Gemini API path.",
+      });
+    }
+
     if (error instanceof ProviderInvalidArgumentError) {
       return asJson(400, {
         success: false,
+        error_code: "rejected-params",
+        error: "This model rejected one or more generation settings. Try the recommended strict mode with fewer anchors and subtle motion.",
+      });
+    }
+
+    if (error instanceof VideoGenerationOutputError) {
+      return asJson(502, {
+        success: false,
+        error_code: error.code,
         error: error.message,
+        diagnostics: error.diagnostics,
       });
     }
 

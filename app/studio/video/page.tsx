@@ -28,7 +28,14 @@ const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16"] as const;
 type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIO_OPTIONS)[number];
 type AnchorSlot = "identity" | "garment" | "fit" | "first" | "last";
 
-type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
+type AIBackend = {
+  id: string;
+  name: string;
+  type: "image" | "video";
+  model: string;
+  isExperimental?: boolean;
+  isLegacy?: boolean;
+};
 
 type GalleryImageItem = {
   id: string;
@@ -383,6 +390,9 @@ export default function VideoProjectPage() {
               <p className="text-sm text-zinc-300">
                 Fidelity-first motion generation for Megaska subject packages. Use strict mode for highest consistency.
               </p>
+              <p className="text-xs text-cyan-200">
+                Best results come from one approved fit anchor plus subtle motion. More motion and transitions increase drift risk.
+              </p>
             </div>
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
               <Link href="/" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">
@@ -518,6 +528,19 @@ export default function VideoProjectPage() {
                     </option>
                   ))}
                 </select>
+                <p className="text-xs text-zinc-400">
+                  Recommended: Animated Still Strict + Veo 3.1 preview (Gemini API).
+                </p>
+                {videoBackends.find((backend) => backend.id === selectedBackendId)?.isExperimental ? (
+                  <p className="text-xs text-amber-300">
+                    This backend is experimental and may return empty outputs. Prefer Veo 3.1 for production jobs.
+                  </p>
+                ) : null}
+                {videoBackends.find((backend) => backend.id === selectedBackendId)?.isLegacy ? (
+                  <p className="text-xs text-amber-300">
+                    This backend is legacy and may not support anchored Megaska workflow features.
+                  </p>
+                ) : null}
               </label>
 
               <label className="block space-y-2 text-sm">

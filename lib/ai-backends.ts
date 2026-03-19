@@ -5,6 +5,8 @@ export type AIBackend = {
   name: string;
   type: AIBackendType;
   model: string;
+  isExperimental?: boolean;
+  isLegacy?: boolean;
 };
 
 export const AI_BACKENDS: AIBackend[] = [
@@ -46,9 +48,10 @@ export const AI_BACKENDS: AIBackend[] = [
   },
   {
     id: "veo-2",
-    name: "Veo 2",
+    name: "Veo 2 (Legacy)",
     type: "video",
     model: "veo-2.0-generate-001",
+    isLegacy: true,
   },
   {
     id: "veo-3",
@@ -58,9 +61,10 @@ export const AI_BACKENDS: AIBackend[] = [
   },
   {
     id: "veo-3-fast",
-    name: "Veo 3 Fast",
+    name: "Veo 3 Fast (Experimental)",
     type: "video",
     model: "veo-3.0-fast-generate-001",
+    isExperimental: true,
   },
   {
     id: "veo-3.1",
@@ -83,7 +87,7 @@ export function findBackendById(id?: string | null) {
 
 export function getDefaultBackendForType(type: AIBackendType) {
   if (type === "video") {
-    return findBackendById("veo-3") ?? findBackendById("veo-2")!;
+    return findBackendById("veo-3.1") ?? findBackendById("veo-3") ?? findBackendById("veo-2")!;
   }
 
   return findBackendById("imagen-4")!;

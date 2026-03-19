@@ -11,6 +11,30 @@ const SUPPORTED_VEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 type VeoAspectRatio = (typeof SUPPORTED_VEO_ASPECT_RATIOS)[number];
 
 const MAX_REFERENCE_IMAGES = 3;
+const MAX_SAFE_POLLS = 60;
+const POLL_INTERVAL_MS = 5000;
+
+export type VideoGenerationFailureCode =
+  | "no-operation"
+  | "operation-not-done"
+  | "response-missing"
+  | "generatedVideos-empty"
+  | "download-failed"
+  | "rejected-params"
+  | "model-not-found"
+  | "unknown";
+
+export class VideoGenerationOutputError extends Error {
+  code: VideoGenerationFailureCode;
+  diagnostics: Record<string, unknown>;
+
+  constructor(message: string, code: VideoGenerationFailureCode, diagnostics: Record<string, unknown>) {
+    super(message);
+    this.name = "VideoGenerationOutputError";
+    this.code = code;
+    this.diagnostics = diagnostics;
+  }
+}
 
 type VeoInput = {
   apiKey?: string;
@@ -53,7 +77,8 @@ type ResolveVideoBytesDiagnostics = {
 };
 
 type FrameSupport = {
-  supportsFrameAnchors: boolean;
+  supportsSourceImage: boolean;
+  supportsLastFrame: boolean;
   supportsReferenceImages: boolean;
 };
 
@@ -74,14 +99,22 @@ function getVeoFrameSupport(model: string): FrameSupport {
   const normalized = model.trim().toLowerCase();
 
   if (normalized.startsWith("veo-3.1")) {
-    return { supportsFrameAnchors: true, supportsReferenceImages: true };
+    return { supportsSourceImage: true, supportsLastFrame: true, supportsReferenceImages: true };
+  }
+
+  if (normalized.startsWith("veo-3.0-fast")) {
+    return { supportsSourceImage: true, supportsLastFrame: false, supportsReferenceImages: true };
+  }
+
+  if (normalized.startsWith("veo-3")) {
+    return { supportsSourceImage: true, supportsLastFrame: true, supportsReferenceImages: true };
   }
 
   if (normalized.startsWith("veo-2")) {
-    return { supportsFrameAnchors: true, supportsReferenceImages: true };
+    return { supportsSourceImage: true, supportsLastFrame: false, supportsReferenceImages: false };
   }
 
-  return { supportsFrameAnchors: false, supportsReferenceImages: false };
+  return { supportsSourceImage: false, supportsLastFrame: false, supportsReferenceImages: false };
 }
 
 async function loadInlineImage(url: string, role: string) {
@@ -112,8 +145,8 @@ async function buildFrameInputs(input: {
     .filter((url) => url !== firstFrameUrl && url !== lastFrameUrl)
     .slice(0, MAX_REFERENCE_IMAGES);
 
-  const sourceImage = support.supportsFrameAnchors && firstFrameUrl ? await loadInlineImage(firstFrameUrl, "first-frame") : null;
-  const lastFrame = support.supportsFrameAnchors && lastFrameUrl ? await loadInlineImage(lastFrameUrl, "last-frame") : null;
+  const sourceImage = support.supportsSourceImage && firstFrameUrl ? await loadInlineImage(firstFrameUrl, "first-frame") : null;
+  const lastFrame = support.supportsLastFrame && lastFrameUrl ? await loadInlineImage(lastFrameUrl, "last-frame") : null;
 
   const referenceImages: VideoGenerationReferenceImage[] = [];
   if (support.supportsReferenceImages) {
@@ -133,9 +166,13 @@ async function buildFrameInputs(input: {
       lastFrameRequested: Boolean(lastFrameUrl),
       sourceImageAttached: Boolean(sourceImage),
       lastFrameAttached: Boolean(lastFrame),
+      sourceImageDroppedAsUnsupported: Boolean(firstFrameUrl) && !sourceImage,
+      lastFrameDroppedAsUnsupported: Boolean(lastFrameUrl) && !lastFrame,
       requestedReferenceCount: (input.referenceImageUrls ?? []).length,
       attachedReferenceCount: referenceImages.length,
       droppedReferenceCount: Math.max((input.referenceImageUrls ?? []).length - referenceImages.length, 0),
+      referencesDroppedAsUnsupported:
+        !support.supportsReferenceImages && (input.referenceImageUrls ?? []).length > 0,
     },
   };
 }
@@ -276,7 +313,9 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   }
 
   if (!operation) {
-    throw new Error("Video generation failed before an operation was returned.");
+    throw new VideoGenerationOutputError("Video generation failed before an operation was returned.", "no-operation", {
+      requestedModelId: input.model,
+    });
   }
 
   console.log("[veo-video-adapter] provider operation accepted", {
@@ -285,8 +324,8 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   });
 
   let pollCount = 0;
-  while (!operation.done && pollCount < 60) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+  while (!operation.done && pollCount < MAX_SAFE_POLLS) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     try {
       operation = await ai.operations.getVideosOperation({ operation });
     } catch (error) {
@@ -300,7 +339,23 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   }
 
   if (!operation.done) {
-    throw new Error("Video generation timed out before completion.");
+    throw new VideoGenerationOutputError("Video generation timed out before completion.", "operation-not-done", {
+      requestedModelId: input.model,
+      pollCount,
+      done: Boolean(operation.done),
+      hasResponse: Boolean(operation.response),
+      operationName: typeof operation.name === "string" ? operation.name : null,
+    });
+  }
+
+  if (!operation.response) {
+    throw new VideoGenerationOutputError("Video generation completed without a provider response payload.", "response-missing", {
+      requestedModelId: input.model,
+      pollCount,
+      done: Boolean(operation.done),
+      hasResponse: false,
+      operationName: typeof operation.name === "string" ? operation.name : null,
+    });
   }
 
   const generatedVideo = operation.response?.generatedVideos?.[0]?.video as GeneratedVideoLike | undefined;
@@ -310,7 +365,18 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       hasResponse: Boolean(operation.response),
       generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
     });
-    throw new Error("Video generation returned no video output.");
+    throw new VideoGenerationOutputError(
+      "The provider completed the request but returned no video output. Try Veo 3.1 preview or a simpler strict-mode request.",
+      "generatedVideos-empty",
+      {
+        requestedModelId: input.model,
+        pollCount,
+        done: Boolean(operation.done),
+        hasResponse: Boolean(operation.response),
+        generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
+        operationName: typeof operation.name === "string" ? operation.name : null,
+      },
+    );
   }
 
   console.log("[veo-video-adapter] provider response payload summary", {
@@ -324,15 +390,37 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     hasInlineVideoBytes: Boolean(generatedVideo.videoBytes),
   });
 
-  const { bytes, diagnostics } = await resolveVideoBytes({
-    ai,
-    apiKey,
-    video: generatedVideo,
-  });
+  let bytes: Buffer | null = null;
+  let diagnostics: ResolveVideoBytesDiagnostics | null = null;
+  try {
+    const resolved = await resolveVideoBytes({
+      ai,
+      apiKey,
+      video: generatedVideo,
+    });
+    bytes = resolved.bytes;
+    diagnostics = resolved.diagnostics;
+  } catch (error) {
+    throw new VideoGenerationOutputError(
+      "The provider generated a result but the video could not be downloaded.",
+      "download-failed",
+      {
+        requestedModelId: input.model,
+        operationName: typeof operation.name === "string" ? operation.name : null,
+        pollCount,
+        providerDownloadError: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
   console.log("[veo-video-adapter] resolved provider video bytes diagnostics", diagnostics);
 
   if (!bytes) {
-    throw new Error("Unable to resolve generated video bytes.");
+    throw new VideoGenerationOutputError("The provider generated a result but the video could not be downloaded.", "download-failed", {
+      requestedModelId: input.model,
+      operationName: typeof operation.name === "string" ? operation.name : null,
+      pollCount,
+      bytesResolved: false,
+    });
   }
 
   return {
@@ -345,6 +433,12 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       done: Boolean(operation.done),
       pollCount,
       generatedVideoCount: operation.response?.generatedVideos?.length ?? 0,
+      hasResponse: Boolean(operation.response),
+      requestedModelId: input.model,
+      responseSummary: {
+        hasGeneratedVideosArray: Array.isArray(operation.response?.generatedVideos),
+        generatedVideosLength: operation.response?.generatedVideos?.length ?? 0,
+      },
       generatedVideo: {
         uri: generatedVideo.uri ?? null,
         downloadUri: generatedVideo.downloadUri ?? null,

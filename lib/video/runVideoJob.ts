@@ -2,6 +2,7 @@ import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
 import { isVeoModel } from "@/lib/ai/backendFamilies";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
+import { resolveVideoProviderModel, type VideoProvider } from "@/lib/video/providerModelMapping";
 
 export type RunVideoJobInput = {
   apiKey?: string;
@@ -18,7 +19,10 @@ export type RunVideoJobResult = {
   bytes: Buffer;
   mimeType: string;
   backendId: string;
+  backendLabel: string;
+  provider: VideoProvider;
   backendModel: string;
+  providerModelId: string;
   rawOutputUri: string | null;
   providerResponseMeta: Record<string, unknown>;
 };
@@ -76,9 +80,11 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     throw new Error("At least one anchor frame or reference image is required for Video Project generation.");
   }
 
+  const providerModel = resolveVideoProviderModel(backend);
+
   const output = await runVeoVideo({
     apiKey: input.apiKey,
-    model: backend.model,
+    model: providerModel.modelId,
     prompt: input.prompt,
     firstFrameUrl,
     lastFrameUrl,
@@ -91,7 +97,10 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     bytes: output.bytes,
     mimeType: output.mimeType,
     backendId: backend.id,
+    backendLabel: backend.name,
+    provider: providerModel.provider,
     backendModel: output.model,
+    providerModelId: output.model,
     rawOutputUri: output.rawOutputUri,
     providerResponseMeta: output.providerResponseMeta,
   };

@@ -13,7 +13,6 @@ export const VIDEO_MOTION_PRESETS = [
 export const VIDEO_STRICT_SAFE_MOTION_PRESETS = [
   "subtle-breathing",
   "slow-camera-push",
-  "gentle-pan",
   "hair-movement",
   "fabric-breeze",
 ] as const;
