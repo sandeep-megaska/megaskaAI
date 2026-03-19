@@ -11,15 +11,24 @@ export type RunVeoVideoInput = {
 };
 
 export async function runVeoVideo(input: RunVeoVideoInput) {
-  const referenceHeader = input.referenceImageUrls.length
-    ? `Use the provided reference image(s) as grounding context: ${input.referenceImageUrls.join(", ")}.`
+  const primaryReference = input.referenceImageUrls[0] ?? null;
+  const secondaryReferences = input.referenceImageUrls.slice(1);
+
+  const referenceHeader = primaryReference
+    ? [
+        "PRIMARY MASTER IMAGE (source of truth for all frames):",
+        primaryReference,
+        secondaryReferences.length
+          ? `Additional references (low priority, do not override master): ${secondaryReferences.join(", ")}.`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
     : "No reference images were provided.";
 
-  const composedPrompt = [
-    referenceHeader,
-    `Clip duration target: ${input.durationSeconds}s.`,
-    input.prompt,
-  ].join("\n\n");
+  const composedPrompt = [referenceHeader, `Clip duration target: ${input.durationSeconds}s.`, input.prompt]
+    .filter(Boolean)
+    .join("\n\n");
 
   return runVeoVideoGeneration({
     apiKey: input.apiKey,

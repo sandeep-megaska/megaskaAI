@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   getCameraMotionLabel,
-  getMotionPresetCategory,
   getMotionPresetLabel,
   getMotionStrengthLabel,
   getStyleLabel,
@@ -15,7 +14,8 @@ import {
   VIDEO_CAMERA_MOTIONS,
   VIDEO_DURATIONS,
   VIDEO_MODES,
-  VIDEO_MOTION_PRESETS,
+  VIDEO_EXPERIMENTAL_MOTION_PRESETS,
+  VIDEO_SAFE_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
   VIDEO_STYLES,
   VIDEO_SUBJECT_MOTIONS,
@@ -70,15 +70,17 @@ export default function VideoProjectPage() {
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [masterSelection, setMasterSelection] = useState<MasterSelection | null>(null);
-  const [videoMode, setVideoMode] = useState<VideoMode>("animate-existing-shot");
+  const [videoMode, setVideoMode] = useState<VideoMode>("animate-master-shot");
   const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-breathing");
   const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
   const [motionStrength, setMotionStrength] = useState<VideoMotionStrength>("subtle");
-  const [cameraMotion, setCameraMotion] = useState<VideoCameraMotion>("none");
+  const [cameraMotion, setCameraMotion] = useState<VideoCameraMotion>("push");
   const [subjectMotion, setSubjectMotion] = useState<VideoSubjectMotion>("subtle");
   const [strictGarmentLock, setStrictGarmentLock] = useState(true);
   const [strictAnchor, setStrictAnchor] = useState(true);
+
+  const strictMegaskaFidelity = strictAnchor && strictGarmentLock;
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [creativeNotes, setCreativeNotes] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -319,6 +321,26 @@ export default function VideoProjectPage() {
     router.push(`/?${query.toString()}`);
   }
 
+  useEffect(() => {
+    if (!strictMegaskaFidelity) return;
+
+    if (videoMode !== "animate-master-shot") {
+      setVideoMode("animate-master-shot");
+    }
+
+    if (VIDEO_EXPERIMENTAL_MOTION_PRESETS.includes(motionPreset)) {
+      setMotionPreset("subtle-breathing");
+    }
+
+    if (motionStrength !== "subtle") {
+      setMotionStrength("subtle");
+    }
+
+    if (subjectMotion === "moderate") {
+      setSubjectMotion("subtle");
+    }
+  }, [motionPreset, motionStrength, strictMegaskaFidelity, subjectMotion, videoMode]);
+
   const canGenerate = Boolean(masterSelection?.imageUrl && selectedBackendId);
 
   return (
@@ -410,6 +432,7 @@ export default function VideoProjectPage() {
 
             <div className="space-y-4 border-t border-white/10 pt-5">
               <h2 className="text-lg font-semibold text-white">2-5) Video controls</h2>
+              <p className="text-xs text-cyan-200">Default mode is fidelity-first: animate the uploaded Megaska master shot.</p>
 
               <label className="block space-y-2 text-sm">
                 <span className="text-zinc-300">Video backend</span>
@@ -433,11 +456,18 @@ export default function VideoProjectPage() {
                   onChange={(event) => setVideoMode(event.target.value as VideoMode)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  {VIDEO_MODES.map((modeOption) => (
-                    <option key={modeOption} value={modeOption}>
-                      {getVideoModeLabel(modeOption)}
-                    </option>
-                  ))}
+                  {VIDEO_MODES.map((modeOption) => {
+                    const isExperimentalMode = modeOption === "creative-reinterpretation";
+                    return (
+                      <option
+                        key={modeOption}
+                        value={modeOption}
+                        disabled={strictMegaskaFidelity && isExperimentalMode}
+                      >
+                        {getVideoModeLabel(modeOption)}
+                      </option>
+                    );
+                  })}
                 </select>
               </label>
 
@@ -448,20 +478,22 @@ export default function VideoProjectPage() {
                   onChange={(event) => setMotionPreset(event.target.value as VideoMotionPreset)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  <optgroup label="Fidelity-safe (recommended)">
-                    {VIDEO_MOTION_PRESETS.filter((preset) => getMotionPresetCategory(preset) === "safe").map((preset) => (
+                  <optgroup label="Megaska-safe (recommended)">
+                    {VIDEO_SAFE_MOTION_PRESETS.map((preset) => (
                       <option key={preset} value={preset}>
                         {getMotionPresetLabel(preset)}
                       </option>
                     ))}
                   </optgroup>
-                  <optgroup label="High-risk / experimental">
-                    {VIDEO_MOTION_PRESETS.filter((preset) => getMotionPresetCategory(preset) === "experimental").map((preset) => (
-                      <option key={preset} value={preset}>
-                        {getMotionPresetLabel(preset)}
-                      </option>
-                    ))}
-                  </optgroup>
+                  {!strictMegaskaFidelity ? (
+                    <optgroup label="Experimental / high-risk drift">
+                      {VIDEO_EXPERIMENTAL_MOTION_PRESETS.map((preset) => (
+                        <option key={preset} value={preset}>
+                          {getMotionPresetLabel(preset)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
                 </select>
               </label>
 
@@ -505,11 +537,14 @@ export default function VideoProjectPage() {
                     onChange={(event) => setMotionStrength(event.target.value as VideoMotionStrength)}
                     className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                   >
-                    {VIDEO_MOTION_STRENGTHS.map((strength) => (
-                      <option key={strength} value={strength}>
-                        {getMotionStrengthLabel(strength)}
-                      </option>
-                    ))}
+                    {VIDEO_MOTION_STRENGTHS.map((strength) => {
+                      const isRiskyStrength = strength !== "subtle";
+                      return (
+                        <option key={strength} value={strength} disabled={strictMegaskaFidelity && isRiskyStrength}>
+                          {getMotionStrengthLabel(strength)}
+                        </option>
+                      );
+                    })}
                   </select>
                 </label>
 
@@ -568,7 +603,7 @@ export default function VideoProjectPage() {
                   onChange={(event) => setStrictAnchor(event.target.checked)}
                   className="h-4 w-4 accent-cyan-400"
                 />
-                <span className="text-zinc-200">Strict Anchor (preserve same composition, subject, garment, and scene)</span>
+                <span className="text-zinc-200">Strict Megaska Fidelity (preserve same model, swimsuit, scene, and composition)</span>
               </label>
 
               <label className="flex items-center gap-3 rounded-md border border-white/10 px-3 py-3 text-sm">
@@ -587,7 +622,7 @@ export default function VideoProjectPage() {
                   rows={3}
                   value={creativeNotes}
                   onChange={(event) => setCreativeNotes(event.target.value)}
-                  placeholder="Optional direction for pacing, mood, or camera emphasis..."
+                  placeholder="Optional micro-motion notes. Keep this short for best fidelity."
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 />
               </label>
