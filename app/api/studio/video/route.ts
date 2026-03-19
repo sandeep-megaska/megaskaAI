@@ -36,6 +36,7 @@ import { runVideoJob } from "@/lib/video/runVideoJob";
 import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
 import { runVideoEvaluation } from "@/lib/video/evaluator/runVideoEvaluation";
+import { analyzeSceneStabilization } from "@/lib/video/scene/sceneStabilization";
 import { decomposePromptToShots } from "@/lib/video/sequence/decomposePromptToShots";
 import { planShots } from "@/lib/video/sequence/planShots";
 import { selectShotCandidate } from "@/lib/video/sequence/selectShotCandidate";
@@ -319,6 +320,23 @@ export async function POST(request: Request) {
 
     const actionPrompt = payload.action_prompt?.trim() || payload.creative_notes?.trim() || "subtle natural movement";
     let motionRiskLevel: MotionRiskLevel = classifyMotionRiskFromActionPrompt(actionPrompt);
+    const sceneStabilization = analyzeSceneStabilization({
+      actionPrompt,
+      styleHint: payload.style_hint,
+    });
+    const sceneLockBlock = sceneStabilization.sceneLockEnabled ? sceneStabilization.sceneLockBlock : null;
+    const sceneStabilizationUiNote = sceneStabilization.sceneLockEnabled
+      ? "Scene stabilization enabled to reduce unwanted intro drift."
+      : null;
+
+    if (sceneStabilization.sceneStabilizationRisk === "high") {
+      pushCompatibilityWarning(
+        compatibilityWarnings,
+        "High scene ambiguity detected; scene stabilization has been enabled to reduce opening-context drift.",
+      );
+    } else if (sceneStabilization.sceneStabilizationRisk === "medium" && sceneStabilization.sceneLockEnabled) {
+      pushCompatibilityWarning(compatibilityWarnings, "Indoor/object-sensitive scene detected; stabilization applied to opening frames.");
+    }
 
     if (fidelityPriority === "maximum-fidelity" && motionRiskLevel === "high") {
       pushCompatibilityWarning(compatibilityWarnings, "High-risk motion requested under maximum fidelity; motion intent may be softened.");
@@ -428,6 +446,7 @@ export async function POST(request: Request) {
           motionRiskLevel: shot.motionRiskLevel,
           actionPrompt: shot.actionPrompt,
           styleHint: shot.styleHint ?? undefined,
+          sceneLockBlock,
         });
 
         try {
@@ -598,6 +617,7 @@ export async function POST(request: Request) {
           motionRiskLevel,
           actionPrompt,
           styleHint: payload.style_hint,
+          sceneLockBlock,
         }),
         type: "Video",
         media_type: "Video",
@@ -646,6 +666,18 @@ export async function POST(request: Request) {
           inputMode,
           fidelityPriority,
           invariantPromptBlock,
+          sceneLockEnabled: sceneStabilization.sceneLockEnabled,
+          sceneIntent: sceneStabilization.sceneIntent,
+          sceneFamily: sceneStabilization.sceneIntent.sceneFamily,
+          indoorOutdoorClass: sceneStabilization.sceneIntent.indoorOutdoorClass,
+          sceneStartState: sceneStabilization.sceneStartState,
+          sceneExclusions: sceneStabilization.sceneExclusions,
+          sceneStabilizationRisk: sceneStabilization.sceneStabilizationRisk,
+          stabilizedOpeningRequired: sceneStabilization.stabilizedOpeningRequired,
+          sceneLockVersion: sceneStabilization.sceneLockVersion,
+          sceneLockPromptSummary: sceneStabilization.sceneLockPromptSummary,
+          sceneStabilizationDiagnostics: sceneStabilization.sceneStabilizationDiagnostics,
+          sceneStabilizationUiNote,
         },
       } satisfies Record<string, unknown>;
 
@@ -677,6 +709,9 @@ export async function POST(request: Request) {
           sequence: sequenceResult,
           evaluationStatus: "completed",
           evaluator: undefined,
+          sceneLockEnabled: sceneStabilization.sceneLockEnabled,
+          sceneStabilizationRisk: sceneStabilization.sceneStabilizationRisk,
+          sceneStabilizationUiNote,
         },
       });
     }
@@ -687,6 +722,7 @@ export async function POST(request: Request) {
       motionRiskLevel,
       actionPrompt,
       styleHint: payload.style_hint,
+      sceneLockBlock,
     });
 
     const videoResult = await runVideoJob({
@@ -784,6 +820,18 @@ export async function POST(request: Request) {
         requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
         actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
         invariantPromptBlock,
+        sceneLockEnabled: sceneStabilization.sceneLockEnabled,
+        sceneIntent: sceneStabilization.sceneIntent,
+        sceneFamily: sceneStabilization.sceneIntent.sceneFamily,
+        indoorOutdoorClass: sceneStabilization.sceneIntent.indoorOutdoorClass,
+        sceneStartState: sceneStabilization.sceneStartState,
+        sceneExclusions: sceneStabilization.sceneExclusions,
+        sceneStabilizationRisk: sceneStabilization.sceneStabilizationRisk,
+        stabilizedOpeningRequired: sceneStabilization.stabilizedOpeningRequired,
+        sceneLockVersion: sceneStabilization.sceneLockVersion,
+        sceneLockPromptSummary: sceneStabilization.sceneLockPromptSummary,
+        sceneStabilizationDiagnostics: sceneStabilization.sceneStabilizationDiagnostics,
+        sceneStabilizationUiNote,
         requestedReferenceCount: boundedMultiReferenceUrls.length,
         evaluator: evaluation,
         evaluationStatus: evaluation.evaluationStatus,
@@ -857,6 +905,18 @@ export async function POST(request: Request) {
         usedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
         requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
         actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
+        sceneLockEnabled: sceneStabilization.sceneLockEnabled,
+        sceneIntent: sceneStabilization.sceneIntent,
+        sceneFamily: sceneStabilization.sceneIntent.sceneFamily,
+        indoorOutdoorClass: sceneStabilization.sceneIntent.indoorOutdoorClass,
+        sceneStartState: sceneStabilization.sceneStartState,
+        sceneExclusions: sceneStabilization.sceneExclusions,
+        sceneStabilizationRisk: sceneStabilization.sceneStabilizationRisk,
+        stabilizedOpeningRequired: sceneStabilization.stabilizedOpeningRequired,
+        sceneLockVersion: sceneStabilization.sceneLockVersion,
+        sceneLockPromptSummary: sceneStabilization.sceneLockPromptSummary,
+        sceneStabilizationDiagnostics: sceneStabilization.sceneStabilizationDiagnostics,
+        sceneStabilizationUiNote,
         evaluator: evaluation,
         evaluationStatus: evaluation.evaluationStatus,
         manualReviewStatus: "pending",
