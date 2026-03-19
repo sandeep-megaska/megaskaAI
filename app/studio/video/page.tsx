@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
+  getMotionPresetCategory,
   getCameraMotionLabel,
   getMotionPresetLabel,
   getMotionStrengthLabel,
@@ -328,7 +329,7 @@ export default function VideoProjectPage() {
       setVideoMode("animate-master-shot");
     }
 
-    if (VIDEO_EXPERIMENTAL_MOTION_PRESETS.includes(motionPreset)) {
+    if (getMotionPresetCategory(motionPreset) === "experimental") {
       setMotionPreset("subtle-breathing");
     }
 
