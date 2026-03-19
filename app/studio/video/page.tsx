@@ -80,6 +80,28 @@ type VideoResult = {
     recommendation?: "pass" | "review" | "fail";
     warnings?: string[];
   };
+  decompositionEnabled?: boolean;
+  shotPlan?: Array<{
+    shotId: string;
+    sequenceIndex: number;
+    title: string;
+    actionPrompt: string;
+    providerPreference: string;
+    status: string;
+    selectedCandidateId?: string | null;
+  }>;
+  shotCandidates?: Array<{
+    candidateId: string;
+    shotId: string;
+    outputUrl: string;
+    backendLabel: string;
+  }>;
+  sequence?: {
+    sequenceId: string;
+    sequenceStatus: string;
+    stitchStatus: string;
+    stitchedVideoUrl?: string | null;
+  };
   createdAt: string;
 };
 
@@ -117,6 +139,7 @@ export default function VideoProjectPage() {
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [actionPrompt, setActionPrompt] = useState("");
   const [styleHint, setStyleHint] = useState("");
+  const [autoDecomposeShots, setAutoDecomposeShots] = useState(false);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -239,6 +262,7 @@ export default function VideoProjectPage() {
           aspect_ratio: aspectRatio,
           creative_notes: actionPrompt,
           requested_thumbnail_url: firstFrame?.imageUrl || fitAnchor?.imageUrl || referenceImages[0]?.imageUrl,
+          decomposition_enabled: autoDecomposeShots,
         }),
       });
 
@@ -258,6 +282,10 @@ export default function VideoProjectPage() {
           usedCompatibilityFallback?: boolean;
           evaluationStatus?: "pending" | "completed" | "failed";
           evaluator?: VideoResult["evaluator"];
+          decompositionEnabled?: boolean;
+          shotPlan?: VideoResult["shotPlan"];
+          shotCandidates?: VideoResult["shotCandidates"];
+          sequence?: VideoResult["sequence"];
         };
       };
       if (!response.ok || !payload.success || !payload.outputUrl || !payload.generationId || !payload.videoMeta) {
@@ -277,6 +305,10 @@ export default function VideoProjectPage() {
         usedCompatibilityFallback: payload.videoMeta.usedCompatibilityFallback,
         evaluationStatus: payload.videoMeta.evaluationStatus,
         evaluator: payload.videoMeta.evaluator,
+        decompositionEnabled: payload.videoMeta.decompositionEnabled,
+        shotPlan: payload.videoMeta.shotPlan,
+        shotCandidates: payload.videoMeta.shotCandidates,
+        sequence: payload.videoMeta.sequence,
         createdAt: new Date().toISOString(),
       };
 
@@ -330,6 +362,10 @@ export default function VideoProjectPage() {
                 </select>
               </label>
             </div>
+            <label className="flex items-center justify-between rounded-md border border-white/10 bg-zinc-950/40 px-3 py-2 text-sm">
+              <span>Auto decompose into shots</span>
+              <input type="checkbox" checked={autoDecomposeShots} onChange={(e) => setAutoDecomposeShots(e.target.checked)} />
+            </label>
 
             <div className="space-y-3 rounded-lg border border-white/10 p-3">
               <h2 className="text-base font-semibold">References</h2>
@@ -370,6 +406,7 @@ export default function VideoProjectPage() {
                   ].map((slot) => (
                     <div key={slot.key} className="rounded-md border border-cyan-400/20 p-2 text-xs">
                       <p>{slot.label}</p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       {slot.value ? <img src={slot.value.imageUrl} alt={slot.label} className="mt-1 h-24 w-full rounded object-cover" /> : <div className="mt-1 h-24 rounded border border-dashed border-white/20" />}
                     </div>
                   ))}
@@ -476,6 +513,30 @@ export default function VideoProjectPage() {
             {latestResult ? (
               <div className="space-y-3 rounded-lg border border-cyan-400/30 bg-zinc-950/70 p-3">
                 <video key={latestResult.outputUrl} src={latestResult.outputUrl} poster={latestResult.thumbnailUrl} controls className="h-auto w-full rounded-md" />
+                {latestResult.decompositionEnabled && latestResult.sequence ? (
+                  <div className="rounded-md border border-white/10 bg-zinc-900/80 p-2 text-xs">
+                    <p className="font-medium text-zinc-200">
+                      Shot Sequence · {latestResult.sequence.sequenceStatus} · Stitch: {latestResult.sequence.stitchStatus}
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {latestResult.shotPlan?.map((shot) => {
+                        const selected = latestResult.shotCandidates?.find((candidate) => candidate.candidateId === shot.selectedCandidateId);
+                        return (
+                          <div key={shot.shotId} className="rounded border border-white/10 p-2">
+                            <p>
+                              #{shot.sequenceIndex + 1} · {shot.title}
+                            </p>
+                            <p className="text-zinc-400">{shot.actionPrompt}</p>
+                            <p className="text-zinc-400">Route: {selected?.backendLabel ?? shot.providerPreference} · Status: {shot.status}</p>
+                            {selected ? (
+                              <video src={selected.outputUrl} controls className="mt-1 h-auto w-full rounded" />
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
                 <p className="text-xs">Risk: {latestResult.motionRiskLevel ?? "n/a"}</p>
                 {latestResult.usedCompatibilityFallback ? <p className="text-xs text-cyan-200">Used compatibility fallback for this provider.</p> : null}
                 {latestResult.compatibilityWarnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">• {warning}</p>)}
