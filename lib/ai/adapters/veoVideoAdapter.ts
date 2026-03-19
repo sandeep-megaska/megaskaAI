@@ -1,4 +1,8 @@
-import { GoogleGenAI, type VideoGenerationReferenceImage } from "@google/genai";
+import {
+  GoogleGenAI,
+  VideoGenerationReferenceType,
+  type VideoGenerationReferenceImage,
+} from "@google/genai";
 import { loadImageReference } from "@/lib/ai/loadImageReference";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
@@ -115,7 +119,7 @@ async function buildFrameInputs(input: {
   if (support.supportsReferenceImages) {
     for (const url of uniqueReferenceUrls) {
       const image = await loadInlineImage(url, "reference-frame");
-      referenceImages.push({ image, referenceType: "ASSET" });
+      referenceImages.push({ image, referenceType: VideoGenerationReferenceType.ASSET });
     }
   }
 
