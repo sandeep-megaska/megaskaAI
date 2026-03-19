@@ -8,26 +8,30 @@ import {
 } from "@/lib/ai/providerErrors";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
+  classifyMotionRiskFromActionPrompt,
   getMotionPresetCategory,
-  getMotionRiskLevel,
-  VIDEO_ANCHORED_SAFE_MOTION_PRESETS,
   VIDEO_DURATIONS,
+  VIDEO_FIDELITY_PRIORITIES,
+  VIDEO_INPUT_MODES,
   VIDEO_MODES,
   VIDEO_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
-  VIDEO_STRICT_SAFE_MOTION_PRESETS,
   VIDEO_STYLES,
   VIDEO_CAMERA_MOTIONS,
   VIDEO_SUBJECT_MOTIONS,
+  VIDEO_STRICT_SAFE_MOTION_PRESETS,
+  type MotionRiskLevel,
   type VideoCameraMotion,
   type VideoDurationSeconds,
+  type VideoFidelityPriority,
+  type VideoInputMode,
   type VideoMode,
   type VideoMotionPreset,
   type VideoMotionStrength,
   type VideoStyle,
   type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
-import { buildMegaskaFidelityPrompt } from "@/lib/video/fidelityPrompt";
+import { buildInvariantPromptBlock, buildMegaskaFidelityPrompt } from "@/lib/video/fidelityPrompt";
 import { runVideoJob } from "@/lib/video/runVideoJob";
 import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 
@@ -40,9 +44,15 @@ type VideoAnchorRef = {
   generation_id?: string | null;
 };
 
+type VideoReferenceImage = {
+  url?: string;
+  generationId?: string | null;
+  generation_id?: string | null;
+  tag?: string | null;
+};
+
 type VideoGeneratePayload = {
   ai_backend_id?: string | null;
-  // legacy fields
   master_image_url?: string;
   source_generation_id?: string | null;
   start_frame_url?: string;
@@ -50,7 +60,6 @@ type VideoGeneratePayload = {
   end_frame_url?: string;
   end_frame_generation_id?: string | null;
   reference_frames?: VideoAnchorRef[];
-  // subject package fields
   identity_anchor?: VideoAnchorRef;
   garment_anchor?: VideoAnchorRef;
   fit_anchor?: VideoAnchorRef;
@@ -68,11 +77,20 @@ type VideoGeneratePayload = {
   aspect_ratio?: StudioAspectRatio;
   creative_notes?: string;
   requested_thumbnail_url?: string | null;
+
+  // v2 fields
+  input_mode?: VideoInputMode;
+  reference_images?: VideoReferenceImage[];
+  action_prompt?: string;
+  style_hint?: string;
+  fidelity_priority?: VideoFidelityPriority;
+  video_goal?: string;
 };
 
 const VIDEO_PROJECT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
-type VideoProjectAspectRatio = (typeof VIDEO_PROJECT_ASPECT_RATIOS)[number];
 const FRAME_MODE_REFERENCE_LIMIT = 3;
+const MULTI_REFERENCE_MAX = 6;
+type VideoProjectAspectRatio = (typeof VIDEO_PROJECT_ASPECT_RATIOS)[number];
 
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -132,11 +150,12 @@ function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRa
   return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
 }
 
-function isAllowedMotionPreset<TPreset extends VideoMotionPreset>(
-  preset: VideoMotionPreset,
-  allowed: readonly TPreset[],
-): preset is TPreset {
-  return allowed.includes(preset as TPreset);
+function isInputMode(value: unknown): value is VideoInputMode {
+  return typeof value === "string" && VIDEO_INPUT_MODES.includes(value as VideoInputMode);
+}
+
+function isFidelityPriority(value: unknown): value is VideoFidelityPriority {
+  return typeof value === "string" && VIDEO_FIDELITY_PRIORITIES.includes(value as VideoFidelityPriority);
 }
 
 function cleanUrl(value?: string | null) {
@@ -173,9 +192,19 @@ function normalizeAnchorRef(anchor?: VideoAnchorRef | null, fallbackUrl?: string
 }
 
 function pushCompatibilityWarning(warnings: string[], warning: string) {
-  if (!warnings.includes(warning)) {
-    warnings.push(warning);
+  if (!warnings.includes(warning)) warnings.push(warning);
+}
+
+function dedupeReferenceUrls(urls: string[]) {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const url of urls) {
+    const normalized = normalizeUrlForComparison(url) ?? url;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(url);
   }
+  return deduped;
 }
 
 type UriClassification = ReturnType<typeof classifyStoredVideoUri>;
@@ -192,27 +221,14 @@ export async function POST(request: Request) {
     }
 
     let payload: VideoGeneratePayload;
-
     try {
       payload = (await request.json()) as VideoGeneratePayload;
     } catch {
       return asJson(400, { success: false, error: "Invalid JSON body." });
     }
 
-    if (!isMotionPreset(payload.motion_preset)) {
-      return asJson(400, { success: false, error: "Unsupported motion_preset." });
-    }
-
-    if (!isDuration(payload.duration_seconds)) {
-      return asJson(400, { success: false, error: "Unsupported duration_seconds." });
-    }
-
-    if (!isStyle(payload.style)) {
-      return asJson(400, { success: false, error: "Unsupported style." });
-    }
-
-    if (!isMotionStrength(payload.motion_strength)) {
-      return asJson(400, { success: false, error: "Unsupported motion_strength." });
+    if (!isMotionPreset(payload.motion_preset) || !isDuration(payload.duration_seconds) || !isStyle(payload.style) || !isMotionStrength(payload.motion_strength)) {
+      return asJson(400, { success: false, error: "Unsupported motion or style settings." });
     }
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
@@ -221,31 +237,17 @@ export async function POST(request: Request) {
     const cameraMotion = payload.camera_motion ?? "push";
     const subjectMotion = payload.subject_motion ?? "subtle";
     const aspectRatio = payload.aspect_ratio ?? "9:16";
+    const inputMode = isInputMode(payload.input_mode) ? payload.input_mode : "anchor-based";
+    const fidelityPriority = isFidelityPriority(payload.fidelity_priority) ? payload.fidelity_priority : "balanced";
 
-    if (!isVideoMode(videoMode)) {
-      return asJson(400, { success: false, error: "Unsupported video_mode." });
+    if (!isVideoMode(videoMode) || !isCameraMotion(cameraMotion) || !isSubjectMotion(subjectMotion)) {
+      return asJson(400, { success: false, error: "Unsupported mode settings." });
     }
 
-    if (!isCameraMotion(cameraMotion)) {
-      return asJson(400, { success: false, error: "Unsupported camera_motion." });
+    if (!isStudioAspectRatio(aspectRatio) || !isVideoProjectAspectRatio(aspectRatio)) {
+      return asJson(400, { success: false, error: "Video Project currently supports only 16:9 and 9:16 aspect ratios." });
     }
 
-    if (!isSubjectMotion(subjectMotion)) {
-      return asJson(400, { success: false, error: "Unsupported subject_motion." });
-    }
-
-    if (!isStudioAspectRatio(aspectRatio)) {
-      return asJson(400, { success: false, error: "Unsupported aspect_ratio value." });
-    }
-
-    if (!isVideoProjectAspectRatio(aspectRatio)) {
-      return asJson(400, {
-        success: false,
-        error: "Video Project currently supports only 16:9 and 9:16 aspect ratios.",
-      });
-    }
-
-    const strictMegaskaFidelity = strictAnchor && strictGarmentLock && videoMode !== "creative-reinterpretation";
     const compatibilityWarnings: string[] = [];
 
     const fitAnchor = normalizeAnchorRef(payload.fit_anchor, payload.master_image_url, payload.source_generation_id ?? null);
@@ -258,139 +260,103 @@ export async function POST(request: Request) {
       .map((ref) => normalizeAnchorRef(ref))
       .filter((ref): ref is { url: string; generationId: string | null } => Boolean(ref.url));
 
-    const effectiveMotionPreset = payload.motion_preset;
+    const multiReferenceImages = (payload.reference_images ?? [])
+      .map((ref) => normalizeAnchorRef(ref))
+      .filter((ref): ref is { url: string; generationId: string | null } => Boolean(ref.url));
+
+    if (multiReferenceImages.length > MULTI_REFERENCE_MAX) {
+      pushCompatibilityWarning(compatibilityWarnings, `Maximum ${MULTI_REFERENCE_MAX} reference images are supported; extras were ignored.`);
+    }
+
+    const boundedMultiReferenceUrls = dedupeReferenceUrls(multiReferenceImages.map((item) => item.url)).slice(0, MULTI_REFERENCE_MAX);
+
+    if (inputMode === "multi-reference" && boundedMultiReferenceUrls.length < 4) {
+      return asJson(400, { success: false, error: "Multi-reference mode requires at least 4 reference images." });
+    }
+
+    const actionPrompt = payload.action_prompt?.trim() || payload.creative_notes?.trim() || "subtle natural movement";
+    let motionRiskLevel: MotionRiskLevel = classifyMotionRiskFromActionPrompt(actionPrompt);
+
+    if (fidelityPriority === "maximum-fidelity" && motionRiskLevel === "high") {
+      pushCompatibilityWarning(compatibilityWarnings, "High-risk motion requested under maximum fidelity; motion intent may be softened.");
+    }
+
+    let effectiveMotionPreset = payload.motion_preset;
     let effectiveSubjectMotion = subjectMotion;
 
-    if (videoMode === "animated-still-strict") {
-      if (!fitAnchor.url) {
-        return asJson(400, { success: false, error: "animated-still-strict mode requires fit_anchor.url." });
+    if (fidelityPriority === "maximum-fidelity") {
+      if (!VIDEO_STRICT_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
+        effectiveMotionPreset = "subtle-breathing";
+        pushCompatibilityWarning(compatibilityWarnings, "Motion preset adjusted to subtle-breathing for maximum fidelity.");
       }
-
-      if (!isAllowedMotionPreset(effectiveMotionPreset, VIDEO_STRICT_SAFE_MOTION_PRESETS)) {
-        return asJson(400, {
-          success: false,
-          error: `Motion preset '${effectiveMotionPreset}' is not allowed in animated-still-strict mode.`,
-        });
-      }
-
-      if (effectiveSubjectMotion !== "none" && effectiveSubjectMotion !== "subtle") {
-        return asJson(400, {
-          success: false,
-          error: "animated-still-strict mode allows only none/subtle subject_motion.",
-        });
-      }
-
-      if (cameraMotion === "pan") {
-        return asJson(400, {
-          success: false,
-          error: "animated-still-strict mode does not allow camera pan.",
-        });
-      }
-    }
-
-    if (videoMode === "anchored-short-shot") {
-      if (!firstFrame.url || !lastFrame.url) {
-        return asJson(400, { success: false, error: "anchored-short-shot mode requires first_frame.url and last_frame.url." });
-      }
-
-      if (!isAllowedMotionPreset(effectiveMotionPreset, VIDEO_ANCHORED_SAFE_MOTION_PRESETS)) {
-        return asJson(400, {
-          success: false,
-          error: `Motion preset '${effectiveMotionPreset}' is not allowed in anchored-short-shot mode.`,
-        });
-      }
-
       if (effectiveSubjectMotion === "moderate") {
         effectiveSubjectMotion = "subtle";
-        pushCompatibilityWarning(compatibilityWarnings, "Moderate subject motion was reduced to subtle for anchored-short-shot mode.");
       }
-
-      if (firstFrame.url === lastFrame.url) {
-        pushCompatibilityWarning(compatibilityWarnings, "First Frame and Last Frame are identical; motion may be minimal.");
-      }
+      if (motionRiskLevel === "high") motionRiskLevel = "medium";
     }
 
-    if (videoMode === "creative-reinterpretation") {
-      const hasAnyAnchor = Boolean(
-        fitAnchor.url || firstFrame.url || lastFrame.url || identityAnchor.url || garmentAnchor.url || legacyReferenceFrames.length,
-      );
-      if (!hasAnyAnchor) {
-        return asJson(400, { success: false, error: "Provide at least one anchor image for creative-reinterpretation mode." });
-      }
+    if (videoMode === "anchored-short-shot" && (!firstFrame.url || !lastFrame.url)) {
+      return asJson(400, { success: false, error: "anchored-short-shot mode requires first_frame.url and last_frame.url." });
+    }
+
+    if (videoMode === "animated-still-strict" && !fitAnchor.url && inputMode === "anchor-based") {
+      return asJson(400, { success: false, error: "animated-still-strict mode requires fit_anchor.url in anchor-based mode." });
     }
 
     const prompt = buildMegaskaFidelityPrompt({
-      videoMode,
-      motionPreset: effectiveMotionPreset,
       durationSeconds: payload.duration_seconds,
-      strictMegaskaFidelity,
-      userPrompt: videoMode === "animated-still-strict" ? null : payload.creative_notes,
+      fidelityPriority,
+      motionRiskLevel,
+      actionPrompt,
+      styleHint: payload.style_hint,
     });
-
-    const rawReferenceCandidates = [
-      identityAnchor.url,
-      garmentAnchor.url,
-      ...legacyReferenceFrames.map((ref) => ref.url),
-    ].filter((value): value is string => Boolean(value));
 
     let firstFrameUrl: string | null = null;
     let lastFrameUrl: string | null = null;
     let referenceImageUrls: string[] = [];
 
-    if (videoMode === "animated-still-strict") {
-      firstFrameUrl = fitAnchor.url;
+    if (inputMode === "multi-reference") {
+      firstFrameUrl = fitAnchor.url ?? boundedMultiReferenceUrls[0] ?? null;
       lastFrameUrl = null;
-      const strictReferences: string[] = [];
-      if (identityAnchor.url && isMeaningfullyDifferentUrl(identityAnchor.url, fitAnchor.url)) {
-        strictReferences.push(identityAnchor.url);
+
+      const prioritized = [
+        boundedMultiReferenceUrls.find((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url)),
+        boundedMultiReferenceUrls.find((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
+        boundedMultiReferenceUrls.find((url) => isMeaningfullyDifferentUrl(url, identityAnchor.url) && isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
+      ].filter((value): value is string => Boolean(value));
+
+      referenceImageUrls = dedupeReferenceUrls([...prioritized, ...boundedMultiReferenceUrls]).slice(0, FRAME_MODE_REFERENCE_LIMIT);
+
+      if (motionRiskLevel === "high") {
+        pushCompatibilityWarning(compatibilityWarnings, "High motion + multi-reference: sent best 3 references to stay within provider limits.");
       }
-      if (
-        garmentAnchor.url &&
-        isMeaningfullyDifferentUrl(garmentAnchor.url, fitAnchor.url) &&
-        strictReferences.every((url) => isMeaningfullyDifferentUrl(url, garmentAnchor.url))
-      ) {
-        strictReferences.push(garmentAnchor.url);
-      }
-      referenceImageUrls = strictReferences;
     } else if (videoMode === "anchored-short-shot") {
       firstFrameUrl = firstFrame.url;
       lastFrameUrl = lastFrame.url;
-      referenceImageUrls = Array.from(
-        new Set([
-          identityAnchor.url,
-          garmentAnchor.url,
-          fitAnchor.url && fitAnchor.url !== firstFrame.url ? fitAnchor.url : null,
-        ].filter((value): value is string => Boolean(value))),
-      );
+      referenceImageUrls = dedupeReferenceUrls(
+        [identityAnchor.url, garmentAnchor.url, fitAnchor.url].filter((value): value is string => Boolean(value)),
+      ).slice(0, FRAME_MODE_REFERENCE_LIMIT);
     } else {
-      firstFrameUrl = firstFrame.url ?? fitAnchor.url;
+      firstFrameUrl = fitAnchor.url ?? firstFrame.url;
       lastFrameUrl = lastFrame.url;
-      referenceImageUrls = Array.from(new Set(rawReferenceCandidates));
+      referenceImageUrls = dedupeReferenceUrls([
+        identityAnchor.url,
+        garmentAnchor.url,
+        ...legacyReferenceFrames.map((ref) => ref.url),
+      ].filter((value): value is string => Boolean(value))).slice(0, FRAME_MODE_REFERENCE_LIMIT);
     }
 
-    if (referenceImageUrls.length > FRAME_MODE_REFERENCE_LIMIT) {
-      pushCompatibilityWarning(compatibilityWarnings, `Reference anchor count exceeds provider limit (${FRAME_MODE_REFERENCE_LIMIT}); extras were dropped.`);
-      referenceImageUrls = referenceImageUrls.slice(0, FRAME_MODE_REFERENCE_LIMIT);
+    if (!firstFrameUrl && !referenceImageUrls.length) {
+      return asJson(400, { success: false, error: "At least one anchor or reference image is required." });
     }
 
     const attachedReferenceRoles = [
-      referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url))
-        ? "identityAnchor"
-        : null,
-      referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url))
-        ? "garmentAnchor"
-        : null,
-      videoMode === "anchored-short-shot" && fitAnchor.url && fitAnchor.url !== firstFrame.url ? "fitAnchor" : null,
+      fitAnchor.url ? "fitAnchor" : null,
+      identityAnchor.url ? "identityAnchor" : null,
+      garmentAnchor.url ? "garmentAnchor" : null,
+      firstFrame.url ? "firstFrame" : null,
+      lastFrame.url ? "lastFrame" : null,
     ].filter((value): value is string => Boolean(value));
-
-    if (videoMode !== "creative-reinterpretation" && getMotionPresetCategory(effectiveMotionPreset) === "experimental") {
-      pushCompatibilityWarning(compatibilityWarnings, "Experimental motion preset selected in a fidelity-oriented mode.");
-    }
-
-    if (videoMode === "anchored-short-shot") {
-      pushCompatibilityWarning(compatibilityWarnings, "Best results come from anchors with same model, garment, and scene.");
-      pushCompatibilityWarning(compatibilityWarnings, "Large pose changes increase drift risk.");
-    }
 
     let videoResult;
     try {
@@ -405,57 +371,38 @@ export async function POST(request: Request) {
         aspectRatio,
       });
     } catch (videoError) {
-      const diagnosticSummary = {
-        backendId: payload.ai_backend_id ?? null,
-        videoMode,
-        motionPreset: effectiveMotionPreset,
-        durationSeconds: payload.duration_seconds,
-        fitAnchorAttached: Boolean(firstFrameUrl),
-        identityAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url)),
-        garmentAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
-        firstFrameAttached: Boolean(firstFrameUrl),
-        lastFrameAttached: Boolean(lastFrameUrl),
-        attachedReferenceRoles,
-        attachedReferenceCount: referenceImageUrls.length,
-      };
       console.error("[studio/video] generation failed", {
         error: videoError,
-        diagnostics: diagnosticSummary,
+        diagnostics: {
+          inputMode,
+          fidelityPriority,
+          motionRiskLevel,
+          attachedReferenceCount: referenceImageUrls.length,
+          attachedReferenceRoles,
+        },
       });
       throw videoError;
     }
 
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
-    const rawOutputUriFormat: UriClassification = rawOutputUri
-      ? classifyStoredVideoUri(rawOutputUri)
-      : "unknown-uri";
-    const thumbnailUrl =
-      payload.requested_thumbnail_url ?? firstFrameUrl ?? fitAnchor.url ?? null;
+    const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
+    const thumbnailUrl = payload.requested_thumbnail_url ?? firstFrameUrl ?? fitAnchor.url ?? boundedMultiReferenceUrls[0] ?? null;
 
     const fileName = `${Date.now()}-${sanitizeForPath(effectiveMotionPreset)}-${payload.duration_seconds}s.mp4`;
     const filePath = `video/${fileName}`;
 
     const supabase = getSupabaseAdminClient();
+    const { error: uploadError } = await supabase.storage.from(supabaseBucket).upload(filePath, videoResult.bytes, {
+      contentType: videoResult.mimeType || "video/mp4",
+      upsert: false,
+    });
 
-    const { error: uploadError } = await supabase.storage
-      .from(supabaseBucket)
-      .upload(filePath, videoResult.bytes, {
-        contentType: videoResult.mimeType || "video/mp4",
-        upsert: false,
-      });
-
-    if (uploadError) {
-      return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
-    }
+    if (uploadError) return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
 
     const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
     const canonicalVideoUrl = publicData.publicUrl;
 
-    const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter(
-      (value): value is string => Boolean(value),
-    );
-
-    const motionRiskLevel = getMotionRiskLevel(videoMode, effectiveMotionPreset);
+    const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter((value): value is string => Boolean(value));
 
     const generationInsertPayload = {
       prompt,
@@ -481,23 +428,29 @@ export async function POST(request: Request) {
         motionStrength: payload.motion_strength,
         motionPresetCategory: getMotionPresetCategory(effectiveMotionPreset),
         strictGarmentLock,
-        strictMegaskaFidelity,
         strictAnchor,
         videoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
-        sourceOutput: {
-          provider: rawOutputUriFormat,
-          uri: rawOutputUri,
-        },
+        sourceOutput: { provider: rawOutputUriFormat, uri: rawOutputUri },
         provider: videoResult.provider,
         selectedBackendId: videoResult.backendId,
         selectedBackendLabel: videoResult.backendLabel,
         requestedProviderModelId: videoResult.providerModelId,
-        promptVersion: "video-prompt-v2",
-        antiDriftEnabled: videoMode !== "creative-reinterpretation",
+        promptVersion: "video-prompt-v3",
         motionRiskLevel,
         compatibilityWarnings,
+
+        inputMode,
+        referenceImageCount: boundedMultiReferenceUrls.length,
+        anchorRolesUsed: attachedReferenceRoles,
+        fidelityPriority,
+        actionPrompt: actionPrompt,
+        invariantPromptVersion: "invariants-v1",
+        selectedReferenceSubset: referenceImageUrls,
+        invariantPromptBlock: buildInvariantPromptBlock(),
+        requestedReferenceCount: boundedMultiReferenceUrls.length,
+
         identityAnchorGenerationId: identityAnchor.generationId,
         identityAnchorUrl: identityAnchor.url,
         garmentAnchorGenerationId: garmentAnchor.generationId,
@@ -508,20 +461,6 @@ export async function POST(request: Request) {
         firstFrameUrl,
         lastFrameGenerationId: lastFrame.generationId,
         lastFrameUrl,
-        attachedReferenceRoles,
-        attachedReferenceCount: referenceImageUrls.length,
-        requestedReferenceCount: rawReferenceCandidates.length,
-        requestDiagnostics: {
-          videoMode,
-          motionPreset: effectiveMotionPreset,
-          durationSeconds: payload.duration_seconds,
-          fitAnchorAttached: Boolean(firstFrameUrl),
-          identityAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, identityAnchor.url)),
-          garmentAnchorAttached: referenceImageUrls.some((url) => !isMeaningfullyDifferentUrl(url, garmentAnchor.url)),
-          firstFrameAttached: Boolean(firstFrameUrl),
-          lastFrameAttached: Boolean(lastFrameUrl),
-          attachedReferenceRoles,
-        },
         providerResponse: videoResult.providerResponseMeta,
       },
     } satisfies Record<string, unknown>;
@@ -532,9 +471,7 @@ export async function POST(request: Request) {
       .select("id,url,asset_url,type,media_type,status")
       .single();
 
-    if (insertError) {
-      return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
-    }
+    if (insertError) return asJson(500, { success: false, error: `Generation insert failed: ${insertError.message}` });
 
     return asJson(200, {
       success: true,
@@ -556,19 +493,19 @@ export async function POST(request: Request) {
         motionStrength: payload.motion_strength,
         motionPresetCategory: getMotionPresetCategory(effectiveMotionPreset),
         strictGarmentLock,
-        strictMegaskaFidelity,
         strictAnchor,
         videoMode,
         cameraMotion,
         subjectMotion: effectiveSubjectMotion,
         motionRiskLevel,
         compatibilityWarnings,
-        identityAnchorGenerationId: identityAnchor.generationId,
-        garmentAnchorGenerationId: garmentAnchor.generationId,
-        fitAnchorGenerationId: fitAnchor.generationId,
-        firstFrameGenerationId: firstFrame.generationId,
-        lastFrameGenerationId: lastFrame.generationId,
-        attachedReferenceRoles,
+        inputMode,
+        referenceImageCount: boundedMultiReferenceUrls.length,
+        anchorRolesUsed: attachedReferenceRoles,
+        fidelityPriority,
+        actionPrompt,
+        invariantPromptVersion: "invariants-v1",
+        selectedReferenceSubset: referenceImageUrls,
       },
     });
   } catch (error) {
@@ -584,7 +521,7 @@ export async function POST(request: Request) {
       return asJson(400, {
         success: false,
         error_code: "rejected-params",
-        error: "This model rejected one or more generation settings. Try the recommended strict mode with fewer anchors and subtle motion.",
+        error: "This model rejected one or more generation settings. Try fewer anchors and safer motion.",
       });
     }
 

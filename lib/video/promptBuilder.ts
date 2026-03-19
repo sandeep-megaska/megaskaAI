@@ -38,6 +38,10 @@ export const VIDEO_MOTION_STRENGTHS = ["subtle", "moderate", "dynamic"] as const
 export const VIDEO_MODES = ["animated-still-strict", "anchored-short-shot", "creative-reinterpretation"] as const;
 export const VIDEO_CAMERA_MOTIONS = ["none", "push", "pan"] as const;
 export const VIDEO_SUBJECT_MOTIONS = ["none", "subtle", "moderate"] as const;
+export const VIDEO_INPUT_MODES = ["anchor-based", "multi-reference"] as const;
+export const VIDEO_FIDELITY_PRIORITIES = ["maximum-fidelity", "balanced", "maximum-motion"] as const;
+export const VIDEO_GOALS = ["subtle-motion", "short-action-shot", "dynamic-lifestyle", "experimental-cinematic"] as const;
+export const VIDEO_REFERENCE_TAGS = ["face-identity", "front-fit", "side-fit", "alternate-pose", "garment-detail"] as const;
 
 export type VideoMotionPreset = (typeof VIDEO_MOTION_PRESETS)[number];
 export type VideoDurationSeconds = (typeof VIDEO_DURATIONS)[number];
@@ -48,6 +52,23 @@ export type VideoCameraMotion = (typeof VIDEO_CAMERA_MOTIONS)[number];
 export type VideoSubjectMotion = (typeof VIDEO_SUBJECT_MOTIONS)[number];
 export type VideoMotionPresetCategory = "safe" | "experimental";
 export type MotionRiskLevel = "low" | "medium" | "high";
+export type VideoInputMode = (typeof VIDEO_INPUT_MODES)[number];
+export type VideoFidelityPriority = (typeof VIDEO_FIDELITY_PRIORITIES)[number];
+export type VideoGoal = (typeof VIDEO_GOALS)[number];
+export type VideoReferenceTag = (typeof VIDEO_REFERENCE_TAGS)[number];
+
+const LOW_RISK_KEYWORDS = ["standing", "still", "subtle", "breeze", "hair", "pose", "smile"];
+const MEDIUM_RISK_KEYWORDS = ["walking", "walk", "turning", "turn", "light action", "poolside"];
+const HIGH_RISK_KEYWORDS = ["running", "jump", "underwater", "dancing", "dance", "complex", "explosion", "scene change"];
+
+export function classifyMotionRiskFromActionPrompt(actionPrompt?: string | null): MotionRiskLevel {
+  const normalized = actionPrompt?.trim().toLowerCase() ?? "";
+  if (!normalized) return "low";
+  if (HIGH_RISK_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "high";
+  if (MEDIUM_RISK_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "medium";
+  if (LOW_RISK_KEYWORDS.some((keyword) => normalized.includes(keyword))) return "low";
+  return "medium";
+}
 
 export function getMotionPresetLabel(preset: VideoMotionPreset) {
   switch (preset) {
@@ -144,24 +165,30 @@ export function getVideoModeDescription(mode: VideoMode) {
   }
 }
 
-export function getCameraMotionLabel(motion: VideoCameraMotion) {
-  switch (motion) {
-    case "none":
-      return "None";
-    case "push":
-      return "Slow Push";
-    case "pan":
-      return "Gentle Pan";
+export function getFidelityPriorityLabel(priority: VideoFidelityPriority) {
+  switch (priority) {
+    case "maximum-fidelity":
+      return "Maximum Fidelity";
+    case "balanced":
+      return "Balanced";
+    case "maximum-motion":
+      return "Maximum Motion";
   }
 }
 
-export function getSubjectMotionLabel(motion: VideoSubjectMotion) {
-  switch (motion) {
-    case "none":
-      return "None";
-    case "subtle":
-      return "Subtle";
-    case "moderate":
-      return "Moderate";
+export function getVideoGoalLabel(goal: VideoGoal) {
+  switch (goal) {
+    case "subtle-motion":
+      return "Subtle motion";
+    case "short-action-shot":
+      return "Short action shot";
+    case "dynamic-lifestyle":
+      return "Dynamic lifestyle";
+    case "experimental-cinematic":
+      return "Experimental cinematic";
   }
+}
+
+export function getVideoInputModeLabel(mode: VideoInputMode) {
+  return mode === "multi-reference" ? "Multi-reference" : "Anchor-based";
 }
