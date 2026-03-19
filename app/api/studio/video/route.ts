@@ -130,6 +130,13 @@ function isVideoProjectAspectRatio(value: string): value is VideoProjectAspectRa
   return VIDEO_PROJECT_ASPECT_RATIOS.includes(value as VideoProjectAspectRatio);
 }
 
+function isAllowedMotionPreset<TPreset extends VideoMotionPreset>(
+  preset: VideoMotionPreset,
+  allowed: readonly TPreset[],
+): preset is TPreset {
+  return allowed.includes(preset as TPreset);
+}
+
 function cleanUrl(value?: string | null) {
   return value?.trim() || null;
 }
@@ -235,7 +242,7 @@ export async function POST(request: Request) {
         return asJson(400, { success: false, error: "animated-still-strict mode requires fit_anchor.url." });
       }
 
-      if (!VIDEO_STRICT_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
+      if (!isAllowedMotionPreset(effectiveMotionPreset, VIDEO_STRICT_SAFE_MOTION_PRESETS)) {
         return asJson(400, {
           success: false,
           error: `Motion preset '${effectiveMotionPreset}' is not allowed in animated-still-strict mode.`,
@@ -259,7 +266,7 @@ export async function POST(request: Request) {
         return asJson(400, { success: false, error: "anchored-short-shot mode requires first_frame.url and last_frame.url." });
       }
 
-      if (!VIDEO_ANCHORED_SAFE_MOTION_PRESETS.includes(effectiveMotionPreset)) {
+      if (!isAllowedMotionPreset(effectiveMotionPreset, VIDEO_ANCHORED_SAFE_MOTION_PRESETS)) {
         return asJson(400, {
           success: false,
           error: `Motion preset '${effectiveMotionPreset}' is not allowed in anchored-short-shot mode.`,
