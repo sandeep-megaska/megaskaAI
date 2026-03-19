@@ -38,7 +38,6 @@ export function buildAnimatedStillStrictPrompt(input: BuildMegaskaFidelityPrompt
     "Preserve the same person, swimsuit, background, framing, colors, and garment details.",
     "No reinterpretation, redesign, wardrobe change, or scene change.",
     getStrictMotionLine(input.motionPreset),
-    ANTI_DRIFT_BLOCK,
   ].join(" ");
 }
 

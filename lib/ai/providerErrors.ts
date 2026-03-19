@@ -27,6 +27,17 @@ export class ProviderInvalidArgumentError extends Error {
   }
 }
 
+export class ProviderModelNotFoundError extends Error {
+  errorCode = "provider_model_not_found" as const;
+  meta: ProviderErrorMeta;
+
+  constructor(message: string, meta: ProviderErrorMeta) {
+    super(message);
+    this.name = "ProviderModelNotFoundError";
+    this.meta = meta;
+  }
+}
+
 function extractStatus(error: unknown) {
   const maybe = error as { status?: number; code?: number; response?: { status?: number } };
   return maybe?.status ?? maybe?.code ?? maybe?.response?.status;
@@ -63,7 +74,28 @@ export function isGeminiInvalidArgumentError(error: unknown) {
   return status === 400 || code.includes("INVALID_ARGUMENT") || message.includes("INVALID_ARGUMENT");
 }
 
+export function isGeminiModelNotFoundError(error: unknown) {
+  const status = extractStatus(error);
+  const code = String(extractCode(error) ?? "").toUpperCase();
+  const message = String((error as { message?: string })?.message ?? "").toUpperCase();
+  return (
+    status === 404 ||
+    code.includes("NOT_FOUND") ||
+    message.includes("MODEL NOT FOUND") ||
+    message.includes("NOT FOUND FOR API VERSION")
+  );
+}
+
 export function mapGeminiProviderError(error: unknown): never {
+  if (isGeminiModelNotFoundError(error)) {
+    throw new ProviderModelNotFoundError("This model ID is not available on the current Gemini API path.", {
+      provider: "gemini",
+      status: extractStatus(error),
+      code: extractCode(error),
+      details: error,
+    });
+  }
+
   if (isGeminiInvalidArgumentError(error)) {
     throw new ProviderInvalidArgumentError("Provider rejected one or more generation parameters.", {
       provider: "gemini",
