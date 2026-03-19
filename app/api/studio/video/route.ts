@@ -7,7 +7,6 @@ import {
 } from "@/lib/ai/providerErrors";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
-  buildVideoPrompt,
   getMotionPresetCategory,
   VIDEO_DURATIONS,
   VIDEO_MOTION_PRESETS,
@@ -24,6 +23,7 @@ import {
   type VideoStyle,
   type VideoSubjectMotion,
 } from "@/lib/video/promptBuilder";
+import { buildMegaskaFidelityPrompt } from "@/lib/video/fidelityPrompt";
 import { runVideoJob } from "@/lib/video/runVideoJob";
 
 export const runtime = "nodejs";
@@ -153,8 +153,8 @@ export async function POST(request: Request) {
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
     const strictAnchor = payload.strict_anchor ?? true;
-    const videoMode = payload.video_mode ?? "animate-existing-shot";
-    const cameraMotion = payload.camera_motion ?? "none";
+    const videoMode = payload.video_mode ?? "animate-master-shot";
+    const cameraMotion = payload.camera_motion ?? "push";
     const subjectMotion = payload.subject_motion ?? "subtle";
     const aspectRatio = payload.aspect_ratio ?? "9:16";
 
@@ -181,17 +181,21 @@ export async function POST(request: Request) {
       });
     }
 
-    const prompt = buildVideoPrompt({
-      masterImageUrl,
-      videoMode,
-      motionPreset: payload.motion_preset,
+    const strictMegaskaFidelity = strictAnchor && strictGarmentLock;
+    const motionPresetCategory = getMotionPresetCategory(payload.motion_preset);
+    const effectiveVideoMode = strictMegaskaFidelity ? "animate-master-shot" : videoMode;
+    const effectiveMotionPreset =
+      strictMegaskaFidelity && motionPresetCategory === "experimental" ? "subtle-breathing" : payload.motion_preset;
+    const effectiveMotionPresetCategory = getMotionPresetCategory(effectiveMotionPreset);
+    const effectiveSubjectMotion = strictMegaskaFidelity && subjectMotion === "moderate" ? "subtle" : subjectMotion;
+
+    const prompt = buildMegaskaFidelityPrompt({
+      videoMode: effectiveVideoMode,
+      motionPreset: effectiveMotionPreset,
       durationSeconds: payload.duration_seconds,
-      style: payload.style,
-      motionStrength: payload.motion_strength,
       cameraMotion,
-      subjectMotion,
-      strictGarmentLock,
-      strictAnchor,
+      subjectMotion: effectiveSubjectMotion,
+      strictMegaskaFidelity,
       userPrompt: payload.creative_notes,
     });
 
@@ -219,7 +223,7 @@ export async function POST(request: Request) {
       outputThumbnailUri: thumbnailUrl,
     });
 
-    const fileName = `${Date.now()}-${sanitizeForPath(payload.motion_preset)}-${payload.duration_seconds}s.mp4`;
+    const fileName = `${Date.now()}-${sanitizeForPath(effectiveMotionPreset)}-${payload.duration_seconds}s.mp4`;
     const filePath = `video/${fileName}`;
 
     const supabase = getSupabaseAdminClient();
@@ -254,11 +258,12 @@ export async function POST(request: Request) {
       source: "video-project-phase-1",
       prompt,
       motionStrength: payload.motion_strength,
-      motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
+      motionPresetCategory: effectiveMotionPresetCategory,
+      strictMegaskaFidelity,
       strictAnchor,
-      videoMode,
+      videoMode: effectiveVideoMode,
       cameraMotion,
-      subjectMotion,
+      subjectMotion: effectiveSubjectMotion,
       creativeNotes: payload.creative_notes ?? null,
       masterImageUrl,
       backendModel: videoResult.backendModel,
@@ -285,16 +290,17 @@ export async function POST(request: Request) {
       source_generation_id: payload.source_generation_id ?? null,
       thumbnail_url: thumbnailUrl,
       video_meta: {
-        motionPreset: payload.motion_preset,
+        motionPreset: effectiveMotionPreset,
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
-        motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
+        motionPresetCategory: effectiveMotionPresetCategory,
         strictGarmentLock,
+        strictMegaskaFidelity,
         strictAnchor,
-        videoMode,
+        videoMode: effectiveVideoMode,
         cameraMotion,
-        subjectMotion,
+        subjectMotion: effectiveSubjectMotion,
         storage: {
           provider: "supabase",
           bucket: supabaseBucket,
@@ -308,6 +314,7 @@ export async function POST(request: Request) {
         },
         providerResponse: videoResult.providerResponseMeta,
         sourceMasterGenerationId: payload.source_generation_id ?? null,
+        sourceMasterImageUrl: masterImageUrl,
         debug: debugMeta,
       },
     } satisfies Record<string, unknown>;
@@ -376,16 +383,17 @@ export async function POST(request: Request) {
       prompt,
       sourceGenerationId: payload.source_generation_id ?? null,
       videoMeta: {
-        motionPreset: payload.motion_preset,
+        motionPreset: effectiveMotionPreset,
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
-        motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
+        motionPresetCategory: effectiveMotionPresetCategory,
         strictGarmentLock,
+        strictMegaskaFidelity,
         strictAnchor,
-        videoMode,
+        videoMode: effectiveVideoMode,
         cameraMotion,
-        subjectMotion,
+        subjectMotion: effectiveSubjectMotion,
       },
     });
   } catch (error) {

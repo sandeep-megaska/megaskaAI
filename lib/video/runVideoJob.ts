@@ -62,11 +62,19 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     );
   }
 
+  const normalizedReferenceImageUrls = input.referenceImageUrls
+    .map((url) => url.trim())
+    .filter(Boolean);
+
+  if (!normalizedReferenceImageUrls.length) {
+    throw new Error("At least one master reference image is required for Video Project generation.");
+  }
+
   const output = await runVeoVideo({
     apiKey: input.apiKey,
     model: backend.model,
     prompt: input.prompt,
-    referenceImageUrls: input.referenceImageUrls,
+    referenceImageUrls: normalizedReferenceImageUrls,
     aspectRatio: input.aspectRatio,
     durationSeconds: input.durationSeconds,
   });
