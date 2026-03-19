@@ -35,6 +35,7 @@ import { buildInvariantPromptBlock, buildMegaskaFidelityPrompt } from "@/lib/vid
 import { runVideoJob } from "@/lib/video/runVideoJob";
 import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
+import { runVideoEvaluation } from "@/lib/video/evaluator/runVideoEvaluation";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -415,6 +416,17 @@ export async function POST(request: Request) {
     const canonicalVideoUrl = publicData.publicUrl;
 
     const sourceReferenceUrls = [firstFrameUrl, lastFrameUrl, ...referenceImageUrls].filter((value): value is string => Boolean(value));
+    const evaluation = await runVideoEvaluation({
+      videoBytes: videoResult.bytes,
+      anchors: {
+        identityAnchorUrl: identityAnchor.url,
+        garmentAnchorUrl: garmentAnchor.url,
+        fitAnchorUrl: fitAnchor.url,
+        firstFrameUrl,
+        selectedReferenceSubset: videoResult.diagnostics.selectedReferenceSubset,
+        referenceUrls: sourceReferenceUrls,
+      },
+    });
 
     const generationInsertPayload = {
       prompt,
@@ -471,6 +483,11 @@ export async function POST(request: Request) {
         actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
         invariantPromptBlock: buildInvariantPromptBlock(),
         requestedReferenceCount: boundedMultiReferenceUrls.length,
+        evaluator: evaluation,
+        evaluationStatus: evaluation.evaluationStatus,
+        manualReviewStatus: "pending",
+        manualReviewUpdatedAt: null,
+        manualReviewUpdatedBy: null,
 
         identityAnchorGenerationId: identityAnchor.generationId,
         identityAnchorUrl: identityAnchor.url,
@@ -536,6 +553,9 @@ export async function POST(request: Request) {
         usedCompatibilityFallback: videoResult.diagnostics.successUsedCompatibilityFallback,
         requestedMotionLevel: videoResult.diagnostics.requestedMotionLevel,
         actualMotionUsed: videoResult.diagnostics.actualMotionUsed,
+        evaluator: evaluation,
+        evaluationStatus: evaluation.evaluationStatus,
+        manualReviewStatus: "pending",
       },
     });
   } catch (error) {

@@ -70,6 +70,16 @@ type VideoResult = {
   motionRiskLevel?: MotionRiskLevel;
   compatibilityWarnings?: string[];
   usedCompatibilityFallback?: boolean;
+  evaluationStatus?: "pending" | "completed" | "failed";
+  evaluator?: {
+    overallScore?: number;
+    identityScore?: number;
+    garmentScore?: number;
+    sceneScore?: number;
+    confidence?: "low" | "medium" | "high";
+    recommendation?: "pass" | "review" | "fail";
+    warnings?: string[];
+  };
   createdAt: string;
 };
 
@@ -77,6 +87,12 @@ function getPresetOptions(priority: VideoFidelityPriority): readonly VideoMotion
   if (priority === "maximum-fidelity") return VIDEO_STRICT_SAFE_MOTION_PRESETS;
   if (priority === "maximum-motion") return [...VIDEO_ANCHORED_SAFE_MOTION_PRESETS, ...VIDEO_EXPERIMENTAL_MOTION_PRESETS];
   return VIDEO_ANCHORED_SAFE_MOTION_PRESETS;
+}
+
+function evaluatorBadgeClass(recommendation?: "pass" | "review" | "fail") {
+  if (recommendation === "pass") return "border-emerald-400/40 bg-emerald-500/10 text-emerald-200";
+  if (recommendation === "fail") return "border-rose-400/40 bg-rose-500/10 text-rose-200";
+  return "border-amber-400/40 bg-amber-500/10 text-amber-200";
 }
 
 export default function VideoProjectPage() {
@@ -226,7 +242,24 @@ export default function VideoProjectPage() {
         }),
       });
 
-      const payload = (await response.json()) as { success?: boolean; generationId?: string; outputUrl?: string; downloadUrl?: string; thumbnailUrl?: string; error?: string; videoMeta?: { motionPreset: VideoMotionPreset; durationSeconds: VideoDurationSeconds; motionStrength: VideoMotionStrength; motionRiskLevel?: MotionRiskLevel; compatibilityWarnings?: string[]; usedCompatibilityFallback?: boolean } };
+      const payload = (await response.json()) as {
+        success?: boolean;
+        generationId?: string;
+        outputUrl?: string;
+        downloadUrl?: string;
+        thumbnailUrl?: string;
+        error?: string;
+        videoMeta?: {
+          motionPreset: VideoMotionPreset;
+          durationSeconds: VideoDurationSeconds;
+          motionStrength: VideoMotionStrength;
+          motionRiskLevel?: MotionRiskLevel;
+          compatibilityWarnings?: string[];
+          usedCompatibilityFallback?: boolean;
+          evaluationStatus?: "pending" | "completed" | "failed";
+          evaluator?: VideoResult["evaluator"];
+        };
+      };
       if (!response.ok || !payload.success || !payload.outputUrl || !payload.generationId || !payload.videoMeta) {
         throw new Error(payload.error ?? "Video generation failed.");
       }
@@ -242,6 +275,8 @@ export default function VideoProjectPage() {
         motionRiskLevel: payload.videoMeta.motionRiskLevel,
         compatibilityWarnings: payload.videoMeta.compatibilityWarnings,
         usedCompatibilityFallback: payload.videoMeta.usedCompatibilityFallback,
+        evaluationStatus: payload.videoMeta.evaluationStatus,
+        evaluator: payload.videoMeta.evaluator,
         createdAt: new Date().toISOString(),
       };
 
@@ -444,6 +479,26 @@ export default function VideoProjectPage() {
                 <p className="text-xs">Risk: {latestResult.motionRiskLevel ?? "n/a"}</p>
                 {latestResult.usedCompatibilityFallback ? <p className="text-xs text-cyan-200">Used compatibility fallback for this provider.</p> : null}
                 {latestResult.compatibilityWarnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">• {warning}</p>)}
+                {latestResult.evaluationStatus === "completed" && latestResult.evaluator ? (
+                  <div className="space-y-2 rounded-md border border-white/10 bg-zinc-900/70 p-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium text-zinc-200">Evaluator V1</p>
+                      <span className={`rounded border px-2 py-0.5 uppercase tracking-wide ${evaluatorBadgeClass(latestResult.evaluator.recommendation)}`}>
+                        {latestResult.evaluator.recommendation ?? "review"}
+                      </span>
+                    </div>
+                    <p>
+                      Overall Fidelity Score: <span className="font-semibold text-white">{latestResult.evaluator.overallScore ?? "n/a"}</span>
+                    </p>
+                    <p>
+                      Identity: {latestResult.evaluator.identityScore ?? "n/a"} · Garment: {latestResult.evaluator.garmentScore ?? "n/a"} · Scene:{" "}
+                      {latestResult.evaluator.sceneScore ?? "n/a"}
+                    </p>
+                    <p>Confidence: {latestResult.evaluator.confidence ?? "n/a"}</p>
+                    {latestResult.evaluator.warnings?.[0] ? <p className="text-amber-100">Warning: {latestResult.evaluator.warnings[0]}</p> : null}
+                  </div>
+                ) : null}
+                {latestResult.evaluationStatus === "failed" ? <p className="text-xs text-zinc-300">Evaluation unavailable for this result.</p> : null}
                 <div className="flex gap-2">
                   <a href={latestResult.downloadUrl} download className="rounded-md border border-white/20 px-3 py-2 text-sm">Download</a>
                   <button type="button" onClick={() => router.push(`/?masterUrl=${encodeURIComponent(latestResult.thumbnailUrl ?? latestResult.outputUrl)}`)} className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200">Use Frame in Image Project</button>
@@ -451,7 +506,23 @@ export default function VideoProjectPage() {
               </div>
             ) : <div className="rounded-lg border border-dashed border-white/20 p-4 text-sm text-zinc-400">Your generated video will appear here.</div>}
 
-            {history.length > 0 ? <div className="space-y-2">{history.slice(0, 4).map((item) => <button key={item.generationId} onClick={() => setLatestResult(item)} className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-xs">{item.durationSeconds}s · {item.motionPreset}</button>)}</div> : null}
+            {history.length > 0 ? (
+              <div className="space-y-2">
+                {history
+                  .slice()
+                  .sort((a, b) => (b.evaluator?.overallScore ?? -1) - (a.evaluator?.overallScore ?? -1))
+                  .slice(0, 4)
+                  .map((item, idx) => (
+                    <button key={item.generationId} onClick={() => setLatestResult(item)} className="w-full rounded-md border border-white/10 px-3 py-2 text-left text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>{item.durationSeconds}s · {item.motionPreset}</span>
+                        {item.evaluator?.overallScore != null ? <span>Score {item.evaluator.overallScore}</span> : null}
+                      </div>
+                      {idx === 0 && item.evaluator?.overallScore != null ? <p className="mt-1 text-[10px] text-cyan-200">Best candidate</p> : null}
+                    </button>
+                  ))}
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
