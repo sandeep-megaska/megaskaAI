@@ -8,6 +8,7 @@ import {
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   buildVideoPrompt,
+  getMotionPresetCategory,
   VIDEO_DURATIONS,
   VIDEO_MOTION_PRESETS,
   VIDEO_MOTION_STRENGTHS,
@@ -31,6 +32,7 @@ type VideoGeneratePayload = {
   style?: VideoStyle;
   motion_strength?: VideoMotionStrength;
   strict_garment_lock?: boolean;
+  strict_anchor?: boolean;
   aspect_ratio?: StudioAspectRatio;
   creative_notes?: string;
   requested_thumbnail_url?: string | null;
@@ -128,6 +130,7 @@ export async function POST(request: Request) {
     }
 
     const strictGarmentLock = payload.strict_garment_lock ?? true;
+    const strictAnchor = payload.strict_anchor ?? true;
     const aspectRatio = payload.aspect_ratio ?? "9:16";
 
     if (!isStudioAspectRatio(aspectRatio)) {
@@ -148,6 +151,7 @@ export async function POST(request: Request) {
       style: payload.style,
       motionStrength: payload.motion_strength,
       strictGarmentLock,
+      strictAnchor,
       userPrompt: payload.creative_notes,
     });
 
@@ -210,6 +214,8 @@ export async function POST(request: Request) {
       source: "video-project-phase-1",
       prompt,
       motionStrength: payload.motion_strength,
+      motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
+      strictAnchor,
       creativeNotes: payload.creative_notes ?? null,
       masterImageUrl,
       backendModel: videoResult.backendModel,
@@ -240,7 +246,9 @@ export async function POST(request: Request) {
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
+        motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
         strictGarmentLock,
+        strictAnchor,
         storage: {
           provider: "supabase",
           bucket: supabaseBucket,
@@ -325,7 +333,9 @@ export async function POST(request: Request) {
         durationSeconds: payload.duration_seconds,
         style: payload.style,
         motionStrength: payload.motion_strength,
+        motionPresetCategory: getMotionPresetCategory(payload.motion_preset),
         strictGarmentLock,
+        strictAnchor,
       },
     });
   } catch (error) {

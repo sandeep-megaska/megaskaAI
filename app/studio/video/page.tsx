@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
+  getMotionPresetCategory,
   getMotionPresetLabel,
   getMotionStrengthLabel,
   getStyleLabel,
@@ -48,6 +49,7 @@ type VideoResult = {
   style: VideoStyle;
   motionStrength: VideoMotionStrength;
   strictGarmentLock: boolean;
+  strictAnchor: boolean;
   createdAt: string;
 };
 
@@ -56,11 +58,12 @@ export default function VideoProjectPage() {
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [masterSelection, setMasterSelection] = useState<MasterSelection | null>(null);
-  const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-motion");
+  const [motionPreset, setMotionPreset] = useState<VideoMotionPreset>("subtle-breathing");
   const [duration, setDuration] = useState<VideoDurationSeconds>(8);
   const [style, setStyle] = useState<VideoStyle>("realistic");
   const [motionStrength, setMotionStrength] = useState<VideoMotionStrength>("subtle");
   const [strictGarmentLock, setStrictGarmentLock] = useState(true);
+  const [strictAnchor, setStrictAnchor] = useState(true);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [creativeNotes, setCreativeNotes] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -171,6 +174,7 @@ export default function VideoProjectPage() {
           style,
           motion_strength: motionStrength,
           strict_garment_lock: strictGarmentLock,
+          strict_anchor: strictAnchor,
           aspect_ratio: aspectRatio,
           creative_notes: creativeNotes,
           requested_thumbnail_url: masterSelection.imageUrl,
@@ -189,7 +193,9 @@ export default function VideoProjectPage() {
           durationSeconds: VideoDurationSeconds;
           style: VideoStyle;
           motionStrength: VideoMotionStrength;
+          motionPresetCategory: "safe" | "experimental";
           strictGarmentLock: boolean;
+          strictAnchor: boolean;
         };
         error?: string;
       };
@@ -209,6 +215,7 @@ export default function VideoProjectPage() {
         style: payload.videoMeta.style,
         motionStrength: payload.videoMeta.motionStrength,
         strictGarmentLock: payload.videoMeta.strictGarmentLock,
+        strictAnchor: payload.videoMeta.strictAnchor,
         createdAt: new Date().toISOString(),
       };
 
@@ -299,8 +306,8 @@ export default function VideoProjectPage() {
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Studio Project</p>
               <h1 className="text-3xl font-semibold text-white">Video Project</h1>
               <p className="text-sm text-zinc-300">
-                Structured image-to-video workflow for premium apparel motion generation. Start from a master image, lock garment
-                fidelity, and produce polished clips.
+                Structured image-to-video workflow focused on fidelity-safe animation. Start from a master image and animate the same
+                shot with subtle motion by default.
               </p>
             </div>
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
@@ -402,11 +409,20 @@ export default function VideoProjectPage() {
                   onChange={(event) => setMotionPreset(event.target.value as VideoMotionPreset)}
                   className="w-full rounded-md border border-white/15 bg-zinc-950 px-3 py-2 text-sm"
                 >
-                  {VIDEO_MOTION_PRESETS.map((preset) => (
-                    <option key={preset} value={preset}>
-                      {getMotionPresetLabel(preset)}
-                    </option>
-                  ))}
+                  <optgroup label="Fidelity-safe (recommended)">
+                    {VIDEO_MOTION_PRESETS.filter((preset) => getMotionPresetCategory(preset) === "safe").map((preset) => (
+                      <option key={preset} value={preset}>
+                        {getMotionPresetLabel(preset)}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="High-risk / experimental">
+                    {VIDEO_MOTION_PRESETS.filter((preset) => getMotionPresetCategory(preset) === "experimental").map((preset) => (
+                      <option key={preset} value={preset}>
+                        {getMotionPresetLabel(preset)}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
 
@@ -474,6 +490,16 @@ export default function VideoProjectPage() {
                 </label>
               </div>
 
+              <label className="flex items-center gap-3 rounded-md border border-cyan-400/20 bg-cyan-500/5 px-3 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={strictAnchor}
+                  onChange={(event) => setStrictAnchor(event.target.checked)}
+                  className="h-4 w-4 accent-cyan-400"
+                />
+                <span className="text-zinc-200">Strict Anchor (preserve same composition, subject, garment, and scene)</span>
+              </label>
+
               <label className="flex items-center gap-3 rounded-md border border-white/10 px-3 py-3 text-sm">
                 <input
                   type="checkbox"
@@ -538,6 +564,7 @@ export default function VideoProjectPage() {
                   <p>Style: {getStyleLabel(latestResult.style)}</p>
                   <p>Strength: {getMotionStrengthLabel(latestResult.motionStrength)}</p>
                   <p>Garment lock: {latestResult.strictGarmentLock ? "On" : "Off"}</p>
+                  <p>Strict anchor: {latestResult.strictAnchor ? "On" : "Off"}</p>
                   <p>Generated: {formatGeneratedAt(latestResult.createdAt)}</p>
                 </div>
 
