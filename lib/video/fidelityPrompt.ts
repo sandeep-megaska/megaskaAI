@@ -10,6 +10,7 @@ export type BuildMegaskaFidelityPromptInput = {
   motionRiskLevel: MotionRiskLevel;
   actionPrompt: string;
   styleHint?: string | null;
+  sceneLockBlock?: string | null;
 };
 
 export function buildInvariantPromptBlock() {
@@ -45,6 +46,10 @@ export function buildMegaskaFidelityPrompt(input: BuildMegaskaFidelityPromptInpu
 
   if (input.styleHint?.trim()) {
     blocks.push(`[STYLE] ${input.styleHint.trim()}`);
+  }
+
+  if (input.sceneLockBlock?.trim()) {
+    blocks.push(`[SCENE_LOCK] ${input.sceneLockBlock.trim()}`);
   }
 
   blocks.push(`[DURATION] ${input.durationSeconds}s.`);
