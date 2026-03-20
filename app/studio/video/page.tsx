@@ -117,6 +117,16 @@ type VideoResult = {
   createdAt: string;
 };
 
+type VideoGalleryItem = {
+  id: string;
+  prompt: string;
+  created_at?: string | null;
+  asset_url?: string | null;
+  url?: string | null;
+  thumbnail_url?: string | null;
+  video_meta?: Record<string, unknown> | null;
+};
+
 function getPresetOptions(priority: VideoFidelityPriority): readonly VideoMotionPreset[] {
   if (priority === "maximum-fidelity") return VIDEO_STRICT_SAFE_MOTION_PRESETS;
   if (priority === "maximum-motion") return [...VIDEO_ANCHORED_SAFE_MOTION_PRESETS, ...VIDEO_EXPERIMENTAL_MOTION_PRESETS];
@@ -130,6 +140,7 @@ function evaluatorBadgeClass(recommendation?: "pass" | "review" | "fail") {
 }
 
 export default function VideoProjectPage() {
+  const VIDEO_GALLERY_PAGE_SIZE = 8;
   const [backends, setBackends] = useState<AIBackend[]>([]);
   const [selectedBackendId, setSelectedBackendId] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
@@ -158,6 +169,10 @@ export default function VideoProjectPage() {
   const [error, setError] = useState<string | null>(null);
   const [latestResult, setLatestResult] = useState<VideoResult | null>(null);
   const [history, setHistory] = useState<VideoResult[]>([]);
+  const [videoGalleryItems, setVideoGalleryItems] = useState<VideoGalleryItem[]>([]);
+  const [videoGalleryPage, setVideoGalleryPage] = useState(0);
+  const [hasMoreVideoGalleryItems, setHasMoreVideoGalleryItems] = useState(true);
+  const [isLoadingMoreVideoGallery, setIsLoadingMoreVideoGallery] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
@@ -189,15 +204,55 @@ export default function VideoProjectPage() {
     setGalleryImages((data ?? []) as GalleryImageItem[]);
   }, [supabase]);
 
+  const loadVideoGallery = useCallback(
+    async (page: number, reset = false) => {
+      if (!supabase) return;
+      const from = page * VIDEO_GALLERY_PAGE_SIZE;
+      const to = from + VIDEO_GALLERY_PAGE_SIZE - 1;
+      const { data } = await supabase
+        .from("generations")
+        .select("id,prompt,created_at,asset_url,url,thumbnail_url,video_meta,generation_kind")
+        .eq("generation_kind", "video")
+        .order("created_at", { ascending: false })
+        .range(from, to);
+
+      const nextItems = (data ?? []) as VideoGalleryItem[];
+      setVideoGalleryItems((current) => {
+        if (reset) return nextItems;
+        const existingIds = new Set(current.map((item) => item.id));
+        const deduped = nextItems.filter((item) => !existingIds.has(item.id));
+        return [...current, ...deduped];
+      });
+      setVideoGalleryPage(page + 1);
+      setHasMoreVideoGalleryItems(nextItems.length === VIDEO_GALLERY_PAGE_SIZE);
+    },
+    [VIDEO_GALLERY_PAGE_SIZE, supabase],
+  );
+
+  const formatGeneratedAt = useCallback((value?: string | null) => {
+    if (!value) return "Generated: —";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Generated: —";
+    return `Generated: ${new Intl.DateTimeFormat(undefined, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(parsed)}`;
+  }, []);
+
   useEffect(() => {
     void loadGalleryImages();
+    setVideoGalleryPage(0);
+    void loadVideoGallery(0, true);
     async function loadBackends() {
       const response = await fetch("/api/ai/backends");
       const payload = (await response.json()) as { data?: AIBackend[] };
       setBackends(payload.data ?? []);
     }
     void loadBackends();
-  }, [loadGalleryImages]);
+  }, [loadGalleryImages, loadVideoGallery]);
 
   useEffect(() => {
     const allowed = getPresetOptions(fidelityPriority);
@@ -352,6 +407,8 @@ export default function VideoProjectPage() {
 
       setLatestResult(result);
       setHistory((current) => [result, ...current]);
+      setVideoGalleryPage(0);
+      await loadVideoGallery(0, true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Video generation failed.");
     } finally {
@@ -366,6 +423,16 @@ export default function VideoProjectPage() {
         ? referenceImages.length >= 4
         : fitAnchor?.imageUrl || (firstFrame?.imageUrl && lastFrame?.imageUrl)),
   );
+
+  async function handleLoadMoreVideoGallery() {
+    if (isLoadingMoreVideoGallery || !hasMoreVideoGalleryItems) return;
+    setIsLoadingMoreVideoGallery(true);
+    try {
+      await loadVideoGallery(videoGalleryPage, false);
+    } finally {
+      setIsLoadingMoreVideoGallery(false);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
@@ -642,6 +709,68 @@ export default function VideoProjectPage() {
               </div>
             ) : null}
           </div>
+        </section>
+
+        <section className="space-y-4 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-white">Video Gallery</h2>
+            <button type="button" onClick={() => { setVideoGalleryPage(0); void loadVideoGallery(0, true); }} className="rounded border border-white/20 px-3 py-1 text-xs">
+              Refresh
+            </button>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {videoGalleryItems.map((item) => {
+              const videoUrl = item.asset_url || item.url;
+              if (!videoUrl) return null;
+              const videoMeta = item.video_meta ?? {};
+              const backendLabel =
+                typeof videoMeta["selectedBackendLabel"] === "string"
+                  ? String(videoMeta["selectedBackendLabel"])
+                  : typeof videoMeta["provider"] === "string"
+                    ? String(videoMeta["provider"])
+                    : "Unknown provider";
+              return (
+                <article key={item.id} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
+                  <div className="aspect-video bg-zinc-900">
+                    <video src={videoUrl} poster={item.thumbnail_url ?? undefined} controls preload="metadata" className="h-full w-full object-cover" />
+                  </div>
+                  <div className="space-y-2 p-3">
+                    <p className="text-xs text-zinc-300">{item.prompt ? `${item.prompt.slice(0, 140)}${item.prompt.length > 140 ? "…" : ""}` : "No prompt available."}</p>
+                    <p className="text-xs text-zinc-500">{formatGeneratedAt(item.created_at)}</p>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-400">
+                      <span className="rounded border border-white/10 px-2 py-0.5">{backendLabel}</span>
+                      {typeof videoMeta["motionPreset"] === "string" ? <span className="rounded border border-white/10 px-2 py-0.5">{String(videoMeta["motionPreset"])}</span> : null}
+                      {typeof videoMeta["evaluationStatus"] === "string" ? <span className="rounded border border-white/10 px-2 py-0.5">{String(videoMeta["evaluationStatus"])}</span> : null}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <a href={`/api/studio/video/${item.id}/download`} className="rounded-md border border-white/20 px-3 py-2 text-xs">
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/?masterUrl=${encodeURIComponent(item.thumbnail_url ?? videoUrl)}&masterGenerationId=${encodeURIComponent(item.id)}&sourceVideoGenerationId=${encodeURIComponent(item.id)}&extractedAt=${encodeURIComponent(item.created_at ?? new Date().toISOString())}`)}
+                        className="rounded-md border border-cyan-400/50 px-3 py-2 text-xs text-cyan-200"
+                      >
+                        Use Frame in Image Project
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {hasMoreVideoGalleryItems ? (
+            <button
+              type="button"
+              onClick={() => void handleLoadMoreVideoGallery()}
+              disabled={isLoadingMoreVideoGallery}
+              className="rounded-md border border-white/20 px-4 py-2 text-sm disabled:opacity-50"
+            >
+              {isLoadingMoreVideoGallery ? "Loading..." : "Load more"}
+            </button>
+          ) : null}
         </section>
       </div>
     </main>

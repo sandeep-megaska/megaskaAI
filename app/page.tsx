@@ -53,6 +53,7 @@ const quickActions = [
 ];
 
 function HomeContent() {
+  const GALLERY_PAGE_SIZE = 12;
   const searchParams = useSearchParams();
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("1:1");
@@ -72,6 +73,9 @@ function HomeContent() {
     selectedMasterMetadata: null,
   });
   const [galleryItems, setGalleryItems] = useState<GenerationItem[]>([]);
+  const [galleryPage, setGalleryPage] = useState(0);
+  const [hasMoreGalleryItems, setHasMoreGalleryItems] = useState(true);
+  const [isLoadingMoreGallery, setIsLoadingMoreGallery] = useState(false);
   const [promptDialogItem, setPromptDialogItem] = useState<GenerationItem | null>(null);
   const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
   const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
@@ -111,11 +115,27 @@ function HomeContent() {
     }
   }, [backendId, geminiImageBackends]);
 
-  const loadGallery = useCallback(async () => {
+  const loadGallery = useCallback(async (page: number, reset = false) => {
     if (!supabase) return;
-    const { data } = await supabase.from("generations").select("id,prompt,aspect_ratio,created_at,asset_url,url,overlay_json").order("created_at", { ascending: false }).limit(12);
-    setGalleryItems((data ?? []) as GenerationItem[]);
-  }, [supabase]);
+    const from = page * GALLERY_PAGE_SIZE;
+    const to = from + GALLERY_PAGE_SIZE - 1;
+    const { data } = await supabase
+      .from("generations")
+      .select("id,prompt,aspect_ratio,created_at,asset_url,url,overlay_json,generation_kind")
+      .eq("generation_kind", "image")
+      .order("created_at", { ascending: false })
+      .range(from, to);
+
+    const nextItems = (data ?? []) as GenerationItem[];
+    setGalleryItems((current) => {
+      if (reset) return nextItems;
+      const existingIds = new Set(current.map((item) => item.id));
+      const deduped = nextItems.filter((item) => !existingIds.has(item.id));
+      return [...current, ...deduped];
+    });
+    setGalleryPage(page + 1);
+    setHasMoreGalleryItems(nextItems.length === GALLERY_PAGE_SIZE);
+  }, [GALLERY_PAGE_SIZE, supabase]);
 
   const formatGeneratedAt = useCallback((value?: string) => {
     if (!value) return "Generated: —";
@@ -131,8 +151,9 @@ function HomeContent() {
   }, []);
 
   useEffect(() => {
-    loadGallery();
-  }, [loadGallery]);
+    setGalleryPage(0);
+    void loadGallery(0, true);
+  }, [loadGallery, supabase]);
 
   useEffect(() => {
     async function loadOptions() {
@@ -319,7 +340,8 @@ function HomeContent() {
 
       const generatedItems = await Promise.all(generationCalls);
       setResults((current) => [...generatedItems, ...current]);
-      await loadGallery();
+      setGalleryPage(0);
+      await loadGallery(0, true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Generation failed.");
     } finally {
@@ -359,6 +381,7 @@ function HomeContent() {
         throw deleteError;
       }
       setGalleryItems((current) => current.filter((entry) => entry.id !== item.id));
+      setHasMoreGalleryItems(true);
       if (promptDialogItem?.id === item.id) {
         setPromptDialogItem(null);
       }
@@ -374,6 +397,16 @@ function HomeContent() {
       setError(deleteError instanceof Error ? deleteError.message : "Delete failed.");
     } finally {
       setIsDeletingId(null);
+    }
+  }
+
+  async function handleLoadMoreGallery() {
+    if (isLoadingMoreGallery || !hasMoreGalleryItems) return;
+    setIsLoadingMoreGallery(true);
+    try {
+      await loadGallery(galleryPage, false);
+    } finally {
+      setIsLoadingMoreGallery(false);
     }
   }
 
@@ -602,6 +635,18 @@ function HomeContent() {
               );
             })}
           </div>
+          {hasMoreGalleryItems ? (
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => void handleLoadMoreGallery()}
+                disabled={isLoadingMoreGallery}
+                className="rounded-md border border-white/15 px-4 py-2 text-sm text-zinc-200 disabled:opacity-50"
+              >
+                {isLoadingMoreGallery ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          ) : null}
         </section>
       </div>
 
