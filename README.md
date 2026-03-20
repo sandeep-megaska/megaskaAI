@@ -42,3 +42,11 @@ Megaska AI Studio image and try-on generation requires:
 - `GOOGLE_API_KEY` (Gemini/Imagen/Nano Banana backends)
 
 If your environment still uses `GEMINI_API_KEY`, `/api/generate` supports it as a fallback, but `GOOGLE_API_KEY` is the recommended canonical variable.
+
+Google Cloud billing-backed header spend requires (server-side only):
+
+- `GOOGLE_BILLING_BQ_PROJECT_ID`
+- `GOOGLE_BILLING_BQ_DATASET`
+- `GOOGLE_BILLING_BQ_TABLE`
+- `GOOGLE_BILLING_ACCOUNT_ID` (optional)
+- Google auth with BigQuery read access (for example `GOOGLE_APPLICATION_CREDENTIALS`)
