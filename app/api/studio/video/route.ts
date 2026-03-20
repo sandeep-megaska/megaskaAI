@@ -37,6 +37,8 @@ import { VideoGenerationOutputError } from "@/lib/ai/adapters/veoVideoAdapter";
 import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
 import { runVideoEvaluation } from "@/lib/video/evaluator/runVideoEvaluation";
 import { analyzeSceneStabilization } from "@/lib/video/scene/sceneStabilization";
+import { resolveProtectedCoreFlow } from "@/lib/video/experiments/protectedCoreFlow";
+import { analyzeSceneDiagnostics } from "@/lib/video/experiments/sceneDiagnostics";
 import { decomposePromptToShots } from "@/lib/video/sequence/decomposePromptToShots";
 import { planShots } from "@/lib/video/sequence/planShots";
 import { selectShotCandidate } from "@/lib/video/sequence/selectShotCandidate";
@@ -86,6 +88,7 @@ type VideoGeneratePayload = {
   creative_notes?: string;
   requested_thumbnail_url?: string | null;
   decomposition_enabled?: boolean;
+  experimental_scene_handling?: boolean;
 
   // v2 fields
   input_mode?: VideoInputMode;
@@ -252,6 +255,31 @@ async function uploadVideoBytes(input: {
   };
 }
 
+async function loadAnchorSceneHints(generationIds: string[]) {
+  if (!generationIds.length) return [] as string[];
+
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("generations")
+    .select("id,prompt,video_meta")
+    .in("id", generationIds);
+
+  if (error || !data) return [] as string[];
+
+  const hints: string[] = [];
+  for (const row of data as Array<{ prompt?: string | null; video_meta?: Record<string, unknown> | null }>) {
+    if (typeof row.prompt === "string" && row.prompt.trim()) hints.push(row.prompt.trim());
+    const videoMeta = row.video_meta;
+    const sceneFamily = typeof videoMeta?.sceneFamily === "string" ? videoMeta.sceneFamily : null;
+    const sceneSummary = typeof videoMeta?.sceneLockPromptSummary === "string" ? videoMeta.sceneLockPromptSummary : null;
+    if (sceneFamily) hints.push(sceneFamily);
+    if (sceneSummary) hints.push(sceneSummary);
+  }
+
+  return hints;
+}
+
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
 
@@ -283,6 +311,7 @@ export async function POST(request: Request) {
     const inputMode = isInputMode(payload.input_mode) ? payload.input_mode : "anchor-based";
     const fidelityPriority = isFidelityPriority(payload.fidelity_priority) ? payload.fidelity_priority : "balanced";
     const decompositionEnabled = Boolean(payload.decomposition_enabled);
+    const experimentalSceneHandlingEnabled = Boolean(payload.experimental_scene_handling);
 
     if (!isVideoMode(videoMode) || !isCameraMotion(cameraMotion) || !isSubjectMotion(subjectMotion)) {
       return asJson(400, { success: false, error: "Unsupported mode settings." });
@@ -403,6 +432,43 @@ export async function POST(request: Request) {
       return asJson(400, { success: false, error: "At least one anchor or reference image is required." });
     }
 
+    const protectedCoreFlow = resolveProtectedCoreFlow({
+      firstFrameUrl: firstFrame.url ?? firstFrameUrl,
+      lastFrameUrl: lastFrame.url ?? lastFrameUrl,
+      identityAnchorUrl: identityAnchor.url,
+      experimentalToggleUsed: experimentalSceneHandlingEnabled,
+    });
+
+    if (!protectedCoreFlow.hasAllMandatoryAnchors) {
+      pushCompatibilityWarning(compatibilityWarnings, protectedCoreFlow.notes[0]);
+    }
+
+    const anchorGenerationIds = [identityAnchor.generationId, garmentAnchor.generationId, fitAnchor.generationId, firstFrame.generationId, lastFrame.generationId]
+      .filter((value): value is string => Boolean(value));
+    const anchorSceneHints = await loadAnchorSceneHints(Array.from(new Set(anchorGenerationIds)));
+    const sceneDiagnostics = analyzeSceneDiagnostics({
+      promptText: actionPrompt,
+      styleHint: payload.style_hint,
+      anchorHints: [
+        ...anchorSceneHints,
+        identityAnchor.url ?? "",
+        garmentAnchor.url ?? "",
+        firstFrame.url ?? "",
+        lastFrame.url ?? "",
+      ],
+    });
+
+    if (sceneDiagnostics.sceneMismatchRisk === "high") {
+      pushCompatibilityWarning(compatibilityWarnings, "Prompt scene may not match anchor scene; intro drift risk is higher.");
+    }
+
+    const experimentDiagnostics = {
+      protectedCoreNotes: protectedCoreFlow.notes,
+      mandatoryAnchorsSatisfied: protectedCoreFlow.hasAllMandatoryAnchors,
+      anchorSceneHintCount: anchorSceneHints.length,
+      generationMode: protectedCoreFlow.generationMode,
+    };
+
     const attachedReferenceRoles = [
       fitAnchor.url ? "fitAnchor" : null,
       identityAnchor.url ? "identityAnchor" : null,
@@ -441,7 +507,7 @@ export async function POST(request: Request) {
         shot.status = "running";
         const shotBackendId = selectBackendForShot(shot, payload.ai_backend_id);
         const shotPrompt = buildMegaskaFidelityPrompt({
-          durationSeconds: payload.duration_seconds,
+          durationSeconds: payload.duration_seconds!,
           fidelityPriority,
           motionRiskLevel: shot.motionRiskLevel,
           actionPrompt: shot.actionPrompt,
@@ -454,7 +520,7 @@ export async function POST(request: Request) {
             apiKey: googleApiKey,
             backendId: shotBackendId,
             prompt: shotPrompt,
-            durationSeconds: payload.duration_seconds,
+            durationSeconds: payload.duration_seconds!,
             firstFrameUrl,
             lastFrameUrl: null,
             referenceImageUrls,
@@ -663,6 +729,19 @@ export async function POST(request: Request) {
           subjectMotion: effectiveSubjectMotion,
           motionRiskLevel,
           compatibilityWarnings,
+          protectedCoreFlowEnabled: protectedCoreFlow.protectedCoreFlowEnabled,
+          experimentalLayerEnabled: true,
+          experimentalToggleUsed: experimentalSceneHandlingEnabled,
+          generationMode: protectedCoreFlow.generationMode,
+          promptSceneIntent: sceneDiagnostics.promptSceneIntent,
+          anchorSceneGuess: sceneDiagnostics.anchorSceneGuess,
+          sceneMismatchRisk: sceneDiagnostics.sceneMismatchRisk,
+          sceneDiagnosticsVersion: sceneDiagnostics.sceneDiagnosticsVersion,
+          sceneMismatchNotes: sceneDiagnostics.sceneMismatchNotes,
+          motionComplexityRisk: motionRiskLevel,
+          fallbackToProtectedCoreOccurred: false,
+          experimentDiagnostics,
+          experimentVersion: "exp-safe-v1",
           inputMode,
           fidelityPriority,
           invariantPromptBlock,
@@ -703,6 +782,19 @@ export async function POST(request: Request) {
           motionStrength: payload.motion_strength,
           motionRiskLevel,
           compatibilityWarnings,
+          protectedCoreFlowEnabled: protectedCoreFlow.protectedCoreFlowEnabled,
+          experimentalLayerEnabled: true,
+          experimentalToggleUsed: experimentalSceneHandlingEnabled,
+          generationMode: protectedCoreFlow.generationMode,
+          promptSceneIntent: sceneDiagnostics.promptSceneIntent,
+          anchorSceneGuess: sceneDiagnostics.anchorSceneGuess,
+          sceneMismatchRisk: sceneDiagnostics.sceneMismatchRisk,
+          sceneDiagnosticsVersion: sceneDiagnostics.sceneDiagnosticsVersion,
+          sceneMismatchNotes: sceneDiagnostics.sceneMismatchNotes,
+          motionComplexityRisk: motionRiskLevel,
+          fallbackToProtectedCoreOccurred: false,
+          experimentDiagnostics,
+          experimentVersion: "exp-safe-v1",
           decompositionEnabled: true,
           shotPlan,
           shotCandidates,
@@ -725,21 +817,36 @@ export async function POST(request: Request) {
       sceneLockBlock,
     });
 
-    const videoResult = await runVideoJob({
-      apiKey: googleApiKey,
-      backendId: payload.ai_backend_id,
-      prompt,
-      durationSeconds: payload.duration_seconds,
-      firstFrameUrl,
-      lastFrameUrl,
-      referenceImageUrls,
-      identityAnchorUrl: identityAnchor.url,
-      garmentAnchorUrl: garmentAnchor.url,
-      fitAnchorUrl: fitAnchor.url,
-      inputMode,
-      requestedFidelityPriority: fidelityPriority,
-      aspectRatio,
-    });
+    let fallbackToProtectedCoreOccurred = false;
+    const runProtectedCore = () =>
+      runVideoJob({
+        apiKey: googleApiKey,
+        backendId: payload.ai_backend_id,
+        prompt,
+        durationSeconds: payload.duration_seconds as VideoDurationSeconds,
+        firstFrameUrl,
+        lastFrameUrl,
+        referenceImageUrls,
+        identityAnchorUrl: identityAnchor.url,
+        garmentAnchorUrl: garmentAnchor.url,
+        fitAnchorUrl: fitAnchor.url,
+        inputMode,
+        requestedFidelityPriority: fidelityPriority,
+        aspectRatio,
+      });
+
+    let videoResult;
+    if (experimentalSceneHandlingEnabled) {
+      try {
+        videoResult = await runProtectedCore();
+      } catch {
+        fallbackToProtectedCoreOccurred = true;
+        pushCompatibilityWarning(compatibilityWarnings, "Experimental-safe scene handling failed; fell back to protected core flow.");
+        videoResult = await runProtectedCore();
+      }
+    } else {
+      videoResult = await runProtectedCore();
+    }
 
     const rawOutputUri = videoResult.rawOutputUri?.trim() || null;
     const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
@@ -800,6 +907,19 @@ export async function POST(request: Request) {
         promptVersion: "video-prompt-v3",
         motionRiskLevel,
         compatibilityWarnings,
+        protectedCoreFlowEnabled: protectedCoreFlow.protectedCoreFlowEnabled,
+        experimentalLayerEnabled: true,
+        experimentalToggleUsed: experimentalSceneHandlingEnabled,
+        generationMode: protectedCoreFlow.generationMode,
+        promptSceneIntent: sceneDiagnostics.promptSceneIntent,
+        anchorSceneGuess: sceneDiagnostics.anchorSceneGuess,
+        sceneMismatchRisk: sceneDiagnostics.sceneMismatchRisk,
+        sceneDiagnosticsVersion: sceneDiagnostics.sceneDiagnosticsVersion,
+        sceneMismatchNotes: sceneDiagnostics.sceneMismatchNotes,
+        motionComplexityRisk: motionRiskLevel,
+        fallbackToProtectedCoreOccurred,
+        experimentDiagnostics,
+        experimentVersion: "exp-safe-v1",
 
         inputMode,
         referenceImageCount: boundedMultiReferenceUrls.length,
@@ -888,6 +1008,19 @@ export async function POST(request: Request) {
         subjectMotion: effectiveSubjectMotion,
         motionRiskLevel,
         compatibilityWarnings,
+        protectedCoreFlowEnabled: protectedCoreFlow.protectedCoreFlowEnabled,
+        experimentalLayerEnabled: true,
+        experimentalToggleUsed: experimentalSceneHandlingEnabled,
+        generationMode: protectedCoreFlow.generationMode,
+        promptSceneIntent: sceneDiagnostics.promptSceneIntent,
+        anchorSceneGuess: sceneDiagnostics.anchorSceneGuess,
+        sceneMismatchRisk: sceneDiagnostics.sceneMismatchRisk,
+        sceneDiagnosticsVersion: sceneDiagnostics.sceneDiagnosticsVersion,
+        sceneMismatchNotes: sceneDiagnostics.sceneMismatchNotes,
+        motionComplexityRisk: motionRiskLevel,
+        fallbackToProtectedCoreOccurred,
+        experimentDiagnostics,
+        experimentVersion: "exp-safe-v1",
         inputMode,
         referenceImageCount: boundedMultiReferenceUrls.length,
         anchorRolesUsed: attachedReferenceRoles,

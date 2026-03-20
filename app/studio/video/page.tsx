@@ -60,6 +60,13 @@ type ReferenceSelection = FrameSelection & {
 };
 
 type VideoResult = {
+  protectedCoreFlowEnabled?: boolean;
+  experimentalLayerEnabled?: boolean;
+  experimentalToggleUsed?: boolean;
+  sceneMismatchRisk?: "low" | "medium" | "high";
+  promptSceneIntent?: { family?: string; class?: string };
+  anchorSceneGuess?: { family?: string; class?: string };
+  sceneMismatchNotes?: string[];
   generationId: string;
   outputUrl: string;
   downloadUrl: string;
@@ -140,6 +147,7 @@ export default function VideoProjectPage() {
   const [actionPrompt, setActionPrompt] = useState("");
   const [styleHint, setStyleHint] = useState("");
   const [autoDecomposeShots, setAutoDecomposeShots] = useState(false);
+  const [experimentalSceneHandling, setExperimentalSceneHandling] = useState(false);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -263,6 +271,7 @@ export default function VideoProjectPage() {
           creative_notes: actionPrompt,
           requested_thumbnail_url: firstFrame?.imageUrl || fitAnchor?.imageUrl || referenceImages[0]?.imageUrl,
           decomposition_enabled: autoDecomposeShots,
+          experimental_scene_handling: experimentalSceneHandling,
         }),
       });
 
@@ -286,6 +295,13 @@ export default function VideoProjectPage() {
           shotPlan?: VideoResult["shotPlan"];
           shotCandidates?: VideoResult["shotCandidates"];
           sequence?: VideoResult["sequence"];
+          protectedCoreFlowEnabled?: boolean;
+          experimentalLayerEnabled?: boolean;
+          experimentalToggleUsed?: boolean;
+          sceneMismatchRisk?: "low" | "medium" | "high";
+          promptSceneIntent?: { family?: string; class?: string };
+          anchorSceneGuess?: { family?: string; class?: string };
+          sceneMismatchNotes?: string[];
         };
       };
       if (!response.ok || !payload.success || !payload.outputUrl || !payload.generationId || !payload.videoMeta) {
@@ -309,6 +325,13 @@ export default function VideoProjectPage() {
         shotPlan: payload.videoMeta.shotPlan,
         shotCandidates: payload.videoMeta.shotCandidates,
         sequence: payload.videoMeta.sequence,
+        protectedCoreFlowEnabled: payload.videoMeta.protectedCoreFlowEnabled,
+        experimentalLayerEnabled: payload.videoMeta.experimentalLayerEnabled,
+        experimentalToggleUsed: payload.videoMeta.experimentalToggleUsed,
+        sceneMismatchRisk: payload.videoMeta.sceneMismatchRisk,
+        promptSceneIntent: payload.videoMeta.promptSceneIntent,
+        anchorSceneGuess: payload.videoMeta.anchorSceneGuess,
+        sceneMismatchNotes: payload.videoMeta.sceneMismatchNotes,
         createdAt: new Date().toISOString(),
       };
 
@@ -362,9 +385,16 @@ export default function VideoProjectPage() {
                 </select>
               </label>
             </div>
+            <div className="rounded-md border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+              <span className="font-semibold">Protected Core Flow</span> · Identity/Garment Safe Path (first + last + identity anchors preserved by default).
+            </div>
             <label className="flex items-center justify-between rounded-md border border-white/10 bg-zinc-950/40 px-3 py-2 text-sm">
               <span>Auto decompose into shots</span>
               <input type="checkbox" checked={autoDecomposeShots} onChange={(e) => setAutoDecomposeShots(e.target.checked)} />
+            </label>
+            <label className="flex items-center justify-between rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+              <span>Try scene-aware generation (experimental)</span>
+              <input type="checkbox" checked={experimentalSceneHandling} onChange={(e) => setExperimentalSceneHandling(e.target.checked)} />
             </label>
 
             <div className="space-y-3 rounded-lg border border-white/10 p-3">
@@ -501,6 +531,7 @@ export default function VideoProjectPage() {
 
             {selectedBackend?.isExperimental ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">This provider may require compatibility fallback and may drift more under complex motion.</p> : null}
             {motionRiskLevel === "high" ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">High motion increases garment and identity drift risk.</p> : null}
+            {latestResult?.sceneMismatchRisk === "high" ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">Prompt scene may not match anchor scene; intro drift risk is higher.</p> : null}
 
             <button type="button" disabled={!canGenerate || isGenerating} onClick={() => void handleGenerate()} className="w-full rounded-md bg-cyan-500 px-4 py-3 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-zinc-700">
               {isGenerating ? "Generating video..." : "Generate Video"}
@@ -538,6 +569,7 @@ export default function VideoProjectPage() {
                   </div>
                 ) : null}
                 <p className="text-xs">Risk: {latestResult.motionRiskLevel ?? "n/a"}</p>
+                <p className="text-xs">Scene mismatch risk: {latestResult.sceneMismatchRisk ?? "n/a"}</p>
                 {latestResult.usedCompatibilityFallback ? <p className="text-xs text-cyan-200">Used compatibility fallback for this provider.</p> : null}
                 {latestResult.compatibilityWarnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">• {warning}</p>)}
                 {latestResult.evaluationStatus === "completed" && latestResult.evaluator ? (
