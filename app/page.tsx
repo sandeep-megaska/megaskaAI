@@ -7,6 +7,18 @@ import { createClient } from "@supabase/supabase-js";
 import { Download, Sparkles, Trash2, X } from "lucide-react";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import {
+  clearStagedImageReferences,
+  clearStagedVideoAnchors,
+  getIncomingVideoAssets,
+  getStagedImageReferences,
+  getStagedVideoAnchors,
+  removeStagedImageReference,
+  sendAssetToVideoProject,
+  stageImageReference,
+  stageVideoAnchorCandidate,
+  type StagedImageAsset,
+} from "@/lib/studio/internalAssetBridge";
 import { buildMasterCandidatePrompt, buildMoreViewsPrompt, type StudioWorkflowMode } from "@/lib/studio/prompts";
 
 type AIBackend = { id: string; name: string; type: "image" | "video"; model: string };
@@ -79,6 +91,9 @@ function HomeContent() {
   const [promptDialogItem, setPromptDialogItem] = useState<GenerationItem | null>(null);
   const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
   const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  const [selectedReferenceImages, setSelectedReferenceImages] = useState<StagedImageAsset[]>([]);
+  const [selectedAnchorImages, setSelectedAnchorImages] = useState<StagedImageAsset[]>([]);
+  const [sentToVideoImages, setSentToVideoImages] = useState<StagedImageAsset[]>([]);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -178,6 +193,12 @@ function HomeContent() {
   }, [promptDialogItem]);
 
   useEffect(() => {
+    setSelectedReferenceImages(getStagedImageReferences());
+    setSelectedAnchorImages(getStagedVideoAnchors());
+    setSentToVideoImages(getIncomingVideoAssets());
+  }, []);
+
+  useEffect(() => {
     const masterGenerationId = searchParams.get("masterGenerationId");
     const masterUrl = searchParams.get("masterUrl");
     if (!masterGenerationId || !masterUrl) return;
@@ -242,17 +263,19 @@ function HomeContent() {
         hasModelReferences: modelReferenceUrls.length > 0,
       });
 
-      const referenceUrls = [...modelReferenceUrls, ...garmentReferenceUrls];
+    const referenceUrls = [...modelReferenceUrls, ...garmentReferenceUrls];
+    const internalReferenceUrls = selectedReferenceImages.map((item) => item.url);
 
-      return {
-        prompt: wrappedPrompt,
-        referenceUrls,
-        referenceKindsUsed: [
-          ...(modelReferenceUrls.length ? ["model"] : []),
-          ...(garmentReferenceUrls.length ? ["garment"] : []),
-        ],
-        masterGenerationId: null,
-      };
+    return {
+      prompt: wrappedPrompt,
+      referenceUrls: [...referenceUrls, ...internalReferenceUrls],
+      referenceKindsUsed: [
+        ...(modelReferenceUrls.length ? ["model"] : []),
+        ...(garmentReferenceUrls.length ? ["garment"] : []),
+        ...(internalReferenceUrls.length ? ["internal-reference"] : []),
+      ],
+      masterGenerationId: null,
+    };
     }
 
     const wrappedPrompt = buildMoreViewsPrompt({ userPrompt: prompt });
@@ -260,6 +283,7 @@ function HomeContent() {
       ...(masterState.selectedMasterUrl ? [masterState.selectedMasterUrl] : []),
       ...garmentReferenceUrls,
       ...modelReferenceUrls,
+      ...selectedReferenceImages.map((item) => item.url),
     ];
 
     return {
@@ -269,9 +293,39 @@ function HomeContent() {
         ...(masterState.selectedMasterUrl ? ["master"] : []),
         ...(garmentReferenceUrls.length ? ["garment"] : []),
         ...(modelReferenceUrls.length ? ["model"] : []),
+        ...(selectedReferenceImages.length ? ["internal-reference"] : []),
       ],
       masterGenerationId: masterState.selectedMasterGenerationId,
     };
+  }
+
+  function mapGenerationToStagedAsset(item: GenerationItem): StagedImageAsset | null {
+    const src = item.asset_url || item.url;
+    if (!src) return null;
+    return {
+      id: item.id,
+      url: src,
+      prompt: item.prompt || "Gallery image",
+      createdAt: item.created_at ?? new Date().toISOString(),
+    };
+  }
+
+  function handleUseAsReference(item: GenerationItem) {
+    const mapped = mapGenerationToStagedAsset(item);
+    if (!mapped) return;
+    setSelectedReferenceImages(stageImageReference(mapped));
+  }
+
+  function handleUseAsAnchor(item: GenerationItem) {
+    const mapped = mapGenerationToStagedAsset(item);
+    if (!mapped) return;
+    setSelectedAnchorImages(stageVideoAnchorCandidate(mapped));
+  }
+
+  function handleSendToVideo(item: GenerationItem) {
+    const mapped = mapGenerationToStagedAsset(item);
+    if (!mapped) return;
+    setSentToVideoImages(sendAssetToVideoProject(mapped));
   }
 
   function normalizeApiError(status: number, fallback: string) {
@@ -465,6 +519,56 @@ function HomeContent() {
           )}
 
           <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-white/10 bg-zinc-950/40 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-medium text-zinc-200">Selected References ({selectedReferenceImages.length})</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearStagedImageReferences();
+                    setSelectedReferenceImages([]);
+                  }}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {selectedReferenceImages.map((item) => (
+                  <div key={`reference-${item.id}`} className="relative h-14 w-14 shrink-0 overflow-hidden rounded border border-white/15">
+                    <img src={item.url} alt={item.prompt} className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedReferenceImages(removeStagedImageReference(item.id))}
+                      className="absolute right-0 top-0 rounded-bl bg-black/60 px-1 text-[10px]"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {!selectedReferenceImages.length ? <p className="text-xs text-zinc-500">Use “Use as Reference” on any gallery image.</p> : null}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/10 bg-zinc-950/40 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-medium text-zinc-200">Video Bridge · Anchors {selectedAnchorImages.length} · Sent {sentToVideoImages.length}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearStagedVideoAnchors();
+                    setSelectedAnchorImages([]);
+                  }}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200"
+                >
+                  Clear Anchors
+                </button>
+              </div>
+              <p className="text-xs text-zinc-500">Use “Use as Anchor” or “Send to Video Project” on gallery cards. Open Video Project to assign slots directly.</p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -619,6 +723,21 @@ function HomeContent() {
                       </button>
                       <button type="button" onClick={() => setPromptDialogItem(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
                         View Prompt
+                      </button>
+                      {src ? (
+                        <a href={src} download className="inline-flex items-center gap-1 rounded-md border border-white/15 px-3 py-2 text-xs">
+                          <Download className="h-3.5 w-3.5" />
+                          Download
+                        </a>
+                      ) : null}
+                      <button type="button" disabled={!src} onClick={() => handleUseAsReference(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200 disabled:opacity-40">
+                        Use as Reference
+                      </button>
+                      <button type="button" disabled={!src} onClick={() => handleUseAsAnchor(item)} className="rounded-md border border-cyan-400/40 px-3 py-2 text-xs text-cyan-200 disabled:opacity-40">
+                        Use as Anchor
+                      </button>
+                      <button type="button" disabled={!src} onClick={() => handleSendToVideo(item)} className="rounded-md border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200 disabled:opacity-40">
+                        Send to Video Project
                       </button>
                       <button
                         type="button"
