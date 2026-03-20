@@ -5,6 +5,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
+  clearIncomingVideoAssets,
+  getIncomingVideoAssets,
+  getStagedVideoAnchors,
+  removeIncomingVideoAsset,
+  type StagedImageAsset,
+} from "@/lib/studio/internalAssetBridge";
+import {
   classifyMotionRiskFromActionPrompt,
   getFidelityPriorityLabel,
   getMotionPresetLabel,
@@ -173,6 +180,7 @@ export default function VideoProjectPage() {
   const [videoGalleryPage, setVideoGalleryPage] = useState(0);
   const [hasMoreVideoGalleryItems, setHasMoreVideoGalleryItems] = useState(true);
   const [isLoadingMoreVideoGallery, setIsLoadingMoreVideoGallery] = useState(false);
+  const [incomingImageAssets, setIncomingImageAssets] = useState<StagedImageAsset[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
@@ -253,6 +261,14 @@ export default function VideoProjectPage() {
     }
     void loadBackends();
   }, [loadGalleryImages, loadVideoGallery]);
+
+  useEffect(() => {
+    const merged = [...getIncomingVideoAssets(), ...getStagedVideoAnchors()].reduce<StagedImageAsset[]>((acc, item) => {
+      if (acc.some((asset) => asset.id === item.id || asset.url === item.url)) return acc;
+      return [...acc, item];
+    }, []);
+    setIncomingImageAssets(merged);
+  }, []);
 
   useEffect(() => {
     const allowed = getPresetOptions(fidelityPriority);
@@ -453,6 +469,49 @@ export default function VideoProjectPage() {
 
         <section className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
           <div className="space-y-6 rounded-xl border border-white/10 bg-zinc-900/50 p-5">
+            <div className="space-y-3 rounded-lg border border-white/10 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold">Incoming from Image Project</h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearIncomingVideoAssets();
+                    setIncomingImageAssets([]);
+                  }}
+                  className="rounded border border-white/20 px-2 py-1 text-[10px]"
+                >
+                  Clear sent queue
+                </button>
+              </div>
+              <p className="text-xs text-zinc-400">Assign incoming images as first/last/identity anchors or add as references without re-uploading.</p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {incomingImageAssets.map((item) => {
+                  const frame = { sourceGenerationId: item.id, imageUrl: item.url, label: item.prompt || "Incoming image" };
+                  return (
+                    <div key={`incoming-${item.id}`} className="rounded border border-white/10 p-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={item.url} alt={item.prompt} className="h-20 w-full rounded object-cover" />
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button type="button" onClick={() => applyFrameSelection("first", frame)} className="rounded border border-cyan-400/40 px-2 text-[10px]">first</button>
+                        <button type="button" onClick={() => applyFrameSelection("last", frame)} className="rounded border border-cyan-400/40 px-2 text-[10px]">last</button>
+                        <button type="button" onClick={() => applyFrameSelection("identity", frame)} className="rounded border border-cyan-400/40 px-2 text-[10px]">identity</button>
+                        <button type="button" onClick={() => applyFrameSelection("fit", frame)} className="rounded border border-cyan-400/40 px-2 text-[10px]">fit</button>
+                        <button type="button" onClick={() => addReferenceImage(frame)} className="rounded border border-white/20 px-2 text-[10px]">add ref</button>
+                        <button
+                          type="button"
+                          onClick={() => setIncomingImageAssets(removeIncomingVideoAsset(item.id))}
+                          className="rounded border border-rose-400/40 px-2 text-[10px] text-rose-200"
+                        >
+                          remove
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {!incomingImageAssets.length ? <p className="text-xs text-zinc-500">No incoming assets yet. Send images from Image Project gallery.</p> : null}
+              </div>
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-2 text-sm">
                 <span className="text-zinc-300">Video Goal</span>
