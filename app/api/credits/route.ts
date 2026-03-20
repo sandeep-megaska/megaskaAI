@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { summarizeGeminiEstimatedCosts, type GeminiCostGenerationRecord } from "@/lib/billing/geminiCost";
+import { getGoogleBillingSpendSummary } from "@/lib/billing/getGoogleBillingSpendSummary";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export async function GET() {
@@ -16,25 +17,35 @@ export async function GET() {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 
-    const summary = summarizeGeminiEstimatedCosts((data ?? []) as GeminiCostGenerationRecord[]);
+    const estimated = summarizeGeminiEstimatedCosts((data ?? []) as GeminiCostGenerationRecord[]);
+    const googleBilling = await getGoogleBillingSpendSummary();
 
     return NextResponse.json({
       success: true,
       data: {
-        estimated_last_gen_usd: summary.estimatedLastGenUsd,
-        estimated_today_usd: summary.estimatedTodayUsd,
-        estimated_this_month_usd: summary.estimatedThisMonthUsd,
-        last_generated_at: summary.lastGeneratedAt,
-        requested_backend_model: summary.requestedBackendModel,
-        actual_backend_model: summary.actualBackendModel,
-        fallback_applied: summary.fallbackApplied,
+        google_billing: {
+          status: googleBilling.status,
+          source: googleBilling.source,
+          currency: googleBilling.currency,
+          this_month_cost: googleBilling.thisMonthCost,
+          today_cost: googleBilling.todayCost,
+          last_updated_at: googleBilling.lastUpdatedAt,
+          message: googleBilling.message,
+        },
+        estimated_last_generation_usd: estimated.estimatedLastGenUsd,
+        estimated_today_usd: estimated.estimatedTodayUsd,
+        estimated_this_month_usd: estimated.estimatedThisMonthUsd,
+        last_generated_at: estimated.lastGeneratedAt,
+        requested_backend_model: estimated.requestedBackendModel,
+        actual_backend_model: estimated.actualBackendModel,
+        fallback_applied: estimated.fallbackApplied,
       },
     });
   } catch (error) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to calculate Gemini estimated spend.",
+        error: error instanceof Error ? error.message : "Failed to load spend summary.",
       },
       { status: 500 },
     );
