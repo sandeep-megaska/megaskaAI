@@ -60,6 +60,11 @@ type ReferenceSelection = FrameSelection & {
 };
 
 type VideoResult = {
+  motionPlanVersion?: string;
+  motionCategory?: "micro-motion" | "pose-transition" | "limb-motion" | "interaction-motion" | "sequence-motion";
+  anchorSuitabilityStatus?: "valid" | "weak" | "incompatible";
+  anchorGapLevel?: "low" | "medium" | "high";
+  motionWarnings?: string[];
   protectedCoreFlowEnabled?: boolean;
   experimentalLayerEnabled?: boolean;
   experimentalToggleUsed?: boolean;
@@ -287,6 +292,11 @@ export default function VideoProjectPage() {
           durationSeconds: VideoDurationSeconds;
           motionStrength: VideoMotionStrength;
           motionRiskLevel?: MotionRiskLevel;
+          motionPlanVersion?: string;
+          motionCategory?: VideoResult["motionCategory"];
+          anchorSuitabilityStatus?: VideoResult["anchorSuitabilityStatus"];
+          anchorGapLevel?: VideoResult["anchorGapLevel"];
+          motionWarnings?: string[];
           compatibilityWarnings?: string[];
           usedCompatibilityFallback?: boolean;
           evaluationStatus?: "pending" | "completed" | "failed";
@@ -317,6 +327,11 @@ export default function VideoProjectPage() {
         durationSeconds: payload.videoMeta.durationSeconds,
         motionStrength: payload.videoMeta.motionStrength,
         motionRiskLevel: payload.videoMeta.motionRiskLevel,
+        motionPlanVersion: payload.videoMeta.motionPlanVersion,
+        motionCategory: payload.videoMeta.motionCategory,
+        anchorSuitabilityStatus: payload.videoMeta.anchorSuitabilityStatus,
+        anchorGapLevel: payload.videoMeta.anchorGapLevel,
+        motionWarnings: payload.videoMeta.motionWarnings,
         compatibilityWarnings: payload.videoMeta.compatibilityWarnings,
         usedCompatibilityFallback: payload.videoMeta.usedCompatibilityFallback,
         evaluationStatus: payload.videoMeta.evaluationStatus,
@@ -532,6 +547,13 @@ export default function VideoProjectPage() {
             {selectedBackend?.isExperimental ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">This provider may require compatibility fallback and may drift more under complex motion.</p> : null}
             {motionRiskLevel === "high" ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">High motion increases garment and identity drift risk.</p> : null}
             {latestResult?.sceneMismatchRisk === "high" ? <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">Prompt scene may not match anchor scene; intro drift risk is higher.</p> : null}
+            {latestResult?.motionCategory ? (
+              <div className="grid gap-2 rounded-md border border-cyan-400/20 bg-cyan-500/5 p-2 text-xs text-cyan-100 sm:grid-cols-3">
+                <p>Motion: <span className="font-semibold">{latestResult.motionCategory}</span></p>
+                <p>Risk: <span className="font-semibold">{latestResult.motionRiskLevel ?? "n/a"}</span></p>
+                <p>Anchor suitability: <span className="font-semibold">{latestResult.anchorSuitabilityStatus ?? "n/a"}</span></p>
+              </div>
+            ) : null}
 
             <button type="button" disabled={!canGenerate || isGenerating} onClick={() => void handleGenerate()} className="w-full rounded-md bg-cyan-500 px-4 py-3 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-zinc-700">
               {isGenerating ? "Generating video..." : "Generate Video"}
@@ -569,8 +591,11 @@ export default function VideoProjectPage() {
                   </div>
                 ) : null}
                 <p className="text-xs">Risk: {latestResult.motionRiskLevel ?? "n/a"}</p>
+                <p className="text-xs">Motion category: {latestResult.motionCategory ?? "n/a"}</p>
+                <p className="text-xs">Anchor suitability: {latestResult.anchorSuitabilityStatus ?? "n/a"} · Gap: {latestResult.anchorGapLevel ?? "n/a"}</p>
                 <p className="text-xs">Scene mismatch risk: {latestResult.sceneMismatchRisk ?? "n/a"}</p>
                 {latestResult.usedCompatibilityFallback ? <p className="text-xs text-cyan-200">Used compatibility fallback for this provider.</p> : null}
+                {latestResult.motionWarnings?.slice(0, 2).map((warning) => <p key={warning} className="text-xs text-cyan-200">• {warning}</p>)}
                 {latestResult.compatibilityWarnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">• {warning}</p>)}
                 {latestResult.evaluationStatus === "completed" && latestResult.evaluator ? (
                   <div className="space-y-2 rounded-md border border-white/10 bg-zinc-900/70 p-2 text-xs">
