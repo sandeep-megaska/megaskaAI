@@ -1,0 +1,118 @@
+"use client";
+
+import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
+import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
+import { excerpt, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
+
+type PlanApiResponse = {
+  id?: string;
+};
+
+export default function ProductionWorkspace(props: {
+  activeTab: "manual" | "auto";
+  setActiveTab: (tab: "manual" | "auto") => void;
+  motionRequest: string;
+  setMotionRequest: (value: string) => void;
+  exactEndStateRequired: boolean;
+  setExactEndStateRequired: (value: boolean) => void;
+  aspectRatio: string;
+  setAspectRatio: (value: string) => void;
+  desiredMode: "" | V2Mode;
+  setDesiredMode: (mode: "" | V2Mode) => void;
+  onGeneratePlan: () => Promise<void>;
+  onRunPlan: () => Promise<void>;
+  planResponse: DirectorPlanContract | null;
+  planRecord: PlanApiResponse | null;
+  hasRunnablePlan: boolean;
+  executingRun: boolean;
+  pendingBranchLabel: string | null;
+  onOpenAuto: () => void;
+  latestRun: VideoRunHistoryRecord | null;
+  onRecoveryAction: (run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") => Promise<void>;
+  onAcceptClip: (run: VideoRunHistoryRecord) => Promise<void>;
+  onExtendClip: (run: VideoRunHistoryRecord) => void;
+  onBranchRun: (run: VideoRunHistoryRecord) => Promise<void>;
+  onAddToSequence: (run: VideoRunHistoryRecord) => Promise<void>;
+  selectedSequenceId: string;
+}) {
+  return (
+    <section className="space-y-4">
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 shadow-lg shadow-black/20">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">Production Workspace</h2>
+            <p className="text-xs text-zinc-400">Plan → Run → Act on result.</p>
+          </div>
+          <div className="rounded-xl border border-zinc-700 bg-zinc-950 p-1 text-sm">
+            <button className={`rounded-lg px-3 py-1 ${props.activeTab === "manual" ? "bg-zinc-800" : "text-zinc-400"}`} onClick={() => props.setActiveTab("manual")}>Manual Production</button>
+            <button className={`rounded-lg px-3 py-1 ${props.activeTab === "auto" ? "bg-zinc-800" : "text-zinc-400"}`} onClick={() => props.setActiveTab("auto")}>Auto Production</button>
+          </div>
+        </div>
+
+        {props.activeTab === "manual" ? (
+          <div className="mt-4 space-y-3">
+            <textarea className="min-h-24 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.motionRequest} onChange={(e) => props.setMotionRequest(e.target.value)} />
+            <div className="grid gap-3 md:grid-cols-2">
+              <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.aspectRatio} onChange={(e) => props.setAspectRatio(e.target.value)} />
+              <select className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.desiredMode} onChange={(e) => props.setDesiredMode(e.target.value as "" | V2Mode)}>
+                <option value="">-- let planner decide --</option>
+                {V2_MODE_OPTIONS.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+              </select>
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs text-zinc-300">
+              <input type="checkbox" checked={props.exactEndStateRequired} onChange={(e) => props.setExactEndStateRequired(e.target.checked)} /> exact_end_state_required
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => props.onGeneratePlan()} className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-violet-950">Generate Plan</button>
+              <button type="button" disabled={!props.hasRunnablePlan || props.executingRun} onClick={() => props.onRunPlan()} className="rounded bg-emerald-500 px-3 py-2 text-sm font-medium text-emerald-950 disabled:opacity-40">
+                {props.executingRun ? "Running..." : "Run this plan"}
+              </button>
+            </div>
+            {props.pendingBranchLabel ? <p className="text-xs text-indigo-300">{props.pendingBranchLabel}</p> : null}
+            {props.planResponse ? <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-xs">{JSON.stringify(props.planResponse, null, 2)}</pre> : null}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/70 p-4">
+            <p className="text-sm text-zinc-300">Auto Production is available for fast default pipelines.</p>
+            <button type="button" onClick={props.onOpenAuto} className="mt-3 rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Launch Auto Production</button>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <h3 className="font-semibold">Output / Current Result</h3>
+        {props.latestRun ? (
+          <div className="mt-3 space-y-2 text-sm">
+            <p className={`font-medium uppercase ${statusTone(props.latestRun.status)}`}>{props.latestRun.status}</p>
+            <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
+            {props.latestRun.output_asset_url ? (
+              <div className="space-y-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={props.latestRun.output_thumbnail_url ?? props.latestRun.output_asset_url} alt="Latest run" className="h-40 w-full rounded-xl border border-zinc-800 object-cover" />
+                <div className="flex flex-wrap gap-2">
+                  <DownloadAssetButton url={props.latestRun.output_asset_url} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
+                  {(() => {
+                    const run = props.latestRun;
+                    return (
+                      <>
+                        <button type="button" onClick={() => props.onAcceptClip(run)} className="rounded border border-emerald-600/40 px-2 py-1 text-xs">Accept</button>
+                        <button type="button" onClick={() => props.onRecoveryAction(run, "same_plan")} className="rounded border border-zinc-700 px-2 py-1 text-xs">Retry</button>
+                        <button type="button" onClick={() => props.onRecoveryAction(run, "fallback_provider")} className="rounded border border-zinc-700 px-2 py-1 text-xs">Fallback</button>
+                        <button type="button" onClick={() => props.onRecoveryAction(run, "safer_mode")} className="rounded border border-zinc-700 px-2 py-1 text-xs">Safer mode</button>
+                        <button type="button" onClick={() => props.onExtendClip(run)} className="rounded border border-cyan-600/40 px-2 py-1 text-xs">Extend</button>
+                        <button type="button" onClick={() => props.onBranchRun(run)} className="rounded border border-indigo-600/40 px-2 py-1 text-xs">Branch</button>
+                        <button type="button" disabled={!props.selectedSequenceId} onClick={() => props.onAddToSequence(run)} className="rounded border border-violet-600/40 px-2 py-1 text-xs disabled:opacity-40">Add to sequence</button>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-zinc-500">No run output yet.</p>
+        )}
+      </div>
+    </section>
+  );
+}
