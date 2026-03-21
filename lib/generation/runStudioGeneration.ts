@@ -2,6 +2,7 @@ import { findBackendById, getDefaultBackendForType, type AIBackend, type AIBacke
 import { isGeminiImageModel, isImagenModel, isVeoModel } from "@/lib/ai/backendFamilies";
 import { runGeminiImageGeneration } from "@/lib/ai/adapters/geminiImageAdapter";
 import { runImagenImageGeneration } from "@/lib/ai/adapters/imagenImageAdapter";
+import { runLaoZhangImageGeneration } from "@/lib/ai/adapters/laozhangImageAdapter";
 import { runVeoVideoGeneration } from "@/lib/ai/adapters/veoVideoAdapter";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
@@ -42,6 +43,23 @@ export async function runStudioGeneration(input: RunStudioGenerationInput): Prom
   const backend = resolveBackend(input.type, input.backendId);
 
   if (input.type === "image") {
+    if (backend.id === "laozhang_gemini") {
+      const output = await runLaoZhangImageGeneration({
+        model: process.env.LAOZHANG_IMAGE_MODEL ?? backend.model,
+        prompt: input.prompt,
+        aspectRatio: input.aspectRatio,
+        referenceUrls: input.referenceUrls,
+      });
+
+      return {
+        bytes: output.bytes,
+        mimeType: output.mimeType,
+        backend,
+        backendModel: output.model,
+        mediaType: "Image",
+      };
+    }
+
     if (isGeminiImageModel(backend.model)) {
       const output = await runGeminiImageGeneration({
         apiKey: input.apiKey,
