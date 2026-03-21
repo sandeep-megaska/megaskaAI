@@ -57,7 +57,13 @@ export async function POST(request: Request) {
       .single();
 
     if (error) return json(400, { success: false, error: error.message });
-    return json(201, { success: true, data });
+
+    await supabase
+      .from("video_generation_runs")
+      .update({ status: "validated" })
+      .eq("id", body.video_generation_run_id);
+
+    return json(201, { success: true, data: { ...data, linked_run_status: "validated" } });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }

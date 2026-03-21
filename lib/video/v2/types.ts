@@ -23,6 +23,9 @@ export type AnchorPackItemRole = (typeof ANCHOR_ITEM_ROLES)[number];
 export const V2_MODE_OPTIONS = ["ingredients_to_video", "frames_to_video", "scene_extension"] as const;
 export type V2Mode = (typeof V2_MODE_OPTIONS)[number];
 
+export const VIDEO_RUN_STATUSES = ["planned", "queued", "running", "succeeded", "failed", "validated", "completed"] as const;
+export type VideoRunStatus = (typeof VIDEO_RUN_STATUSES)[number];
+
 export type MotionComplexity = "low" | "medium" | "high";
 export type AnchorRiskLevel = "low" | "medium" | "high";
 
@@ -128,4 +131,55 @@ export type DirectorPlannerInput = {
   availableRoles?: AnchorPackItemRole[];
   preferredProviders?: string[];
   packs: AnchorPack[];
+};
+
+export type VideoRunValidationSummary = {
+  id: string;
+  overall_score: number;
+  decision: "pass" | "retry" | "reject" | "manual_review";
+  failure_reasons: string[];
+  created_at: string;
+};
+
+export type VideoGenerationRunRecord = {
+  id: string;
+  generation_plan_id: string;
+  output_generation_id: string | null;
+  mode_selected: V2Mode | string;
+  status: VideoRunStatus;
+  provider_used: string | null;
+  provider_model: string | null;
+  run_meta: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExecuteVideoRunRequest = {
+  generation_plan_id: string;
+  selected_pack_id: string;
+  mode_selected: V2Mode;
+  provider_selected: string;
+  model_selected: string;
+  director_prompt: string;
+  fallback_prompt?: string;
+  aspect_ratio: string;
+  duration_seconds: number;
+  request_payload_snapshot: Record<string, unknown>;
+};
+
+export type ExecuteVideoRunResponse = {
+  run: VideoGenerationRunRecord;
+  validation?: VideoRunValidationSummary | null;
+};
+
+export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
+  plan_motion_request?: string | null;
+  selected_pack_id?: string | null;
+  selected_pack_name?: string | null;
+  request_payload_snapshot?: Record<string, unknown> | null;
+  output_asset_url?: string | null;
+  output_thumbnail_url?: string | null;
+  output_generation_status?: string | null;
+  failure_message?: string | null;
+  validation?: VideoRunValidationSummary | null;
 };
