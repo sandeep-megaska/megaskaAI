@@ -29,7 +29,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pac
   try {
     const { packId } = await params;
     const body = (await request.json()) as {
-      action?: "assign" | "remove" | "reorder";
+      action?: "assign" | "remove" | "reorder" | "update";
       item_id?: string;
       generation_id?: string;
       role?: string;
@@ -54,6 +54,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ pac
       for (const [index, itemId] of body.ordered_item_ids.entries()) {
         await supabase.from("anchor_pack_items").update({ sort_order: index }).eq("id", itemId).eq("anchor_pack_id", packId);
       }
+    } else if (body.action === "update") {
+      if (!body.item_id) return json(400, { success: false, error: "item_id is required for update." });
+      const updates: Record<string, unknown> = {};
+      if (body.role && ANCHOR_ITEM_ROLES.includes(body.role as (typeof ANCHOR_ITEM_ROLES)[number])) {
+        updates.role = body.role;
+      }
+      if (typeof body.sort_order === "number") updates.sort_order = body.sort_order;
+      if (Object.keys(updates).length === 0) {
+        return json(400, { success: false, error: "No valid fields provided for update." });
+      }
+      const { error } = await supabase.from("anchor_pack_items").update(updates).eq("id", body.item_id).eq("anchor_pack_id", packId);
+      if (error) return json(400, { success: false, error: error.message });
     } else {
       if (!body.generation_id) return json(400, { success: false, error: "generation_id is required." });
       if (!body.role || !ANCHOR_ITEM_ROLES.includes(body.role as (typeof ANCHOR_ITEM_ROLES)[number])) {
