@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 
 const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
 
@@ -18,7 +18,10 @@ function inferFileName(url: string, fallbackPrefix: string) {
 export default function DownloadAssetButton({ url, filenamePrefix, label = "Download original" }: { url: string; filenamePrefix: string; label?: string }) {
   const [downloading, setDownloading] = useState(false);
 
-  async function onDownload() {
+  async function onDownload(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
     try {
       setDownloading(true);
 
@@ -51,7 +54,9 @@ export default function DownloadAssetButton({ url, filenamePrefix, label = "Down
       a.click();
       a.remove();
 
-      window.URL.revokeObjectURL(blobUrl);
+      window.setTimeout(() => {
+        window.URL.revokeObjectURL(blobUrl);
+      }, 1000);
     } catch (error) {
       console.error("Download failed", error);
       alert("Download failed. Try again.");
