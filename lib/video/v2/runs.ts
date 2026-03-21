@@ -15,6 +15,15 @@ export function deriveProviderFromPlan(plan: DirectorPlanContract) {
   };
 }
 
+export function deriveFallbackProviderFromPlan(plan: DirectorPlanContract, currentProvider?: string | null) {
+  const providers = plan.provider_order ?? [];
+  if (!providers.length) return null;
+  if (!currentProvider) return providers[1] ?? null;
+  const currentIndex = providers.findIndex((entry) => entry === currentProvider);
+  if (currentIndex < 0) return providers[0] ?? null;
+  return providers[currentIndex + 1] ?? null;
+}
+
 export function resolvePrimaryFrameUrl(pack?: AnchorPack | null) {
   if (!pack?.anchor_pack_items?.length) return null;
   const preferredRoles = ["start_frame", "front", "fit_anchor"];

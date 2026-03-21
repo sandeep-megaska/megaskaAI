@@ -271,7 +271,18 @@ function statusTone(status: string) {
   return "text-zinc-300";
 }
 
-function RunHistoryPanel(props: { runs: VideoRunHistoryRecord[]; loading: boolean }) {
+function actionLabel(action: "same_plan" | "fallback_provider" | "safer_mode") {
+  if (action === "same_plan") return "Retry same plan";
+  if (action === "fallback_provider") return "Retry with fallback model";
+  return "Retry with safer mode";
+}
+
+function RunHistoryPanel(props: {
+  runs: VideoRunHistoryRecord[];
+  loading: boolean;
+  onRecoveryAction: (run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") => Promise<void>;
+  runningRecoveryFor: string | null;
+}) {
   if (props.loading) return <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-400">Loading run history…</section>;
 
   return (
@@ -288,6 +299,11 @@ function RunHistoryPanel(props: { runs: VideoRunHistoryRecord[]; loading: boolea
                 <p className="text-zinc-400">Mode: {run.mode_selected}</p>
                 <p className="text-zinc-400">Provider/model: {run.provider_used ?? "n/a"} / {run.provider_model ?? "n/a"}</p>
               </div>
+              {run.retried_from_run_id ? (
+                <p className="mt-1 text-xs text-violet-300">
+                  Retried from {shortId(run.retried_from_run_id)} using {run.retry_strategy ?? "retry"}.
+                </p>
+              ) : null}
               <div className="mt-2 grid gap-1 text-xs text-zinc-400 md:grid-cols-2">
                 <p>Pack used: <span className="text-zinc-300">{run.selected_pack_name ?? run.selected_pack_id ?? "unknown pack"}</span></p>
                 <p>Aspect ratio: <span className="text-zinc-300">{String(run.request_payload_snapshot?.aspect_ratio ?? "n/a")}</span></p>
@@ -312,6 +328,44 @@ function RunHistoryPanel(props: { runs: VideoRunHistoryRecord[]; loading: boolea
               ) : (
                 <p className="mt-2 text-xs text-zinc-500">No validation yet.</p>
               )}
+              {run.recovery_recommendation ? (
+                <div className="mt-3 rounded border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
+                  <p className="font-medium text-zinc-100">Recommended recovery: {run.recovery_recommendation.primary_recommendation}</p>
+                  <p className="mt-1 text-zinc-400">{run.recovery_recommendation.reasons.join(" ")}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {(["same_plan", "fallback_provider", "safer_mode"] as const).map((action) => {
+                      const key =
+                        action === "same_plan"
+                          ? "retry_same_plan"
+                          : action === "fallback_provider"
+                            ? "retry_fallback"
+                            : "retry_safer_mode";
+                      const availability = run.recovery_recommendation?.action_availability[key];
+                      const disabled = !availability?.allowed || props.runningRecoveryFor === run.id;
+                      return (
+                        <button
+                          key={action}
+                          type="button"
+                          disabled={disabled}
+                          title={availability?.reason ?? ""}
+                          onClick={() => props.onRecoveryAction(run, action)}
+                          className="rounded border border-zinc-700 px-2 py-1 text-xs disabled:opacity-40"
+                        >
+                          {props.runningRecoveryFor === run.id ? "Retrying..." : actionLabel(action)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <ul className="mt-2 space-y-1 text-zinc-500">
+                    <li>Same plan: {run.recovery_recommendation.action_availability.retry_same_plan.reason}</li>
+                    <li>Fallback: {run.recovery_recommendation.action_availability.retry_fallback.reason}</li>
+                    <li>Safer mode: {run.recovery_recommendation.action_availability.retry_safer_mode.reason}</li>
+                    {run.recovery_recommendation.action_availability.improve_anchors.allowed ? (
+                      <li className="text-amber-300">Improve anchors before retry.</li>
+                    ) : null}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           ))
         ) : (
@@ -342,6 +396,7 @@ export default function VideoV2Page() {
   const [loadingImages, setLoadingImages] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [executingRun, setExecutingRun] = useState(false);
+  const [runningRecoveryFor, setRunningRecoveryFor] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -393,6 +448,29 @@ export default function VideoV2Page() {
   const selectedPack = packs.find((pack) => pack.id === selectedPackId) ?? null;
   const selectedPackRoles = Array.from(new Set((selectedPack?.anchor_pack_items ?? []).map((item) => item.role as AnchorPackItemRole)));
   const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
+
+  async function runRecoveryAction(run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") {
+    try {
+      setError(null);
+      setRunningRecoveryFor(run.id);
+      const res = await fetch("/api/studio/video/v2/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          source_run_id: run.id,
+          retry_strategy: action,
+          retry_reason: `Operator-triggered ${actionLabel(action).toLowerCase()}.`,
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Recovery retry failed.");
+      await Promise.all([loadRuns(), loadValidationResults()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Recovery retry failed.");
+    } finally {
+      setRunningRecoveryFor(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-8 text-zinc-100">
@@ -646,7 +724,7 @@ export default function VideoV2Page() {
           ) : null}
         </section>
 
-        <RunHistoryPanel runs={runHistory} loading={loadingRuns} />
+        <RunHistoryPanel runs={runHistory} loading={loadingRuns} onRecoveryAction={runRecoveryAction} runningRecoveryFor={runningRecoveryFor} />
 
         <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
           <h2 className="font-medium">Validation Panel</h2>
