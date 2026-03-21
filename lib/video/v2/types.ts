@@ -26,6 +26,8 @@ export type V2Mode = (typeof V2_MODE_OPTIONS)[number];
 export type MotionComplexity = "low" | "medium" | "high";
 export type AnchorRiskLevel = "low" | "medium" | "high";
 
+export type SuitabilityLevel = "good" | "partial" | "insufficient" | "unavailable";
+
 export type AnchorPackItem = {
   id: string;
   anchor_pack_id: string;
@@ -75,6 +77,26 @@ export type ModeRoutingResult = {
   whyModeSelected: string;
 };
 
+export type ModeSuitability = {
+  mode: V2Mode;
+  level: SuitabilityLevel;
+  reasons: string[];
+};
+
+export type PackReadinessReport = {
+  packType: AnchorPackType;
+  aggregateStabilityScore: number;
+  isReady: boolean;
+  itemCount: number;
+  presentRoles: AnchorPackItemRole[];
+  missingRoles: AnchorPackItemRole[];
+  duplicateRoles: AnchorPackItemRole[];
+  warnings: string[];
+  modeSuitability: ModeSuitability[];
+  recommendedMode: V2Mode;
+  riskLevel: AnchorRiskLevel;
+};
+
 export type DirectorPlanContract = {
   mode_selected: V2Mode;
   why_mode_selected: string;
@@ -88,6 +110,9 @@ export type DirectorPlanContract = {
   fallback_prompt: string;
   negative_constraints: string[];
   provider_order: string[];
+  mode_suitability: ModeSuitability[];
+  pack_risk: AnchorRiskLevel;
+  missing_requirements: string[];
 };
 
 export type DirectorPlannerInput = {
@@ -96,6 +121,11 @@ export type DirectorPlannerInput = {
   aspectRatio: string;
   exactEndStateRequired: boolean;
   priorValidatedClipExists: boolean;
+  desiredMode?: V2Mode;
+  selectedPackId?: string;
+  selectedPackType?: AnchorPackType;
+  aggregateStabilityScore?: number;
+  availableRoles?: AnchorPackItemRole[];
   preferredProviders?: string[];
   packs: AnchorPack[];
 };

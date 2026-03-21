@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildDirectorPlan } from "@/lib/video/v2/planner";
-import type { AnchorPack } from "@/lib/video/v2/types";
+import type { AnchorPack, AnchorPackItemRole, AnchorPackType, V2Mode } from "@/lib/video/v2/types";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -16,6 +16,11 @@ export async function POST(request: Request) {
       exact_end_state_required?: boolean;
       prior_validated_clip_exists?: boolean;
       preferred_providers?: string[];
+      selected_pack_id?: string;
+      selected_pack_type?: AnchorPackType;
+      aggregate_stability_score?: number;
+      available_roles?: AnchorPackItemRole[];
+      desired_mode?: V2Mode;
     };
 
     if (!body.motion_request?.trim()) return json(400, { success: false, error: "motion_request is required." });
@@ -30,7 +35,6 @@ export async function POST(request: Request) {
 
     if (packsError) return json(500, { success: false, error: packsError.message });
 
-    // Megaska AI Studio V2: planner abstraction contract for Gemini 3.1 Pro Preview.
     const plan = buildDirectorPlan({
       motionRequest: body.motion_request,
       durationSeconds: body.duration_seconds ?? 8,
@@ -38,6 +42,11 @@ export async function POST(request: Request) {
       exactEndStateRequired: Boolean(body.exact_end_state_required),
       priorValidatedClipExists: Boolean(body.prior_validated_clip_exists),
       preferredProviders: body.preferred_providers,
+      desiredMode: body.desired_mode,
+      selectedPackId: body.selected_pack_id,
+      selectedPackType: body.selected_pack_type,
+      aggregateStabilityScore: body.aggregate_stability_score,
+      availableRoles: body.available_roles,
       packs: (packs ?? []) as AnchorPack[],
     });
 
