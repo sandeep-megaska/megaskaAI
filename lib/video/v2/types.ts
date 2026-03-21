@@ -332,3 +332,60 @@ export type ExportPreparationView = {
   ready_for_export: boolean;
   issues: string[];
 };
+
+export const AUTO_PRODUCTION_STATUSES = ["planning", "generating", "sequencing", "rendering", "completed", "failed"] as const;
+export type AutoProductionStatus = (typeof AUTO_PRODUCTION_STATUSES)[number];
+
+export type AutoProductionControlMode = "safe" | "balanced" | "creative";
+
+export type AutoProductionProgressStep = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "completed" | "failed";
+  note?: string;
+};
+
+export type AutoProductionProgress = {
+  current_step: string;
+  updated_at: string;
+  steps: AutoProductionProgressStep[];
+  current_shot?: number;
+  total_shots?: number;
+  shot_logs?: string[];
+  input: {
+    prompt: string;
+    model_id?: string;
+    garment_id?: string;
+    scene?: string;
+    aspect_ratio: string;
+    control_mode: AutoProductionControlMode;
+  };
+  preview: {
+    shots: Array<{
+      shot_index: number;
+      description: string;
+      duration: number;
+      motion_type: "minimal" | "moderate" | "dynamic";
+    }>;
+    estimated_duration: number;
+    selected_packs: {
+      identity_pack_id?: string;
+      garment_pack_id?: string;
+      scene_pack_id?: string;
+    };
+    risk_level: "low" | "medium" | "high";
+  } | null;
+  output_url: string | null;
+  error: string | null;
+};
+
+export type AutoProductionJob = {
+  id: string;
+  input_prompt: string;
+  status: AutoProductionStatus;
+  progress_json: AutoProductionProgress;
+  sequence_id: string | null;
+  output_asset_id: string | null;
+  error_message: string | null;
+  created_at: string;
+};

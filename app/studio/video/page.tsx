@@ -464,6 +464,8 @@ export default function VideoProjectPage() {
               <Link href="/" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Image Project</Link>
               <Link href="/studio/video" className="rounded-md bg-cyan-500 px-4 py-2 text-sm text-slate-950">Video Project</Link>
               <Link href="/studio/video/v2" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Anchor Studio V2</Link>
+              <Link href="/studio/video/v2#auto-produce" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Auto Produce</Link>
+              <Link href="/studio/video/v2/guide" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Guide</Link>
             </div>
           </div>
         </section>

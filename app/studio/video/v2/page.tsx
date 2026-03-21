@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import AutoProductionModal from "@/app/studio/video/v2/AutoProductionModal";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import {
   ANCHOR_ITEM_ROLES,
@@ -28,6 +29,9 @@ type ValidationResult = {
   failure_reasons?: string[];
   created_at: string;
 };
+
+type ModelOption = { id: string; display_name: string };
+type GarmentOption = { id: string; display_name: string };
 
 type PlanApiResponse = {
   id?: string;
@@ -533,6 +537,9 @@ export default function VideoV2Page() {
   const [addingToSequenceRunId, setAddingToSequenceRunId] = useState<string | null>(null);
   const [renderingSequence, setRenderingSequence] = useState(false);
   const [renderNote, setRenderNote] = useState<string | null>(null);
+  const [showAutoModal, setShowAutoModal] = useState(false);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [garments, setGarments] = useState<GarmentOption[]>([]);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -576,6 +583,19 @@ export default function VideoV2Page() {
     setLoadingRuns(false);
   }
 
+  async function loadModelsAndGarments() {
+    const [modelsRes, garmentsRes] = await Promise.all([
+      fetch("/api/models", { cache: "no-store" }),
+      fetch("/api/garments", { cache: "no-store" }),
+    ]);
+
+    const modelsPayload = (await modelsRes.json()) as { data?: Array<{ id: string; display_name: string }>; error?: string };
+    const garmentsPayload = (await garmentsRes.json()) as { data?: Array<{ id: string; display_name: string }>; error?: string };
+
+    if (modelsRes.ok) setModels((modelsPayload.data ?? []).map((item) => ({ id: item.id, display_name: item.display_name })));
+    if (garmentsRes.ok) setGarments((garmentsPayload.data ?? []).map((item) => ({ id: item.id, display_name: item.display_name })));
+  }
+
   async function loadSequences() {
     const res = await fetch("/api/studio/video/v2/sequences", { cache: "no-store" });
     const payload = (await res.json()) as { data?: VideoSequence[]; error?: string };
@@ -602,7 +622,7 @@ export default function VideoV2Page() {
   }
 
   useEffect(() => {
-    Promise.all([loadPacks(), loadImages(), loadValidationResults(), loadRuns(), loadSequences()]).catch((e) => setError(String(e)));
+    Promise.all([loadPacks(), loadImages(), loadValidationResults(), loadRuns(), loadSequences(), loadModelsAndGarments()]).catch((e) => setError(String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -812,14 +832,22 @@ export default function VideoV2Page() {
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-8 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-6">
-        <div className="flex items-center justify-between">
+        <div id="auto-produce" className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold">Anchor Pack Builder</h1>
             <p className="text-sm text-zinc-400">Consistency &gt; creativity. Anchor-first planning for fidelity-preserving video generation.</p>
           </div>
-          <Link href="/studio/video" className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">
-            Back to Video Project
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/studio/video/v2/guide" className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">
+              Guide
+            </Link>
+            <button type="button" onClick={() => setShowAutoModal(true)} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">
+              Auto Produce Video
+            </button>
+            <Link href="/studio/video" className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">
+              Back to Video Project
+            </Link>
+          </div>
         </div>
 
         {error ? <p className="rounded border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
@@ -1321,6 +1349,8 @@ export default function VideoV2Page() {
             )}
           </div>
         </section>
+                <AutoProductionModal open={showAutoModal} onClose={() => setShowAutoModal(false)} models={models} garments={garments} />
+
       </div>
     </main>
   );
