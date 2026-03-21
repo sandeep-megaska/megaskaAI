@@ -233,14 +233,41 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   recovery_recommendation?: RecoveryRecommendation | null;
 };
 
-export const VIDEO_SEQUENCE_STATUSES = ["draft", "ready", "exported"] as const;
+export const VIDEO_SEQUENCE_STATUSES = ["draft", "ready", "rendering", "exported", "failed"] as const;
 export type VideoSequenceStatus = (typeof VIDEO_SEQUENCE_STATUSES)[number];
+export type SequenceRenderStatus = VideoSequenceStatus;
+
+export type RenderMetadata = {
+  render_started_at: string;
+  render_completed_at: string | null;
+  render_duration: number | null;
+  render_method: "demuxer" | "filter";
+  render_error?: string | null;
+  compatibility: {
+    codec_match: boolean;
+    resolution_match: boolean;
+    aspect_ratio_match: boolean;
+    fps_match: boolean;
+  };
+};
+
+export type RenderResult = {
+  sequence_id: string;
+  status: SequenceRenderStatus;
+  output_asset_id: string;
+  output_url: string;
+  metadata: RenderMetadata;
+  message?: string;
+};
 
 export type VideoSequence = {
   id: string;
   project_id: string;
   sequence_name: string;
   status: VideoSequenceStatus;
+  output_asset_id?: string | null;
+  output_url?: string | null;
+  sequence_meta?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   clip_count?: number;
