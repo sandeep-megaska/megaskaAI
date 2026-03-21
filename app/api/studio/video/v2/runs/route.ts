@@ -2,8 +2,19 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { runVideoJob } from "@/lib/video/runVideoJob";
 import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
-import { deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
-import type { AnchorPack, DirectorPlanContract, ExecuteVideoRunRequest, VideoRunStatus } from "@/lib/video/v2/types";
+import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
+import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
+import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
+import type {
+  AnchorPack,
+  AnchorPackItem,
+  DirectorPlanContract,
+  ExecuteVideoRunRequest,
+  RetryStrategy,
+  V2Mode,
+  VideoRunHistoryRecord,
+  VideoRunStatus,
+} from "@/lib/video/v2/types";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -12,6 +23,31 @@ function json(status: number, body: Record<string, unknown>) {
 function parseRunMeta(runMeta: unknown): Record<string, unknown> {
   if (!runMeta || typeof runMeta !== "object" || Array.isArray(runMeta)) return {};
   return runMeta as Record<string, unknown>;
+}
+
+function parsePlanContract(plan: Record<string, unknown>): DirectorPlanContract {
+  return {
+    mode_selected: String(plan.mode_selected ?? "ingredients_to_video") as V2Mode,
+    why_mode_selected: String(plan.why_mode_selected ?? ""),
+    recommended_pack_ids: (plan.recommended_pack_ids as string[] | null) ?? [],
+    required_reference_roles: (plan.required_reference_roles as DirectorPlanContract["required_reference_roles"] | null) ?? [],
+    duration_seconds: Number(plan.duration_seconds ?? 8),
+    aspect_ratio: String(plan.aspect_ratio ?? "9:16"),
+    motion_complexity: (plan.motion_complexity as DirectorPlanContract["motion_complexity"]) ?? "low",
+    anchor_risk_level: (plan.anchor_risk_level as DirectorPlanContract["anchor_risk_level"]) ?? "medium",
+    director_prompt: String(plan.director_prompt ?? ""),
+    fallback_prompt: String(plan.fallback_prompt ?? ""),
+    negative_constraints: (plan.negative_constraints as string[] | null) ?? [],
+    provider_order: (plan.provider_order as string[] | null) ?? [],
+    mode_suitability: [],
+    pack_risk: (plan.anchor_risk_level as DirectorPlanContract["anchor_risk_level"]) ?? "medium",
+    missing_requirements: [],
+  };
+}
+
+function pickRetryStrategy(input?: string | null): RetryStrategy {
+  if (input === "same_plan" || input === "fallback_model" || input === "fallback_provider" || input === "safer_mode") return input;
+  return "same_plan";
 }
 
 export async function GET() {
@@ -47,10 +83,13 @@ export async function GET() {
 
     const [{ data: plans }, { data: packs }, { data: outputs }, { data: validations }] = await Promise.all([
       planIds.length
-        ? supabase.from("video_generation_plans").select("id,motion_request").in("id", planIds)
+        ? supabase.from("video_generation_plans").select("id,motion_request,provider_order").in("id", planIds)
         : Promise.resolve({ data: [] }),
       packIds.length
-        ? supabase.from("anchor_packs").select("id,pack_name").in("id", packIds)
+        ? supabase
+            .from("anchor_packs")
+            .select("id,pack_name,pack_type,aggregate_stability_score,anchor_pack_items(role,stability_score)")
+            .in("id", packIds)
         : Promise.resolve({ data: [] }),
       outputIds.length
         ? supabase.from("generations").select("id,asset_url,url,status,thumbnail_url").in("id", outputIds)
@@ -92,18 +131,40 @@ export async function GET() {
       const output = run.output_generation_id ? outputMap.get(run.output_generation_id) : null;
       const validation = validationMap.get(run.id);
       const status: VideoRunStatus = validation ? "validated" : normalizeRunStatus(run.status);
-      return {
+      const pack = selectedPackId ? packMap.get(selectedPackId) : null;
+      const plan = planMap.get(run.generation_plan_id);
+      const packReadiness = pack
+        ? buildPackReadinessReport({
+            packType: pack.pack_type,
+            items: (pack.anchor_pack_items ?? []) as Partial<AnchorPackItem>[],
+            aggregateStabilityScore: Number(pack.aggregate_stability_score ?? 0),
+            priorValidatedClipExists: false,
+          })
+        : null;
+      const fallback = plan
+        ? deriveFallbackProviderFromPlan(
+            parsePlanContract(plan as Record<string, unknown>),
+            typeof run.provider_used === "string" ? run.provider_used : null,
+          )
+        : null;
+
+      const row: VideoRunHistoryRecord = {
         ...run,
         status,
         plan_motion_request: planMap.get(run.generation_plan_id)?.motion_request ?? null,
         selected_pack_id: selectedPackId,
         selected_pack_name: selectedPackId ? (packMap.get(selectedPackId)?.pack_name ?? null) : null,
         request_payload_snapshot:
-          runMeta.request_payload_snapshot && typeof runMeta.request_payload_snapshot === "object" ? runMeta.request_payload_snapshot : null,
+          runMeta.request_payload_snapshot && typeof runMeta.request_payload_snapshot === "object"
+            ? (runMeta.request_payload_snapshot as Record<string, unknown>)
+            : null,
         output_asset_url: output?.asset_url ?? output?.url ?? null,
         output_thumbnail_url: output?.thumbnail_url ?? null,
         output_generation_status: output?.status ?? null,
         failure_message: typeof runMeta.failure_message === "string" ? runMeta.failure_message : null,
+        retried_from_run_id: typeof runMeta.retried_from_run_id === "string" ? runMeta.retried_from_run_id : null,
+        retry_strategy: typeof runMeta.retry_strategy === "string" ? (runMeta.retry_strategy as RetryStrategy) : null,
+        retry_reason: typeof runMeta.retry_reason === "string" ? runMeta.retry_reason : null,
         validation: validation
           ? {
               id: validation.id,
@@ -114,6 +175,14 @@ export async function GET() {
             }
           : null,
       };
+
+      row.recovery_recommendation = buildRecoveryRecommendation({
+        run: row,
+        packReadiness,
+        fallbackProvider: fallback,
+        fallbackModel: fallback,
+      });
+      return row;
     });
 
     return json(200, { success: true, data });
@@ -125,61 +194,136 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Partial<ExecuteVideoRunRequest>;
-
-    if (!body.generation_plan_id?.trim()) return json(400, { success: false, error: "generation_plan_id is required." });
-    if (!body.selected_pack_id?.trim()) return json(400, { success: false, error: "selected_pack_id is required." });
-    if (!body.mode_selected?.trim()) return json(400, { success: false, error: "mode_selected is required." });
-    if (!body.director_prompt?.trim()) return json(400, { success: false, error: "director_prompt is required." });
-
     const supabase = getSupabaseAdminClient();
 
+    let runRequest = body;
+
+    if (body.source_run_id?.trim()) {
+      const retryStrategy = pickRetryStrategy(body.retry_strategy);
+      const { data: sourceRun, error: sourceError } = await supabase
+        .from("video_generation_runs")
+        .select("*")
+        .eq("id", body.source_run_id)
+        .single();
+      if (sourceError || !sourceRun) return json(404, { success: false, error: sourceError?.message ?? "Source run not found." });
+
+      const sourceMeta = parseRunMeta(sourceRun.run_meta);
+      const selectedPackId =
+        typeof body.selected_pack_id === "string" && body.selected_pack_id.trim()
+          ? body.selected_pack_id
+          : typeof sourceMeta.selected_pack_id === "string"
+            ? sourceMeta.selected_pack_id
+            : "";
+
+      const [{ data: plan, error: planError }, { data: pack, error: packError }] = await Promise.all([
+        supabase.from("video_generation_plans").select("*").eq("id", sourceRun.generation_plan_id).single(),
+        selectedPackId
+          ? supabase
+              .from("anchor_packs")
+              .select("*,anchor_pack_items(*,generation:generations(id,prompt,asset_url,url,generation_kind))")
+              .eq("id", selectedPackId)
+              .single()
+          : Promise.resolve({ data: null, error: { message: "Selected pack not found." } }),
+      ]);
+      if (planError || !plan) return json(404, { success: false, error: planError?.message ?? "Plan not found." });
+      if (packError || !pack) return json(404, { success: false, error: packError?.message ?? "Selected pack not found." });
+
+      const planContract = parsePlanContract(plan as Record<string, unknown>);
+      const fallbackProvider = deriveFallbackProviderFromPlan(planContract, sourceRun.provider_used);
+      const readiness = buildPackReadinessReport({
+        packType: pack.pack_type,
+        items: pack.anchor_pack_items ?? [],
+        aggregateStabilityScore: Number(pack.aggregate_stability_score ?? 0),
+        priorValidatedClipExists: false,
+      });
+
+      const saferMode =
+        sourceRun.mode_selected === "frames_to_video" && readiness.modeSuitability.find((entry) => entry.mode === "ingredients_to_video")?.level !== "insufficient"
+          ? "ingredients_to_video"
+          : null;
+
+      if (retryStrategy === "fallback_provider" && !fallbackProvider) {
+        return json(400, { success: false, error: "Fallback provider/model is not available for this plan." });
+      }
+      if (retryStrategy === "safer_mode" && !saferMode && !body.override_mode) {
+        return json(400, { success: false, error: "Safer mode retry is unavailable for this pack/mode suitability." });
+      }
+
+      const inheritedSnapshot =
+        sourceMeta.request_payload_snapshot && typeof sourceMeta.request_payload_snapshot === "object"
+          ? (sourceMeta.request_payload_snapshot as Record<string, unknown>)
+          : {};
+      const resolvedMode = (body.override_mode ?? (retryStrategy === "safer_mode" ? saferMode : sourceRun.mode_selected)) as V2Mode;
+      const resolvedProvider =
+        body.override_provider ?? (retryStrategy === "fallback_provider" || retryStrategy === "fallback_model" ? fallbackProvider : sourceRun.provider_used);
+      const resolvedModel = body.override_model ?? resolvedProvider ?? sourceRun.provider_model ?? sourceRun.provider_used;
+
+      runRequest = {
+        generation_plan_id: sourceRun.generation_plan_id,
+        selected_pack_id: selectedPackId,
+        mode_selected: resolvedMode,
+        provider_selected: String(resolvedProvider ?? sourceRun.provider_used ?? "veo-3.1"),
+        model_selected: String(resolvedModel ?? sourceRun.provider_model ?? "veo-3.1"),
+        director_prompt: String(inheritedSnapshot.director_prompt ?? plan.director_prompt ?? ""),
+        fallback_prompt: String(inheritedSnapshot.fallback_prompt ?? plan.fallback_prompt ?? ""),
+        aspect_ratio: String(inheritedSnapshot.aspect_ratio ?? plan.aspect_ratio ?? "9:16"),
+        duration_seconds: Number(inheritedSnapshot.duration_seconds ?? plan.duration_seconds ?? 8),
+        request_payload_snapshot: {
+          ...inheritedSnapshot,
+          retry_mode_override: body.override_mode ?? null,
+          retry_provider_override: body.override_provider ?? null,
+          retry_model_override: body.override_model ?? null,
+          new_seed: body.new_seed ?? null,
+          retried_from_run_id: sourceRun.id,
+          retry_strategy: retryStrategy,
+        },
+        source_run_id: sourceRun.id,
+        retry_strategy: retryStrategy,
+        retry_reason: body.retry_reason ?? "Operator-triggered recovery action.",
+      };
+    }
+
+    if (!runRequest.generation_plan_id?.trim()) return json(400, { success: false, error: "generation_plan_id is required." });
+    if (!runRequest.selected_pack_id?.trim()) return json(400, { success: false, error: "selected_pack_id is required." });
+    if (!runRequest.mode_selected?.trim()) return json(400, { success: false, error: "mode_selected is required." });
+    if (!runRequest.director_prompt?.trim()) return json(400, { success: false, error: "director_prompt is required." });
+
     const [{ data: plan, error: planError }, { data: pack, error: packError }] = await Promise.all([
-      supabase.from("video_generation_plans").select("*").eq("id", body.generation_plan_id).single(),
+      supabase.from("video_generation_plans").select("*").eq("id", runRequest.generation_plan_id).single(),
       supabase
         .from("anchor_packs")
         .select("*,anchor_pack_items(*,generation:generations(id,prompt,asset_url,url,generation_kind))")
-        .eq("id", body.selected_pack_id)
+        .eq("id", runRequest.selected_pack_id)
         .single(),
     ]);
 
     if (planError || !plan) return json(404, { success: false, error: planError?.message ?? "Plan not found." });
     if (packError || !pack) return json(404, { success: false, error: packError?.message ?? "Selected pack not found." });
 
-    const planContract: DirectorPlanContract = {
-      mode_selected: plan.mode_selected,
-      why_mode_selected: plan.why_mode_selected,
-      recommended_pack_ids: plan.recommended_pack_ids ?? [],
-      required_reference_roles: plan.required_reference_roles ?? [],
-      duration_seconds: plan.duration_seconds,
-      aspect_ratio: plan.aspect_ratio,
-      motion_complexity: plan.motion_complexity,
-      anchor_risk_level: plan.anchor_risk_level,
-      director_prompt: plan.director_prompt,
-      fallback_prompt: plan.fallback_prompt ?? "",
-      negative_constraints: plan.negative_constraints ?? [],
-      provider_order: plan.provider_order ?? [],
-      mode_suitability: [],
-      pack_risk: plan.anchor_risk_level,
-      missing_requirements: [],
-    };
+    const planContract = parsePlanContract(plan as Record<string, unknown>);
 
-    const providerInfo = body.provider_selected && body.model_selected
-      ? { providerSelected: body.provider_selected, modelSelected: body.model_selected }
+    const providerInfo = runRequest.provider_selected && runRequest.model_selected
+      ? { providerSelected: runRequest.provider_selected, modelSelected: runRequest.model_selected }
       : deriveProviderFromPlan(planContract);
 
     const initialMeta: Record<string, unknown> = {
-      selected_pack_id: body.selected_pack_id,
-      fallback_prompt: body.fallback_prompt ?? plan.fallback_prompt ?? null,
-      request_payload_snapshot: body.request_payload_snapshot ?? {},
+      selected_pack_id: runRequest.selected_pack_id,
+      fallback_prompt: runRequest.fallback_prompt ?? plan.fallback_prompt ?? null,
+      request_payload_snapshot: runRequest.request_payload_snapshot ?? {},
       execution_notes: "Run accepted by V2 execute endpoint.",
+      retried_from_run_id: runRequest.source_run_id ?? null,
+      retry_strategy: runRequest.retry_strategy ?? null,
+      retry_reason: runRequest.retry_reason ?? null,
+      original_mode_selected: runRequest.source_run_id ? plan.mode_selected : null,
+      retry_mode_selected: runRequest.source_run_id ? runRequest.mode_selected : null,
     };
 
     const { data: insertedRun, error: runError } = await supabase
       .from("video_generation_runs")
       .insert({
-        generation_plan_id: body.generation_plan_id,
+        generation_plan_id: runRequest.generation_plan_id,
         output_generation_id: null,
-        mode_selected: body.mode_selected,
+        mode_selected: runRequest.mode_selected,
         status: "queued",
         provider_used: providerInfo.providerSelected,
         provider_model: providerInfo.modelSelected,
@@ -211,11 +355,11 @@ export async function POST(request: Request) {
     await supabase.from("video_generation_runs").update({ status: "running" }).eq("id", insertedRun.id);
 
     try {
-      const selectedAspectRatio = String(body.aspect_ratio ?? plan.aspect_ratio ?? "9:16");
+      const selectedAspectRatio = String(runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16");
       const execution = await runVideoJob({
         backendId: providerInfo.providerSelected,
-        prompt: body.director_prompt,
-        durationSeconds: Number(body.duration_seconds ?? plan.duration_seconds ?? 8),
+        prompt: runRequest.director_prompt,
+        durationSeconds: Number(runRequest.duration_seconds ?? plan.duration_seconds ?? 8),
         firstFrameUrl: primaryFrameUrl,
         aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
         requestedFidelityPriority: "maximum-fidelity",
@@ -223,11 +367,11 @@ export async function POST(request: Request) {
       });
 
       const generationInsertPayload = {
-        prompt: body.director_prompt,
+        prompt: runRequest.director_prompt,
         type: "Video",
         media_type: "Video",
         status: "completed",
-        aspect_ratio: body.aspect_ratio ?? plan.aspect_ratio ?? "9:16",
+        aspect_ratio: runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16",
         asset_url: null,
         url: null,
         generation_kind: "video",

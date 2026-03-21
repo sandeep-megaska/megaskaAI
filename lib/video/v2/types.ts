@@ -141,6 +141,28 @@ export type VideoRunValidationSummary = {
   created_at: string;
 };
 
+export const RETRY_STRATEGIES = ["same_plan", "fallback_model", "fallback_provider", "safer_mode"] as const;
+export type RetryStrategy = (typeof RETRY_STRATEGIES)[number];
+
+export type RecoveryRecommendation = {
+  primary_recommendation: string;
+  recommended_actions: string[];
+  reasons: string[];
+  can_retry_same_plan: boolean;
+  can_retry_fallback: boolean;
+  can_retry_safer_mode: boolean;
+  should_improve_anchors_first: boolean;
+  suggested_fallback_provider: string | null;
+  suggested_fallback_model: string | null;
+  suggested_safer_mode: V2Mode | null;
+  action_availability: {
+    retry_same_plan: { allowed: boolean; reason: string };
+    retry_fallback: { allowed: boolean; reason: string };
+    retry_safer_mode: { allowed: boolean; reason: string };
+    improve_anchors: { allowed: boolean; reason: string };
+  };
+};
+
 export type VideoGenerationRunRecord = {
   id: string;
   generation_plan_id: string;
@@ -165,6 +187,13 @@ export type ExecuteVideoRunRequest = {
   aspect_ratio: string;
   duration_seconds: number;
   request_payload_snapshot: Record<string, unknown>;
+  source_run_id?: string;
+  retry_strategy?: RetryStrategy;
+  retry_reason?: string;
+  override_mode?: V2Mode;
+  override_provider?: string;
+  override_model?: string;
+  new_seed?: number;
 };
 
 export type ExecuteVideoRunResponse = {
@@ -182,4 +211,8 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   output_generation_status?: string | null;
   failure_message?: string | null;
   validation?: VideoRunValidationSummary | null;
+  retried_from_run_id?: string | null;
+  retry_strategy?: RetryStrategy | null;
+  retry_reason?: string | null;
+  recovery_recommendation?: RecoveryRecommendation | null;
 };
