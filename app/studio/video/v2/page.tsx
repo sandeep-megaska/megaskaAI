@@ -11,6 +11,9 @@ import {
   type AnchorPack,
   type AnchorPackItem,
   type AnchorPackItemRole,
+  type DirectorPlanContract,
+  type ExecuteVideoRunRequest,
+  type VideoRunHistoryRecord,
   type V2Mode,
 } from "@/lib/video/v2/types";
 
@@ -21,6 +24,16 @@ type ValidationResult = {
   decision: "pass" | "retry" | "reject" | "manual_review";
   failure_reasons?: string[];
   created_at: string;
+};
+
+type PlanApiResponse = {
+  id?: string;
+  mode_selected?: V2Mode;
+  provider_order?: string[];
+  director_prompt?: string;
+  fallback_prompt?: string;
+  duration_seconds?: number;
+  aspect_ratio?: string;
 };
 
 function getAssetUrl(item?: { asset_url?: string | null; url?: string | null } | null) {
@@ -249,6 +262,66 @@ function PackReadinessCard(props: { pack: AnchorPack | null }) {
   );
 }
 
+function statusTone(status: string) {
+  if (status === "validated") return "text-emerald-300";
+  if (status === "succeeded" || status === "completed") return "text-emerald-200";
+  if (status === "running") return "text-sky-300";
+  if (status === "queued" || status === "planned") return "text-amber-200";
+  if (status === "failed") return "text-rose-300";
+  return "text-zinc-300";
+}
+
+function RunHistoryPanel(props: { runs: VideoRunHistoryRecord[]; loading: boolean }) {
+  if (props.loading) return <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-400">Loading run history…</section>;
+
+  return (
+    <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+      <h2 className="font-medium">Run History</h2>
+      <p className="mb-3 text-xs text-zinc-400">Most recent execution attempts first. Track plan → run → validation in one place.</p>
+      <div className="space-y-2">
+        {props.runs.length ? (
+          props.runs.map((run) => (
+            <div key={run.id} className="rounded border border-zinc-800 bg-zinc-950/40 p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <p className="text-zinc-300">{new Date(run.created_at).toLocaleString()}</p>
+                <p className={`font-medium uppercase ${statusTone(run.status)}`}>{run.status}</p>
+                <p className="text-zinc-400">Mode: {run.mode_selected}</p>
+                <p className="text-zinc-400">Provider/model: {run.provider_used ?? "n/a"} / {run.provider_model ?? "n/a"}</p>
+              </div>
+              <div className="mt-2 grid gap-1 text-xs text-zinc-400 md:grid-cols-2">
+                <p>Pack used: <span className="text-zinc-300">{run.selected_pack_name ?? run.selected_pack_id ?? "unknown pack"}</span></p>
+                <p>Aspect ratio: <span className="text-zinc-300">{String(run.request_payload_snapshot?.aspect_ratio ?? "n/a")}</span></p>
+                <p>Duration: <span className="text-zinc-300">{String(run.request_payload_snapshot?.duration_seconds ?? "n/a")}s</span></p>
+                <p>Prompt: <span className="text-zinc-300">{excerpt((run.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 120)}</span></p>
+              </div>
+              {run.output_asset_url ? (
+                <div className="mt-2">
+                  <p className="mb-1 text-xs text-zinc-400">Output preview</p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={run.output_thumbnail_url ?? run.output_asset_url} alt={`Run ${shortId(run.id)} output preview`} className="h-24 rounded border border-zinc-800 object-cover" />
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-500">Output preview unavailable.</p>
+              )}
+              {run.failure_message ? <p className="mt-2 text-xs text-rose-300">Run failed: {run.failure_message}</p> : null}
+              {run.validation ? (
+                <div className="mt-2 rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs">
+                  <p className="font-medium text-emerald-200">Validated · score {Number(run.validation.overall_score ?? 0).toFixed(2)} · decision {run.validation.decision}</p>
+                  {run.validation.failure_reasons?.length ? <p className="text-rose-200">{run.validation.failure_reasons.join(" | ")}</p> : null}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-500">No validation yet.</p>
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="text-sm text-zinc-500">No run history yet. Generate a plan and click “Run this plan”.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function VideoV2Page() {
   const [packs, setPacks] = useState<AnchorPack[]>([]);
   const [images, setImages] = useState<GalleryImage[]>([]);
@@ -258,13 +331,17 @@ export default function VideoV2Page() {
   const [newItemGenerationId, setNewItemGenerationId] = useState("");
   const [newItemRole, setNewItemRole] = useState<(typeof ANCHOR_ITEM_ROLES)[number]>("front");
   const [motionRequest, setMotionRequest] = useState("Subtle breathing with micro shoulder shift while preserving garment fit.");
-  const [planResponse, setPlanResponse] = useState<Record<string, unknown> | null>(null);
+  const [planResponse, setPlanResponse] = useState<DirectorPlanContract | null>(null);
+  const [planRecord, setPlanRecord] = useState<PlanApiResponse | null>(null);
+  const [runHistory, setRunHistory] = useState<VideoRunHistoryRecord[]>([]);
   const [validationResults, setValidationResults] = useState<ValidationResult[]>([]);
   const [exactEndStateRequired, setExactEndStateRequired] = useState(true);
   const [aspectRatio, setAspectRatio] = useState("9:16");
   const [desiredMode, setDesiredMode] = useState<"" | V2Mode>("");
   const [error, setError] = useState<string | null>(null);
   const [loadingImages, setLoadingImages] = useState(false);
+  const [loadingRuns, setLoadingRuns] = useState(false);
+  const [executingRun, setExecutingRun] = useState(false);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -299,13 +376,23 @@ export default function VideoV2Page() {
     if (res.ok) setValidationResults(payload.data ?? []);
   }
 
+  async function loadRuns() {
+    setLoadingRuns(true);
+    const res = await fetch("/api/studio/video/v2/runs", { cache: "no-store" });
+    const payload = (await res.json()) as { data?: VideoRunHistoryRecord[]; error?: string };
+    if (!res.ok) throw new Error(payload.error ?? "Failed to load run history.");
+    setRunHistory(payload.data ?? []);
+    setLoadingRuns(false);
+  }
+
   useEffect(() => {
-    Promise.all([loadPacks(), loadImages(), loadValidationResults()]).catch((e) => setError(String(e)));
+    Promise.all([loadPacks(), loadImages(), loadValidationResults(), loadRuns()]).catch((e) => setError(String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectedPack = packs.find((pack) => pack.id === selectedPackId) ?? null;
   const selectedPackRoles = Array.from(new Set((selectedPack?.anchor_pack_items ?? []).map((item) => item.role as AnchorPackItemRole)));
+  const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
 
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-8 text-zinc-100">
@@ -497,17 +584,69 @@ export default function VideoV2Page() {
                   desired_mode: desiredMode || undefined,
                 }),
               });
-              const payload = (await res.json()) as { error?: string; plan?: Record<string, unknown>; data?: Record<string, unknown> };
+              const payload = (await res.json()) as { error?: string; plan?: DirectorPlanContract; data?: PlanApiResponse };
               if (!res.ok) return setError(payload.error ?? "Planning failed.");
-              setPlanResponse(payload.plan ?? payload.data ?? null);
+              setPlanResponse(payload.plan ?? null);
+              setPlanRecord(payload.data ?? null);
             }}
           >
             Generate plan contract
           </button>
+          <button
+            disabled={!hasRunnablePlan || executingRun}
+            className="w-fit rounded bg-emerald-500 px-3 py-2 text-sm font-medium text-emerald-950 disabled:opacity-40"
+            onClick={async () => {
+              if (!hasRunnablePlan || !planRecord?.id || !selectedPack?.id || !planResponse) return;
+              setExecutingRun(true);
+              setError(null);
+              const providerSelected = planResponse.provider_order?.[0] ?? "veo-3.1";
+              const requestPayloadSnapshot = {
+                selected_pack_id: selectedPack.id,
+                mode_selected: planResponse.mode_selected,
+                provider_selected: providerSelected,
+                model_selected: providerSelected,
+                director_prompt: planResponse.director_prompt,
+                fallback_prompt: planResponse.fallback_prompt,
+                aspect_ratio: planResponse.aspect_ratio ?? aspectRatio,
+                duration_seconds: planResponse.duration_seconds ?? 8,
+              } satisfies Record<string, unknown>;
+
+              const body: ExecuteVideoRunRequest = {
+                generation_plan_id: planRecord.id,
+                selected_pack_id: selectedPack.id,
+                mode_selected: planResponse.mode_selected,
+                provider_selected: providerSelected,
+                model_selected: providerSelected,
+                director_prompt: planResponse.director_prompt,
+                fallback_prompt: planResponse.fallback_prompt,
+                aspect_ratio: planResponse.aspect_ratio ?? aspectRatio,
+                duration_seconds: planResponse.duration_seconds ?? 8,
+                request_payload_snapshot: requestPayloadSnapshot,
+              };
+
+              const res = await fetch("/api/studio/video/v2/runs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              const payload = (await res.json()) as { error?: string };
+              if (!res.ok) {
+                setExecutingRun(false);
+                return setError(payload.error ?? "Run creation failed.");
+              }
+              await Promise.all([loadRuns(), loadValidationResults()]);
+              setExecutingRun(false);
+            }}
+          >
+            {executingRun ? "Running..." : "Run this plan"}
+          </button>
+          {!hasRunnablePlan ? <p className="text-xs text-zinc-500">Generate a plan contract with a selected pack before execution.</p> : null}
           {planResponse ? (
             <pre className="overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs">{JSON.stringify(planResponse, null, 2)}</pre>
           ) : null}
         </section>
+
+        <RunHistoryPanel runs={runHistory} loading={loadingRuns} />
 
         <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
           <h2 className="font-medium">Validation Panel</h2>
