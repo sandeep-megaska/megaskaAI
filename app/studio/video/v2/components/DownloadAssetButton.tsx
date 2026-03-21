@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
+
 function inferFileName(url: string, fallbackPrefix: string) {
   try {
     const parsed = new URL(url);
@@ -16,20 +18,20 @@ function inferFileName(url: string, fallbackPrefix: string) {
 export default function DownloadAssetButton({ url, filenamePrefix, label = "Download original" }: { url: string; filenamePrefix: string; label?: string }) {
   const [downloading, setDownloading] = useState(false);
 
-  async function onDownload() {
+  function onDownload() {
     try {
       setDownloading(true);
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Failed to fetch asset for download.");
-      const blob = await response.blob();
-      const href = URL.createObjectURL(blob);
+      const filename = inferFileName(url, filenamePrefix);
+      const params = new URLSearchParams({
+        asset_url: url,
+        filename,
+      });
+      const href = `${DOWNLOAD_ROUTE}?${params.toString()}`;
       const a = document.createElement("a");
       a.href = href;
-      a.download = inferFileName(url, filenamePrefix);
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(href);
     } finally {
       setDownloading(false);
     }
