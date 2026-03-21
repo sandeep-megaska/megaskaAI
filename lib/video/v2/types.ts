@@ -232,3 +232,76 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   continuation_block_reason?: string | null;
   recovery_recommendation?: RecoveryRecommendation | null;
 };
+
+export const VIDEO_SEQUENCE_STATUSES = ["draft", "ready", "exported"] as const;
+export type VideoSequenceStatus = (typeof VIDEO_SEQUENCE_STATUSES)[number];
+
+export type VideoSequence = {
+  id: string;
+  project_id: string;
+  sequence_name: string;
+  status: VideoSequenceStatus;
+  created_at: string;
+  updated_at: string;
+  clip_count?: number;
+};
+
+export type VideoSequenceItem = {
+  id: string;
+  sequence_id: string;
+  run_id: string;
+  order_index: number;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type SequenceContinuitySignal = {
+  signal: "model" | "garment" | "scene" | "aspect_ratio" | "lineage";
+  status: "good" | "warning" | "major_mismatch";
+  label: string;
+  details: string;
+};
+
+export type SequenceTimelineClip = {
+  item_id: string;
+  run_id: string;
+  order_index: number;
+  output_url: string | null;
+  thumbnail_url: string | null;
+  duration_seconds: number | null;
+  mode_selected: string;
+  provider_model: string | null;
+  provider_used: string | null;
+  validation_score: number | null;
+  accepted_for_sequence: boolean;
+  aspect_ratio: string | null;
+  selected_pack_id: string | null;
+  lineage: {
+    extension_from_run_id: string | null;
+    branched_from_run_id: string | null;
+  };
+};
+
+export type SequenceTimelineView = {
+  sequence: VideoSequence;
+  clips: SequenceTimelineClip[];
+  continuity: Array<{
+    from_run_id: string;
+    to_run_id: string;
+    signals: SequenceContinuitySignal[];
+    overall: "good" | "warning" | "major_mismatch";
+  }>;
+};
+
+export type ExportPreparationView = {
+  sequence_id: string;
+  clips: Array<{
+    run_id: string;
+    output_url: string | null;
+    duration: number | null;
+    order_index: number;
+  }>;
+  total_duration: number;
+  ready_for_export: boolean;
+  issues: string[];
+};
