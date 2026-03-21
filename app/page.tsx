@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Download, Sparkles, Trash2, X } from "lucide-react";
+import { Sparkles, Trash2, X } from "lucide-react";
+import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
@@ -670,9 +671,7 @@ function HomeContent() {
                     >
                       {masterState.selectedMasterGenerationId === item.id ? "Selected Master" : "Use as Master"}
                     </button>
-                    <a href={item.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md border border-white/15 px-3 py-2 text-xs">
-                      <Download className="h-3.5 w-3.5" />Download
-                    </a>
+                    <DownloadAssetButton url={item.url} filenamePrefix={`studio-result-${item.id}`} label="Download" />
                   </div>
                 </div>
               </article>
@@ -724,12 +723,7 @@ function HomeContent() {
                       <button type="button" onClick={() => setPromptDialogItem(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
                         View Prompt
                       </button>
-                      {src ? (
-                        <a href={src} download className="inline-flex items-center gap-1 rounded-md border border-white/15 px-3 py-2 text-xs">
-                          <Download className="h-3.5 w-3.5" />
-                          Download
-                        </a>
-                      ) : null}
+                      {src ? <DownloadAssetButton url={src} filenamePrefix={`gallery-${item.id}`} label="Download" /> : null}
                       <button type="button" disabled={!src} onClick={() => handleUseAsReference(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200 disabled:opacity-40">
                         Use as Reference
                       </button>

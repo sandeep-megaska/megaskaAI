@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import {
   clearIncomingVideoAssets,
   getIncomingVideoAssets,
@@ -747,7 +748,11 @@ export default function VideoProjectPage() {
                 ) : null}
                 {latestResult.evaluationStatus === "failed" ? <p className="text-xs text-zinc-300">Evaluation unavailable for this result.</p> : null}
                 <div className="flex gap-2">
-                  <a href={latestResult.downloadUrl} download className="rounded-md border border-white/20 px-3 py-2 text-sm">Download</a>
+                  <DownloadAssetButton
+                    url={latestResult.downloadUrl}
+                    filenamePrefix={`video-generation-${latestResult.generationId}`}
+                    label="Download"
+                  />
                   <button type="button" onClick={() => router.push(`/?masterUrl=${encodeURIComponent(latestResult.thumbnailUrl ?? latestResult.outputUrl)}`)} className="rounded-md border border-cyan-400/50 px-3 py-2 text-sm text-cyan-200">Use Frame in Image Project</button>
                 </div>
               </div>
@@ -806,9 +811,11 @@ export default function VideoProjectPage() {
                       {typeof videoMeta["evaluationStatus"] === "string" ? <span className="rounded border border-white/10 px-2 py-0.5">{String(videoMeta["evaluationStatus"])}</span> : null}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <a href={`/api/studio/video/${item.id}/download`} className="rounded-md border border-white/20 px-3 py-2 text-xs">
-                        Download
-                      </a>
+                      <DownloadAssetButton
+                        url={`/api/studio/video/${item.id}/download`}
+                        filenamePrefix={`video-gallery-${item.id}`}
+                        label="Download"
+                      />
                       <button
                         type="button"
                         onClick={() => router.push(`/?masterUrl=${encodeURIComponent(item.thumbnail_url ?? videoUrl)}&masterGenerationId=${encodeURIComponent(item.id)}&sourceVideoGenerationId=${encodeURIComponent(item.id)}&extractedAt=${encodeURIComponent(item.created_at ?? new Date().toISOString())}`)}
