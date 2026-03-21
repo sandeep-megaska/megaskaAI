@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type MouseEvent } from "react";
+import { useState } from "react";
 
 const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
 
@@ -15,12 +15,24 @@ function inferFileName(url: string, fallbackPrefix: string) {
   return `${fallbackPrefix}.bin`;
 }
 
-export default function DownloadAssetButton({ url, filenamePrefix, label = "Download original" }: { url: string; filenamePrefix: string; label?: string }) {
+export default function DownloadAssetButton({
+  url,
+  filenamePrefix,
+  label = "Download original",
+}: {
+  url: string;
+  filenamePrefix: string;
+  label?: string;
+}) {
   const [downloading, setDownloading] = useState(false);
 
-  async function onDownload(event: MouseEvent<HTMLButtonElement>) {
+  function stopEvent(event: React.SyntheticEvent) {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  async function onDownload(event: React.MouseEvent<HTMLButtonElement>) {
+    stopEvent(event);
 
     try {
       setDownloading(true);
@@ -49,17 +61,19 @@ export default function DownloadAssetButton({ url, filenamePrefix, label = "Down
       const a = document.createElement("a");
       a.href = blobUrl;
       a.download = filename;
+      a.rel = "noopener";
+      a.style.display = "none";
 
       document.body.appendChild(a);
       a.click();
       a.remove();
 
-      window.setTimeout(() => {
+      setTimeout(() => {
         window.URL.revokeObjectURL(blobUrl);
       }, 1000);
     } catch (error) {
-      console.error("Download failed", error);
-      alert("Download failed. Try again.");
+      console.error("[DownloadAssetButton] download failed", error);
+      alert("Download failed. Please try again.");
     } finally {
       setDownloading(false);
     }
@@ -68,11 +82,12 @@ export default function DownloadAssetButton({ url, filenamePrefix, label = "Down
   return (
     <button
       type="button"
+      onMouseDown={stopEvent}
       onClick={onDownload}
       disabled={downloading}
       className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {label}
+      {downloading ? "Downloading..." : label}
     </button>
   );
 }
