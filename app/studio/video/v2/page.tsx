@@ -292,6 +292,23 @@ function continuityIcon(status: "good" | "warning" | "major_mismatch") {
   return "⚠";
 }
 
+
+function sequenceStatusTone(status: string) {
+  if (status === "ready") return "text-emerald-300";
+  if (status === "rendering") return "text-sky-300";
+  if (status === "exported") return "text-emerald-200";
+  if (status === "failed") return "text-rose-300";
+  return "text-zinc-300";
+}
+
+function sequenceStatusLabel(status: string) {
+  if (status === "ready") return "Ready";
+  if (status === "rendering") return "Rendering";
+  if (status === "exported") return "Exported";
+  if (status === "failed") return "Failed";
+  return "Draft";
+}
+
 function runSupportsSuccessActions(run: VideoRunHistoryRecord) {
   if (run.status !== "succeeded" && run.status !== "validated") return false;
   if (!run.validation) return true;
@@ -514,6 +531,8 @@ export default function VideoV2Page() {
   const [sequenceTimeline, setSequenceTimeline] = useState<SequenceTimelineView | null>(null);
   const [exportPreparation, setExportPreparation] = useState<ExportPreparationView | null>(null);
   const [addingToSequenceRunId, setAddingToSequenceRunId] = useState<string | null>(null);
+  const [renderingSequence, setRenderingSequence] = useState(false);
+  const [renderNote, setRenderNote] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -746,6 +765,27 @@ export default function VideoV2Page() {
       setError(e instanceof Error ? e.message : "Failed to add clip to sequence.");
     } finally {
       setAddingToSequenceRunId(null);
+    }
+  }
+
+  async function exportSequence() {
+    if (!selectedSequenceId || !exportPreparation?.ready_for_export) return;
+    try {
+      setError(null);
+      setRenderNote(null);
+      setRenderingSequence(true);
+      const res = await fetch(`/api/studio/video/v2/sequences/${selectedSequenceId}/render`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const payload = (await res.json()) as { data?: { message?: string }; error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Rendering failed — check clips");
+      if (payload.data?.message) setRenderNote(payload.data.message);
+      await Promise.all([loadSequences(), loadSequenceTimeline(selectedSequenceId)]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Rendering failed — check clips");
+    } finally {
+      setRenderingSequence(false);
     }
   }
 
@@ -1077,7 +1117,12 @@ export default function VideoV2Page() {
           {sequenceTimeline ? (
             <div className="space-y-3">
               <div className="rounded border border-zinc-800 p-3 text-xs text-zinc-300">
-                <p>Name: {sequenceTimeline.sequence.sequence_name}</p>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p>Name: {sequenceTimeline.sequence.sequence_name}</p>
+                  <span className={`rounded border border-zinc-700 px-2 py-1 text-xs font-medium uppercase ${sequenceStatusTone(sequenceTimeline.sequence.status)}`}>
+                    {sequenceStatusLabel(sequenceTimeline.sequence.status)}
+                  </span>
+                </div>
                 <p>Status: {sequenceTimeline.sequence.status}</p>
                 <p>Updated: {new Date(sequenceTimeline.sequence.updated_at).toLocaleString()}</p>
               </div>
@@ -1167,6 +1212,32 @@ export default function VideoV2Page() {
                         <li key={issue}>{issue}</li>
                       ))}
                     </ul>
+                  ) : null}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded bg-violet-400 px-3 py-2 text-xs font-semibold text-violet-950 disabled:opacity-40"
+                      disabled={!exportPreparation.ready_for_export || renderingSequence || sequenceTimeline.sequence.status === "rendering"}
+                      onClick={exportSequence}
+                    >
+                      {renderingSequence || sequenceTimeline.sequence.status === "rendering" ? "Rendering..." : "Export sequence"}
+                    </button>
+                    {renderNote ? <p className="text-amber-200">{renderNote}</p> : null}
+                    {sequenceTimeline.sequence.status === "failed" ? <p className="text-rose-300">Rendering failed — check clips</p> : null}
+                  </div>
+                  {sequenceTimeline.sequence.output_url ? (
+                    <div className="mt-3 rounded border border-zinc-800 bg-zinc-950/60 p-2">
+                      <p className="mb-2 text-[11px] text-emerald-200">Exported output preview</p>
+                      <video src={sequenceTimeline.sequence.output_url} controls className="max-h-72 w-full rounded" />
+                      <a
+                        href={sequenceTimeline.sequence.output_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block rounded border border-emerald-500/50 px-2 py-1 text-[11px] text-emerald-200"
+                      >
+                        Download exported video
+                      </a>
+                    </div>
                   ) : null}
                   <pre className="mt-2 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px]">{JSON.stringify(exportPreparation, null, 2)}</pre>
                 </div>
