@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
 
 function inferFileName(url: string, fallbackPrefix: string) {
@@ -14,16 +16,58 @@ function inferFileName(url: string, fallbackPrefix: string) {
 }
 
 export default function DownloadAssetButton({ url, filenamePrefix, label = "Download original" }: { url: string; filenamePrefix: string; label?: string }) {
-  const filename = inferFileName(url, filenamePrefix);
-  const params = new URLSearchParams({
-    asset_url: url,
-    filename,
-  });
-  const href = `${DOWNLOAD_ROUTE}?${params.toString()}`;
+  const [downloading, setDownloading] = useState(false);
+
+  async function onDownload() {
+    try {
+      setDownloading(true);
+
+      const filename = inferFileName(url, filenamePrefix);
+
+      const params = new URLSearchParams({
+        asset_url: url,
+        filename,
+      });
+
+      const href = `${DOWNLOAD_ROUTE}?${params.toString()}`;
+
+      const response = await fetch(href, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Download failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error("Download failed", error);
+      alert("Download failed. Try again.");
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
-    <a href={href} download={filename} className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-900">
+    <button
+      type="button"
+      onClick={onDownload}
+      disabled={downloading}
+      className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+    >
       {label}
-    </a>
+    </button>
   );
 }
