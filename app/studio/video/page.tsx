@@ -463,6 +463,7 @@ export default function VideoProjectPage() {
             <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
               <Link href="/" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Image Project</Link>
               <Link href="/studio/video" className="rounded-md bg-cyan-500 px-4 py-2 text-sm text-slate-950">Video Project</Link>
+              <Link href="/studio/video/v2" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Anchor Studio V2</Link>
             </div>
           </div>
         </section>
