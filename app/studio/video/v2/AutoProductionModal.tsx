@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import type { AutoProductionControlMode, AutoProductionProgress } from "@/lib/video/v2/types";
 
 type ModelOption = { id: string; display_name: string };
@@ -233,7 +234,7 @@ export default function AutoProductionModal({ open, onClose, models, garments }:
               <>
                 <video src={outputUrl} controls className="w-full rounded border border-zinc-800" />
                 <div className="flex flex-wrap gap-2">
-                  <a href={outputUrl} download className="rounded bg-emerald-500 px-3 py-2 text-xs font-semibold text-emerald-950">Download</a>
+                  <DownloadAssetButton url={outputUrl} filenamePrefix={sequenceId ? `sequence-${sequenceId}-export` : "auto-production-export"} label="Download" />
                   {sequenceId ? <Link href={`/studio/video/v2#sequence-${sequenceId}`} className="rounded border border-zinc-700 px-3 py-2 text-xs">Open Sequence</Link> : null}
                 </div>
               </>
