@@ -28,10 +28,11 @@ const navItems = [
   { href: "/studio/video/v2", label: "Studio V2" },
   { href: "/studio/video/v2#auto-produce", label: "Auto Produce" },
   { href: "/studio/video/v2/guide", label: "Guide" },
-  { href: "/models", label: "Models" },
-  { href: "/garments", label: "Garments" },
-  { href: "/try-on", label: "Try-On" },
-  { href: "/lookbook", label: "Lookbook" },
+  // Kept for future use:
+  // { href: "/models", label: "Models" },
+  // { href: "/garments", label: "Garments" },
+  // { href: "/try-on", label: "Try-On" },
+  // { href: "/lookbook", label: "Lookbook" },
 ];
 
 function formatCurrency(value: number | null, currency: string | null) {
