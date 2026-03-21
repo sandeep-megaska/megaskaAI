@@ -24,7 +24,7 @@ function parseInput(request: Request): InputParams {
 
 function inferExtensionFromType(contentType: string | null): string {
   if (!contentType) return ".bin";
-  const normalized = contentType.toLowerCase();
+  const normalized = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
   if (normalized.includes("image/png")) return ".png";
   if (normalized.includes("image/jpeg")) return ".jpg";
   if (normalized.includes("image/webp")) return ".webp";
@@ -163,8 +163,9 @@ export async function GET(request: Request) {
 
   const headers = new Headers();
   headers.set("Content-Type", contentType);
-  headers.set("Content-Disposition", `attachment; filename=\"${finalFilename}\"`);
+  headers.set("Content-Disposition", `attachment; filename="${finalFilename}"`);
   headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
 
   const contentLength = upstream.headers.get("content-length");
   if (contentLength) headers.set("Content-Length", contentLength);
