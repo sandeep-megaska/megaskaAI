@@ -143,6 +143,8 @@ export type VideoRunValidationSummary = {
 
 export const RETRY_STRATEGIES = ["same_plan", "fallback_model", "fallback_provider", "safer_mode"] as const;
 export type RetryStrategy = (typeof RETRY_STRATEGIES)[number];
+export const RUN_ACTION_TYPES = ["retry", "extend", "branch", "extend_run", "branch_run"] as const;
+export type RunActionType = (typeof RUN_ACTION_TYPES)[number];
 
 export type RecoveryRecommendation = {
   primary_recommendation: string;
@@ -190,9 +192,15 @@ export type ExecuteVideoRunRequest = {
   source_run_id?: string;
   retry_strategy?: RetryStrategy;
   retry_reason?: string;
+  action_type?: RunActionType;
+  continuation_prompt?: string;
   override_mode?: V2Mode;
   override_provider?: string;
   override_model?: string;
+  lineage_meta?: {
+    branched_from_run_id?: string;
+    branch_type?: "next_shot";
+  };
   new_seed?: number;
 };
 
@@ -214,5 +222,13 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   retried_from_run_id?: string | null;
   retry_strategy?: RetryStrategy | null;
   retry_reason?: string | null;
+  continuation?: boolean;
+  source_run_id?: string | null;
+  extension_type?: "scene_extension" | null;
+  branched_from_run_id?: string | null;
+  branch_type?: "next_shot" | null;
+  accepted_for_sequence?: boolean;
+  continuation_allowed?: boolean;
+  continuation_block_reason?: string | null;
   recovery_recommendation?: RecoveryRecommendation | null;
 };

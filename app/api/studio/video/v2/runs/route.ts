@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { runVideoJob } from "@/lib/video/runVideoJob";
+import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities";
 import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
@@ -10,6 +11,7 @@ import type {
   AnchorPackItem,
   DirectorPlanContract,
   ExecuteVideoRunRequest,
+  RunActionType,
   RetryStrategy,
   V2Mode,
   VideoRunHistoryRecord,
@@ -48,6 +50,12 @@ function parsePlanContract(plan: Record<string, unknown>): DirectorPlanContract 
 function pickRetryStrategy(input?: string | null): RetryStrategy {
   if (input === "same_plan" || input === "fallback_model" || input === "fallback_provider" || input === "safer_mode") return input;
   return "same_plan";
+}
+
+function isRunEligibleForSuccessActions(run: { status: VideoRunStatus; validation?: VideoRunHistoryRecord["validation"] | null }) {
+  if (run.status !== "succeeded" && run.status !== "validated") return false;
+  if (!run.validation) return true;
+  return run.validation.decision === "pass" || run.validation.decision === "manual_review";
 }
 
 export async function GET() {
@@ -165,6 +173,12 @@ export async function GET() {
         retried_from_run_id: typeof runMeta.retried_from_run_id === "string" ? runMeta.retried_from_run_id : null,
         retry_strategy: typeof runMeta.retry_strategy === "string" ? (runMeta.retry_strategy as RetryStrategy) : null,
         retry_reason: typeof runMeta.retry_reason === "string" ? runMeta.retry_reason : null,
+        continuation: Boolean(runMeta.continuation),
+        source_run_id: typeof runMeta.source_run_id === "string" ? runMeta.source_run_id : null,
+        extension_type: runMeta.extension_type === "scene_extension" ? "scene_extension" : null,
+        branched_from_run_id: typeof runMeta.branched_from_run_id === "string" ? runMeta.branched_from_run_id : null,
+        branch_type: runMeta.branch_type === "next_shot" ? "next_shot" : null,
+        accepted_for_sequence: Boolean(runMeta.accepted_for_sequence),
         validation: validation
           ? {
               id: validation.id,
@@ -175,6 +189,25 @@ export async function GET() {
             }
           : null,
       };
+
+      const runAspectRatio = String(row.request_payload_snapshot?.aspect_ratio ?? "9:16");
+      const providerCapability = getVideoCapabilityByBackendId(row.provider_used);
+      if (!isRunEligibleForSuccessActions(row)) {
+        row.continuation_allowed = false;
+        row.continuation_block_reason = "Run not eligible";
+      } else if (!row.output_asset_url) {
+        row.continuation_allowed = false;
+        row.continuation_block_reason = "No output video";
+      } else if (!providerCapability?.supportsLastFrame) {
+        row.continuation_allowed = false;
+        row.continuation_block_reason = "Provider does not support extension";
+      } else if (!providerCapability.allowedAspectRatios.includes(runAspectRatio as "16:9" | "9:16")) {
+        row.continuation_allowed = false;
+        row.continuation_block_reason = "Resolution/aspect ratio incompatible";
+      } else {
+        row.continuation_allowed = true;
+        row.continuation_block_reason = null;
+      }
 
       row.recovery_recommendation = buildRecoveryRecommendation({
         run: row,
@@ -198,16 +231,45 @@ export async function POST(request: Request) {
 
     let runRequest = body;
 
-    if (body.source_run_id?.trim()) {
-      const retryStrategy = pickRetryStrategy(body.retry_strategy);
-      const { data: sourceRun, error: sourceError } = await supabase
-        .from("video_generation_runs")
-        .select("*")
-        .eq("id", body.source_run_id)
-        .single();
+    if ((body.action_type === "branch" || body.action_type === "branch_run") && body.source_run_id?.trim()) {
+      const { data: sourceRun, error: sourceError } = await supabase.from("video_generation_runs").select("*").eq("id", body.source_run_id).single();
       if (sourceError || !sourceRun) return json(404, { success: false, error: sourceError?.message ?? "Source run not found." });
-
+      if (normalizeRunStatus(sourceRun.status) === "failed") return json(400, { success: false, error: "Run not eligible" });
       const sourceMeta = parseRunMeta(sourceRun.run_meta);
+      const inheritedSnapshot =
+        sourceMeta.request_payload_snapshot && typeof sourceMeta.request_payload_snapshot === "object"
+          ? (sourceMeta.request_payload_snapshot as Record<string, unknown>)
+          : {};
+
+      return json(200, {
+        success: true,
+        data: {
+          action_type: "branch" satisfies RunActionType,
+          source_run_id: sourceRun.id,
+          planner_prefill: {
+            selected_pack_id: sourceMeta.selected_pack_id ?? null,
+            suggested_motion_request: inheritedSnapshot.director_prompt ?? null,
+            suggested_mode: sourceRun.mode_selected,
+            aspect_ratio: inheritedSnapshot.aspect_ratio ?? "9:16",
+            duration_seconds: inheritedSnapshot.duration_seconds ?? 8,
+            provider_selected: sourceRun.provider_used ?? null,
+            model_selected: sourceRun.provider_model ?? sourceRun.provider_used ?? null,
+          },
+          lineage_meta: {
+            branched_from_run_id: sourceRun.id,
+            branch_type: "next_shot",
+          },
+        },
+      });
+    }
+
+    if (body.source_run_id?.trim()) {
+      const isExtensionAction = body.action_type === "extend" || body.action_type === "extend_run";
+      const retryStrategy = pickRetryStrategy(body.retry_strategy);
+      const { data: sourceRun, error: sourceError } = await supabase.from("video_generation_runs").select("*").eq("id", body.source_run_id).single();
+      if (sourceError || !sourceRun) return json(404, { success: false, error: sourceError?.message ?? "Source run not found." });
+      const sourceMeta = parseRunMeta(sourceRun.run_meta);
+
       const selectedPackId =
         typeof body.selected_pack_id === "string" && body.selected_pack_id.trim()
           ? body.selected_pack_id
@@ -228,59 +290,98 @@ export async function POST(request: Request) {
       if (planError || !plan) return json(404, { success: false, error: planError?.message ?? "Plan not found." });
       if (packError || !pack) return json(404, { success: false, error: packError?.message ?? "Selected pack not found." });
 
-      const planContract = parsePlanContract(plan as Record<string, unknown>);
-      const fallbackProvider = deriveFallbackProviderFromPlan(planContract, sourceRun.provider_used);
-      const readiness = buildPackReadinessReport({
-        packType: pack.pack_type,
-        items: pack.anchor_pack_items ?? [],
-        aggregateStabilityScore: Number(pack.aggregate_stability_score ?? 0),
-        priorValidatedClipExists: false,
-      });
-
-      const saferMode =
-        sourceRun.mode_selected === "frames_to_video" && readiness.modeSuitability.find((entry) => entry.mode === "ingredients_to_video")?.level !== "insufficient"
-          ? "ingredients_to_video"
-          : null;
-
-      if (retryStrategy === "fallback_provider" && !fallbackProvider) {
-        return json(400, { success: false, error: "Fallback provider/model is not available for this plan." });
-      }
-      if (retryStrategy === "safer_mode" && !saferMode && !body.override_mode) {
-        return json(400, { success: false, error: "Safer mode retry is unavailable for this pack/mode suitability." });
-      }
-
       const inheritedSnapshot =
         sourceMeta.request_payload_snapshot && typeof sourceMeta.request_payload_snapshot === "object"
           ? (sourceMeta.request_payload_snapshot as Record<string, unknown>)
           : {};
-      const resolvedMode = (body.override_mode ?? (retryStrategy === "safer_mode" ? saferMode : sourceRun.mode_selected)) as V2Mode;
-      const resolvedProvider =
-        body.override_provider ?? (retryStrategy === "fallback_provider" || retryStrategy === "fallback_model" ? fallbackProvider : sourceRun.provider_used);
-      const resolvedModel = body.override_model ?? resolvedProvider ?? sourceRun.provider_model ?? sourceRun.provider_used;
 
-      runRequest = {
-        generation_plan_id: sourceRun.generation_plan_id,
-        selected_pack_id: selectedPackId,
-        mode_selected: resolvedMode,
-        provider_selected: String(resolvedProvider ?? sourceRun.provider_used ?? "veo-3.1"),
-        model_selected: String(resolvedModel ?? sourceRun.provider_model ?? "veo-3.1"),
-        director_prompt: String(inheritedSnapshot.director_prompt ?? plan.director_prompt ?? ""),
-        fallback_prompt: String(inheritedSnapshot.fallback_prompt ?? plan.fallback_prompt ?? ""),
-        aspect_ratio: String(inheritedSnapshot.aspect_ratio ?? plan.aspect_ratio ?? "9:16"),
-        duration_seconds: Number(inheritedSnapshot.duration_seconds ?? plan.duration_seconds ?? 8),
-        request_payload_snapshot: {
-          ...inheritedSnapshot,
-          retry_mode_override: body.override_mode ?? null,
-          retry_provider_override: body.override_provider ?? null,
-          retry_model_override: body.override_model ?? null,
-          new_seed: body.new_seed ?? null,
-          retried_from_run_id: sourceRun.id,
+      if (isExtensionAction) {
+        if (normalizeRunStatus(sourceRun.status) === "failed") return json(400, { success: false, error: "Run not eligible" });
+        const continuationPrompt = String(body.continuation_prompt ?? "").trim();
+        if (!continuationPrompt) return json(400, { success: false, error: "continuation_prompt is required for extension." });
+        const { data: sourceOutput } = await supabase.from("generations").select("id,asset_url,url").eq("id", sourceRun.output_generation_id).maybeSingle();
+        if (!(sourceOutput?.asset_url ?? sourceOutput?.url ?? null)) return json(400, { success: false, error: "No output video" });
+        const providerCapability = getVideoCapabilityByBackendId(sourceRun.provider_used);
+        if (!providerCapability?.supportsLastFrame) return json(400, { success: false, error: "Provider does not support extension" });
+        const sourceAspect = String(inheritedSnapshot.aspect_ratio ?? "9:16");
+        if (!providerCapability.allowedAspectRatios.includes(sourceAspect as "16:9" | "9:16")) {
+          return json(400, { success: false, error: "Resolution/aspect ratio incompatible" });
+        }
+
+        const duration = Number(body.duration_seconds ?? inheritedSnapshot.duration_seconds ?? 6);
+        runRequest = {
+          generation_plan_id: sourceRun.generation_plan_id,
+          selected_pack_id: selectedPackId,
+          mode_selected: "scene_extension",
+          provider_selected: String(sourceRun.provider_used ?? "veo-3.1"),
+          model_selected: String(sourceRun.provider_model ?? sourceRun.provider_used ?? "veo-3.1"),
+          director_prompt: continuationPrompt,
+          fallback_prompt: String(inheritedSnapshot.fallback_prompt ?? plan.fallback_prompt ?? ""),
+          aspect_ratio: String(inheritedSnapshot.aspect_ratio ?? plan.aspect_ratio ?? "9:16"),
+          duration_seconds: duration,
+          request_payload_snapshot: {
+            ...inheritedSnapshot,
+            continuation_prompt: continuationPrompt,
+            duration_seconds: duration,
+            source_output_generation_id: sourceRun.output_generation_id,
+            source_output_asset_url: sourceOutput?.asset_url ?? sourceOutput?.url ?? null,
+            source_run_id: sourceRun.id,
+            extension_type: "scene_extension",
+            new_seed: body.new_seed ?? null,
+          },
+          source_run_id: sourceRun.id,
+          retry_strategy: "same_plan",
+          retry_reason: "Operator-triggered scene extension.",
+          action_type: "extend",
+        };
+      } else {
+        const planContract = parsePlanContract(plan as Record<string, unknown>);
+        const fallbackProvider = deriveFallbackProviderFromPlan(planContract, sourceRun.provider_used);
+        const readiness = buildPackReadinessReport({
+          packType: pack.pack_type,
+          items: pack.anchor_pack_items ?? [],
+          aggregateStabilityScore: Number(pack.aggregate_stability_score ?? 0),
+          priorValidatedClipExists: false,
+        });
+        const saferMode =
+          sourceRun.mode_selected === "frames_to_video" && readiness.modeSuitability.find((entry) => entry.mode === "ingredients_to_video")?.level !== "insufficient"
+            ? "ingredients_to_video"
+            : null;
+        if (retryStrategy === "fallback_provider" && !fallbackProvider) {
+          return json(400, { success: false, error: "Fallback provider/model is not available for this plan." });
+        }
+        if (retryStrategy === "safer_mode" && !saferMode && !body.override_mode) {
+          return json(400, { success: false, error: "Safer mode retry is unavailable for this pack/mode suitability." });
+        }
+        const resolvedMode = (body.override_mode ?? (retryStrategy === "safer_mode" ? saferMode : sourceRun.mode_selected)) as V2Mode;
+        const resolvedProvider =
+          body.override_provider ?? (retryStrategy === "fallback_provider" || retryStrategy === "fallback_model" ? fallbackProvider : sourceRun.provider_used);
+        const resolvedModel = body.override_model ?? resolvedProvider ?? sourceRun.provider_model ?? sourceRun.provider_used;
+        runRequest = {
+          generation_plan_id: sourceRun.generation_plan_id,
+          selected_pack_id: selectedPackId,
+          mode_selected: resolvedMode,
+          provider_selected: String(resolvedProvider ?? sourceRun.provider_used ?? "veo-3.1"),
+          model_selected: String(resolvedModel ?? sourceRun.provider_model ?? "veo-3.1"),
+          director_prompt: String(inheritedSnapshot.director_prompt ?? plan.director_prompt ?? ""),
+          fallback_prompt: String(inheritedSnapshot.fallback_prompt ?? plan.fallback_prompt ?? ""),
+          aspect_ratio: String(inheritedSnapshot.aspect_ratio ?? plan.aspect_ratio ?? "9:16"),
+          duration_seconds: Number(inheritedSnapshot.duration_seconds ?? plan.duration_seconds ?? 8),
+          request_payload_snapshot: {
+            ...inheritedSnapshot,
+            retry_mode_override: body.override_mode ?? null,
+            retry_provider_override: body.override_provider ?? null,
+            retry_model_override: body.override_model ?? null,
+            new_seed: body.new_seed ?? null,
+            retried_from_run_id: sourceRun.id,
+            retry_strategy: retryStrategy,
+          },
+          source_run_id: sourceRun.id,
           retry_strategy: retryStrategy,
-        },
-        source_run_id: sourceRun.id,
-        retry_strategy: retryStrategy,
-        retry_reason: body.retry_reason ?? "Operator-triggered recovery action.",
-      };
+          retry_reason: body.retry_reason ?? "Operator-triggered recovery action.",
+          action_type: "retry",
+        };
+      }
     }
 
     if (!runRequest.generation_plan_id?.trim()) return json(400, { success: false, error: "generation_plan_id is required." });
@@ -314,6 +415,12 @@ export async function POST(request: Request) {
       retried_from_run_id: runRequest.source_run_id ?? null,
       retry_strategy: runRequest.retry_strategy ?? null,
       retry_reason: runRequest.retry_reason ?? null,
+      accepted_for_sequence: false,
+      continuation: runRequest.action_type === "extend",
+      source_run_id: runRequest.action_type === "extend" ? runRequest.source_run_id ?? null : null,
+      extension_type: runRequest.action_type === "extend" ? "scene_extension" : null,
+      branched_from_run_id: runRequest.lineage_meta?.branched_from_run_id ?? null,
+      branch_type: runRequest.lineage_meta?.branch_type ?? null,
       original_mode_selected: runRequest.source_run_id ? plan.mode_selected : null,
       retry_mode_selected: runRequest.source_run_id ? runRequest.mode_selected : null,
     };
@@ -334,7 +441,11 @@ export async function POST(request: Request) {
 
     if (runError || !insertedRun) return json(400, { success: false, error: runError?.message ?? "Failed to create run." });
 
-    const primaryFrameUrl = resolvePrimaryFrameUrl(pack as AnchorPack);
+    const extensionSourceVideoUrl =
+      typeof runRequest.request_payload_snapshot?.source_output_asset_url === "string"
+        ? runRequest.request_payload_snapshot.source_output_asset_url
+        : null;
+    const primaryFrameUrl = runRequest.action_type === "extend" ? extensionSourceVideoUrl : resolvePrimaryFrameUrl(pack as AnchorPack);
     if (!primaryFrameUrl) {
       const nextMeta = {
         ...initialMeta,
@@ -468,12 +579,36 @@ export async function PATCH(request: Request) {
       status?: VideoRunStatus;
       output_generation_id?: string | null;
       run_meta?: Record<string, unknown>;
+      action_type?: "accept";
+      accepted_for_sequence?: boolean;
     };
 
     if (!body.run_id?.trim()) return json(400, { success: false, error: "run_id is required." });
-    if (!body.status) return json(400, { success: false, error: "status is required." });
 
     const supabase = getSupabaseAdminClient();
+    if (body.action_type === "accept") {
+      const { data: existingRun, error: existingError } = await supabase
+        .from("video_generation_runs")
+        .select("id,run_meta,status")
+        .eq("id", body.run_id)
+        .single();
+      if (existingError || !existingRun) return json(404, { success: false, error: existingError?.message ?? "Run not found." });
+      const existingMeta = parseRunMeta(existingRun.run_meta);
+      const nextMeta = {
+        ...existingMeta,
+        accepted_for_sequence: body.accepted_for_sequence ?? true,
+      };
+      const { data, error } = await supabase
+        .from("video_generation_runs")
+        .update({ run_meta: nextMeta })
+        .eq("id", body.run_id)
+        .select("*")
+        .single();
+      if (error) return json(400, { success: false, error: error.message });
+      return json(200, { success: true, data: { ...data, status: normalizeRunStatus(data.status) } });
+    }
+    if (!body.status) return json(400, { success: false, error: "status is required." });
+
     const { data, error } = await supabase
       .from("video_generation_runs")
       .update({

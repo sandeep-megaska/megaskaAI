@@ -277,11 +277,22 @@ function actionLabel(action: "same_plan" | "fallback_provider" | "safer_mode") {
   return "Retry with safer mode";
 }
 
+function runSupportsSuccessActions(run: VideoRunHistoryRecord) {
+  if (run.status !== "succeeded" && run.status !== "validated") return false;
+  if (!run.validation) return true;
+  return run.validation.decision === "pass" || run.validation.decision === "manual_review";
+}
+
 function RunHistoryPanel(props: {
   runs: VideoRunHistoryRecord[];
   loading: boolean;
   onRecoveryAction: (run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") => Promise<void>;
+  onAcceptClip: (run: VideoRunHistoryRecord) => Promise<void>;
+  onExtendClip: (run: VideoRunHistoryRecord) => void;
+  onBranchRun: (run: VideoRunHistoryRecord) => Promise<void>;
   runningRecoveryFor: string | null;
+  acceptingRunId: string | null;
+  branchingRunId: string | null;
 }) {
   if (props.loading) return <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-400">Loading run history…</section>;
 
@@ -303,6 +314,12 @@ function RunHistoryPanel(props: {
                 <p className="mt-1 text-xs text-violet-300">
                   Retried from {shortId(run.retried_from_run_id)} using {run.retry_strategy ?? "retry"}.
                 </p>
+              ) : null}
+              {run.source_run_id && run.extension_type === "scene_extension" ? (
+                <p className="mt-1 text-xs text-cyan-300">Extended from run {shortId(run.source_run_id)}.</p>
+              ) : null}
+              {run.branched_from_run_id && run.branch_type === "next_shot" ? (
+                <p className="mt-1 text-xs text-indigo-300">Branched from run {shortId(run.branched_from_run_id)}.</p>
               ) : null}
               <div className="mt-2 grid gap-1 text-xs text-zinc-400 md:grid-cols-2">
                 <p>Pack used: <span className="text-zinc-300">{run.selected_pack_name ?? run.selected_pack_id ?? "unknown pack"}</span></p>
@@ -366,6 +383,42 @@ function RunHistoryPanel(props: {
                   </ul>
                 </div>
               ) : null}
+              {run.accepted_for_sequence ? (
+                <p className="mt-2 inline-block rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">Accepted</p>
+              ) : null}
+              {runSupportsSuccessActions(run) ? (
+                <div className="mt-3 rounded border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
+                  <p className="font-medium text-zinc-200">Post-success actions</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={props.acceptingRunId === run.id || run.accepted_for_sequence}
+                      onClick={() => props.onAcceptClip(run)}
+                      className="rounded border border-emerald-600/40 px-2 py-1 disabled:opacity-40"
+                    >
+                      {run.accepted_for_sequence ? "Accepted" : props.acceptingRunId === run.id ? "Accepting..." : "Accept clip"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!run.continuation_allowed}
+                      title={run.continuation_allowed ? "Continue this clip from final frames." : run.continuation_block_reason ?? "Not available"}
+                      onClick={() => props.onExtendClip(run)}
+                      className="rounded border border-cyan-600/40 px-2 py-1 disabled:opacity-40"
+                    >
+                      Extend this clip
+                    </button>
+                    <button
+                      type="button"
+                      disabled={props.branchingRunId === run.id}
+                      onClick={() => props.onBranchRun(run)}
+                      className="rounded border border-indigo-600/40 px-2 py-1 disabled:opacity-40"
+                    >
+                      {props.branchingRunId === run.id ? "Prefilling..." : "Create next shot"}
+                    </button>
+                  </div>
+                  {!run.continuation_allowed ? <p className="mt-1 text-zinc-500">Extension unavailable: {run.continuation_block_reason ?? "Run not eligible"}</p> : null}
+                </div>
+              ) : null}
             </div>
           ))
         ) : (
@@ -397,6 +450,14 @@ export default function VideoV2Page() {
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [executingRun, setExecutingRun] = useState(false);
   const [runningRecoveryFor, setRunningRecoveryFor] = useState<string | null>(null);
+  const [acceptingRunId, setAcceptingRunId] = useState<string | null>(null);
+  const [branchingRunId, setBranchingRunId] = useState<string | null>(null);
+  const [pendingBranchMeta, setPendingBranchMeta] = useState<{ branched_from_run_id: string; branch_type: "next_shot" } | null>(null);
+  const [extendSourceRun, setExtendSourceRun] = useState<VideoRunHistoryRecord | null>(null);
+  const [continuationPrompt, setContinuationPrompt] = useState("");
+  const [continuationDuration, setContinuationDuration] = useState(6);
+  const [continuationSeed, setContinuationSeed] = useState("");
+  const [extendingRun, setExtendingRun] = useState(false);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -469,6 +530,97 @@ export default function VideoV2Page() {
       setError(e instanceof Error ? e.message : "Recovery retry failed.");
     } finally {
       setRunningRecoveryFor(null);
+    }
+  }
+
+  async function acceptClip(run: VideoRunHistoryRecord) {
+    try {
+      setError(null);
+      setAcceptingRunId(run.id);
+      const res = await fetch("/api/studio/video/v2/runs", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          action_type: "accept",
+          accepted_for_sequence: true,
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to accept clip.");
+      await loadRuns();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to accept clip.");
+    } finally {
+      setAcceptingRunId(null);
+    }
+  }
+
+  async function createNextShot(run: VideoRunHistoryRecord) {
+    try {
+      setError(null);
+      setBranchingRunId(run.id);
+      const res = await fetch("/api/studio/video/v2/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          source_run_id: run.id,
+          action_type: "branch",
+        }),
+      });
+      const payload = (await res.json()) as {
+        error?: string;
+        data?: {
+          planner_prefill?: {
+            selected_pack_id?: string | null;
+            suggested_motion_request?: string | null;
+            suggested_mode?: V2Mode;
+            aspect_ratio?: string;
+          };
+          lineage_meta?: { branched_from_run_id?: string; branch_type?: "next_shot" };
+        };
+      };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to prefill next shot.");
+      if (payload.data?.planner_prefill?.selected_pack_id) setSelectedPackId(payload.data.planner_prefill.selected_pack_id);
+      if (payload.data?.planner_prefill?.suggested_motion_request) setMotionRequest(String(payload.data.planner_prefill.suggested_motion_request));
+      if (payload.data?.planner_prefill?.suggested_mode) setDesiredMode(payload.data.planner_prefill.suggested_mode);
+      if (payload.data?.planner_prefill?.aspect_ratio) setAspectRatio(String(payload.data.planner_prefill.aspect_ratio));
+      if (payload.data?.lineage_meta?.branched_from_run_id) {
+        setPendingBranchMeta({ branched_from_run_id: payload.data.lineage_meta.branched_from_run_id, branch_type: "next_shot" });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to prefill next shot.");
+    } finally {
+      setBranchingRunId(null);
+    }
+  }
+
+  async function runExtension() {
+    if (!extendSourceRun) return;
+    try {
+      setError(null);
+      setExtendingRun(true);
+      const res = await fetch("/api/studio/video/v2/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          source_run_id: extendSourceRun.id,
+          action_type: "extend",
+          continuation_prompt: continuationPrompt.trim(),
+          duration_seconds: continuationDuration,
+          new_seed: continuationSeed.trim() ? Number(continuationSeed) : undefined,
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to extend clip.");
+      setExtendSourceRun(null);
+      setContinuationPrompt("");
+      setContinuationSeed("");
+      await Promise.all([loadRuns(), loadValidationResults()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to extend clip.");
+    } finally {
+      setExtendingRun(false);
     }
   }
 
@@ -700,6 +852,8 @@ export default function VideoV2Page() {
                 aspect_ratio: planResponse.aspect_ratio ?? aspectRatio,
                 duration_seconds: planResponse.duration_seconds ?? 8,
                 request_payload_snapshot: requestPayloadSnapshot,
+                action_type: pendingBranchMeta ? "branch" : undefined,
+                lineage_meta: pendingBranchMeta ?? undefined,
               };
 
               const res = await fetch("/api/studio/video/v2/runs", {
@@ -713,18 +867,90 @@ export default function VideoV2Page() {
                 return setError(payload.error ?? "Run creation failed.");
               }
               await Promise.all([loadRuns(), loadValidationResults()]);
+              setPendingBranchMeta(null);
               setExecutingRun(false);
             }}
           >
             {executingRun ? "Running..." : "Run this plan"}
           </button>
           {!hasRunnablePlan ? <p className="text-xs text-zinc-500">Generate a plan contract with a selected pack before execution.</p> : null}
+          {pendingBranchMeta ? <p className="text-xs text-indigo-300">Next run will be stored as branched from {shortId(pendingBranchMeta.branched_from_run_id)}.</p> : null}
           {planResponse ? (
             <pre className="overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs">{JSON.stringify(planResponse, null, 2)}</pre>
           ) : null}
         </section>
 
-        <RunHistoryPanel runs={runHistory} loading={loadingRuns} onRecoveryAction={runRecoveryAction} runningRecoveryFor={runningRecoveryFor} />
+        <RunHistoryPanel
+          runs={runHistory}
+          loading={loadingRuns}
+          onRecoveryAction={runRecoveryAction}
+          onAcceptClip={acceptClip}
+          onExtendClip={(run) => {
+            setExtendSourceRun(run);
+            setContinuationPrompt("");
+            setContinuationDuration(6);
+            setContinuationSeed("");
+          }}
+          onBranchRun={createNextShot}
+          runningRecoveryFor={runningRecoveryFor}
+          acceptingRunId={acceptingRunId}
+          branchingRunId={branchingRunId}
+        />
+
+        {extendSourceRun ? (
+          <section className="rounded border border-cyan-700/40 bg-cyan-950/20 p-4">
+            <h2 className="font-medium text-cyan-100">Extend this clip</h2>
+            <p className="mt-1 text-xs text-cyan-200/80">
+              Source run {shortId(extendSourceRun.id)} · model {extendSourceRun.provider_model ?? "n/a"} · provider {extendSourceRun.provider_used ?? "n/a"}
+            </p>
+            <p className="text-xs text-cyan-200/80">Pack {extendSourceRun.selected_pack_name ?? extendSourceRun.selected_pack_id ?? "unknown"}.</p>
+            <textarea
+              className="mt-3 min-h-24 w-full rounded border border-cyan-700/50 bg-zinc-950 px-3 py-2 text-sm"
+              placeholder="Describe how this clip should continue from its final frames…"
+              value={continuationPrompt}
+              onChange={(event) => setContinuationPrompt(event.target.value)}
+            />
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-xs text-zinc-300">
+                Duration seconds (4-7 recommended)
+                <input
+                  type="number"
+                  min={4}
+                  max={8}
+                  className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                  value={continuationDuration}
+                  onChange={(event) => setContinuationDuration(Number(event.target.value || 6))}
+                />
+              </label>
+              <label className="space-y-1 text-xs text-zinc-300">
+                Optional seed
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                  value={continuationSeed}
+                  onChange={(event) => setContinuationSeed(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                disabled={!continuationPrompt.trim() || extendingRun}
+                onClick={runExtension}
+                className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-cyan-950 disabled:opacity-40"
+              >
+                {extendingRun ? "Extending..." : "Start extension run"}
+              </button>
+              <button
+                type="button"
+                disabled={extendingRun}
+                onClick={() => setExtendSourceRun(null)}
+                className="rounded border border-zinc-700 px-3 py-2 text-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         <section className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
           <h2 className="font-medium">Validation Panel</h2>
