@@ -71,10 +71,6 @@ export async function POST(request: Request) {
     const googleApiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
     const supabaseBucket = process.env.SUPABASE_STORAGE_BUCKET ?? "brand-assets";
 
-    if (!googleApiKey) {
-      return asJson(500, { success: false, error: "Missing GOOGLE_API_KEY or GEMINI_API_KEY." });
-    }
-
     let payload: GeneratePayload;
 
     try {

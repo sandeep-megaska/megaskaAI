@@ -17,6 +17,12 @@ export const AI_BACKENDS: AIBackend[] = [
     model: "gemini-3-pro-image-preview",
   },
   {
+    id: "laozhang_gemini",
+    name: "LaoZhang Gemini",
+    type: "image",
+    model: "gemini-3-pro-image-preview",
+  },
+  {
     id: "nano-banana-2",
     name: "Nano Banana 2",
     type: "image",
