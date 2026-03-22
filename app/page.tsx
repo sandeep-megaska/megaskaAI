@@ -478,7 +478,6 @@ function HomeContent() {
               </div>
               <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
                 <Link href="/" className="rounded-md bg-indigo-500 px-4 py-2 text-sm text-white">Image Project</Link>
-                <Link href="/studio/video" className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:text-white">Video Project</Link>
               </div>
             </div>
 
