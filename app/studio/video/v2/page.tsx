@@ -208,12 +208,11 @@ export default function VideoV2Page() {
         <div id="auto-produce" className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold">Megaska AI Production Studio</h1>
-            <p className="text-sm text-zinc-400">Studio V2 is the primary production console for anchor-first manual generation.</p>
+            <p className="text-sm text-zinc-400">Studio V2 is the primary production console for anchor-first manual video generation.</p>
           </div>
           <div className="flex items-center gap-2">
             <Link href="/studio/video/v2/guide" className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">Guide</Link>
             <button type="button" onClick={() => setShowAutoModal(true)} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto Produce Video</button>
-            <Link href="/studio/video" className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900">Back to Video Project</Link>
           </div>
         </div>
 
