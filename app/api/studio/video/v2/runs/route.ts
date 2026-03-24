@@ -634,14 +634,32 @@ export async function POST(request: Request) {
         });
       }
 
+      const fileName = `videos/${insertedRun.id}.mp4`;
+      const { error: uploadError } = await supabase.storage
+        .from("generations")
+        .upload(fileName, finalExecution.bytes, {
+          contentType: "video/mp4",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw new Error(`Video upload failed: ${uploadError.message}`);
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from("generations")
+        .getPublicUrl(fileName);
+
+      const publicUrl = publicUrlData.publicUrl;
+
       const generationInsertPayload = {
         prompt: runRequest.director_prompt,
         type: "Video",
         media_type: "Video",
         status: "completed",
         aspect_ratio: runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16",
-        asset_url: outputAssetUrl,
-        url: outputAssetUrl,
+        asset_url: publicUrl,
+        url: publicUrl,
         generation_kind: "video",
         source_generation_id: null,
         thumbnail_url: null,
@@ -651,7 +669,8 @@ export async function POST(request: Request) {
           backendModel: finalExecution.backendModel,
           providerModelId: finalExecution.providerModelId,
           providerResponse: finalExecution.providerResponseMeta,
-          note: "V2 slice 3A stores provider execution metadata; binary upload pipeline not yet linked here.",
+          original_provider_url: outputAssetUrl,
+          note: "V2 slice 3A stores provider execution metadata and Supabase binary upload URL.",
         },
       } satisfies Record<string, unknown>;
 
