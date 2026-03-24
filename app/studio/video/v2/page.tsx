@@ -8,6 +8,7 @@ import ProductionContextPanel from "@/app/studio/video/v2/components/ProductionC
 import ProductionIntelligencePanel from "@/app/studio/video/v2/components/ProductionIntelligencePanel";
 import ProductionWorkspace from "@/app/studio/video/v2/components/ProductionWorkspace";
 import { excerpt, getAssetUrl, shortId } from "@/app/studio/video/v2/components/helpers";
+import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import {
   ANCHOR_ITEM_ROLES,
   ANCHOR_PACK_TYPES,
@@ -69,8 +70,8 @@ function AssetGallery(props: { images: GalleryImage[]; selectedGenerationId: str
   );
 }
 
-function PackItemsList(props: { packId: string; items: AnchorPackItem[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
-  const { packId, items, onReload, onError } = props;
+function PackItemsList(props: { packId: string; items: AnchorPackItem[]; packType?: (typeof ANCHOR_PACK_TYPES)[number]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const { packId, items, packType, onReload, onError } = props;
   async function runMutation(body: Record<string, unknown>, fallbackError: string) {
     const res = await fetch(`/api/studio/video/v2/anchor-packs/${packId}/items`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const payload = (await res.json()) as { error?: string };
@@ -80,7 +81,13 @@ function PackItemsList(props: { packId: string; items: AnchorPackItem[]; onReloa
 
   return (
     <div className="space-y-2">
-      <h3 className="font-medium">Pack items</h3>
+      <div className="space-y-1">
+        <h3 id="pack-items-heading" tabIndex={-1} className="font-medium focus:outline-none focus:ring-1 focus:ring-cyan-400">Pack items</h3>
+        {packType === "identity" ? <p className="text-xs text-zinc-400">Required roles: front, three_quarter_left, three_quarter_right.</p> : null}
+        {packType === "garment" ? <p className="text-xs text-zinc-400">Required roles: front, back, detail.</p> : null}
+        {packType === "scene" ? <p className="text-xs text-zinc-400">Required role: context (at least 2 scene-compatible anchors recommended for stability).</p> : null}
+        {packType === "hybrid" ? <p className="text-xs text-zinc-400">Required roles: front, fit_anchor, start_frame.</p> : null}
+      </div>
       <div className="max-h-[420px] space-y-2 overflow-auto rounded-xl border border-zinc-800 p-2 text-xs">
         {items.map((item, index) => (
           <div key={item.id} className="space-y-2 rounded border border-zinc-800 bg-zinc-900/40 p-2">
@@ -123,7 +130,7 @@ export default function VideoV2Page() {
   const [validationResults, setValidationResults] = useState<ValidationResult[]>([]);
   const [exactEndStateRequired, setExactEndStateRequired] = useState(true);
   const [aspectRatio, setAspectRatio] = useState("9:16");
-  const [desiredMode, setDesiredMode] = useState<"" | V2Mode>("");
+  const [desiredMode, setDesiredMode] = useState<"" | V2Mode>("frames_to_video");
   const [error, setError] = useState<string | null>(null);
   const [loadingImages, setLoadingImages] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
@@ -166,8 +173,27 @@ export default function VideoV2Page() {
 
   const selectedPack = packs.find((pack) => pack.id === selectedPackId) ?? null;
   const selectedPackRoles = Array.from(new Set((selectedPack?.anchor_pack_items ?? []).map((item) => item.role as AnchorPackItemRole)));
+  const selectedPackReadiness = selectedPack
+    ? buildPackReadinessReport({
+        packType: selectedPack.pack_type,
+        items: selectedPack.anchor_pack_items ?? [],
+        aggregateStabilityScore: Number(selectedPack.aggregate_stability_score ?? 0),
+        priorValidatedClipExists: false,
+      })
+    : null;
+  const packReadyForPlan = Boolean(selectedPackReadiness?.isReady);
+  const blockedPlanReason = !selectedPack
+    ? "Select a pack before generating a plan."
+    : selectedPackReadiness?.missingRoles.length
+      ? `Complete required anchors first: ${selectedPackReadiness.missingRoles.join(", ")}.`
+      : selectedPackReadiness && selectedPackReadiness.aggregateStabilityScore < 0.65
+        ? "Improve anchor quality. Aggregate stability must reach at least 0.65."
+        : null;
   const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
-  const latestRun = runHistory[0] ?? null;
+  const [dismissedResultRunIds, setDismissedResultRunIds] = useState<string[]>([]);
+  const latestRunForSelectedPack = runHistory.find((run) => run.selected_pack_id === selectedPackId && !dismissedResultRunIds.includes(run.id)) ?? null;
+  const latestVisibleRun = latestRunForSelectedPack ?? runHistory.find((run) => !dismissedResultRunIds.includes(run.id)) ?? null;
+  const showingOlderRun = Boolean(latestVisibleRun && selectedPackId && latestVisibleRun.selected_pack_id && latestVisibleRun.selected_pack_id !== selectedPackId);
 
   async function runRecoveryAction(run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_run_id: run.id, retry_strategy: action, retry_reason: `Operator-triggered ${actionLabel(action).toLowerCase()}.` }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Recovery retry failed."); await Promise.all([loadRuns(), loadValidationResults()]); } catch (e) { setError(e instanceof Error ? e.message : "Recovery retry failed."); } }
   async function acceptClip(run: VideoRunHistoryRecord) { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ run_id: run.id, action_type: "accept", accepted_for_sequence: true }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to accept clip."); await loadRuns(); } catch (e) { setError(e instanceof Error ? e.message : "Failed to accept clip."); } }
@@ -180,6 +206,10 @@ export default function VideoV2Page() {
   async function removeSequenceItem(itemId: string) { if (!selectedSequenceId) return; const res = await fetch(`/api/studio/video/v2/sequences/${selectedSequenceId}/items/${itemId}`, { method: "DELETE" }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to remove sequence item."); await Promise.all([loadSequences(), loadSequenceTimeline(selectedSequenceId)]); }
 
   async function onGeneratePlan() {
+    if (!packReadyForPlan) {
+      setError(blockedPlanReason ?? "Complete required anchors before generating a plan.");
+      return;
+    }
     const res = await fetch("/api/studio/video/v2/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ selected_pack_id: selectedPack?.id, selected_pack_type: selectedPack?.pack_type, aggregate_stability_score: selectedPack?.aggregate_stability_score, available_roles: selectedPackRoles, motion_request: motionRequest, exact_end_state_required: exactEndStateRequired, aspect_ratio: aspectRatio || "9:16", desired_mode: desiredMode || undefined }) });
     const payload = (await res.json()) as { error?: string; plan?: DirectorPlanContract; data?: PlanApiResponse };
     if (!res.ok) return setError(payload.error ?? "Planning failed.");
@@ -268,10 +298,18 @@ export default function VideoV2Page() {
               planResponse={planResponse}
               planRecord={planRecord}
               hasRunnablePlan={hasRunnablePlan}
+              packReadyForPlan={packReadyForPlan}
+              blockedPlanReason={blockedPlanReason}
               executingRun={executingRun}
               pendingBranchLabel={pendingBranchMeta ? `Next run will branch from ${shortId(pendingBranchMeta.branched_from_run_id)}.` : null}
               onOpenAuto={() => setShowAutoModal(true)}
-              latestRun={latestRun}
+              latestRun={latestVisibleRun}
+              showingOlderRun={showingOlderRun}
+              selectedPackName={selectedPack?.pack_name ?? null}
+              onClearCurrentResult={() => {
+                if (!latestVisibleRun) return;
+                setDismissedResultRunIds((prev) => [...prev, latestVisibleRun.id]);
+              }}
               onRecoveryAction={runRecoveryAction}
               onAcceptClip={acceptClip}
               onExtendClip={(run) => {
@@ -287,7 +325,7 @@ export default function VideoV2Page() {
 
             <section id="pack-builder" className="grid gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 xl:grid-cols-2">
               <AssetGallery images={images} selectedGenerationId={newItemGenerationId} onSelect={setNewItemGenerationId} loading={loadingImages} />
-              <PackItemsList packId={selectedPackId} items={(selectedPack?.anchor_pack_items ?? []).sort((a, b) => a.sort_order - b.sort_order)} onReload={loadPacks} onError={setError} />
+              <PackItemsList packId={selectedPackId} packType={selectedPack?.pack_type} items={(selectedPack?.anchor_pack_items ?? []).sort((a, b) => a.sort_order - b.sort_order)} onReload={loadPacks} onError={setError} />
             </section>
 
             <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">

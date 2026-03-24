@@ -24,10 +24,15 @@ export default function ProductionWorkspace(props: {
   planResponse: DirectorPlanContract | null;
   planRecord: PlanApiResponse | null;
   hasRunnablePlan: boolean;
+  packReadyForPlan: boolean;
+  blockedPlanReason: string | null;
   executingRun: boolean;
   pendingBranchLabel: string | null;
   onOpenAuto: () => void;
   latestRun: VideoRunHistoryRecord | null;
+  showingOlderRun: boolean;
+  selectedPackName: string | null;
+  onClearCurrentResult: () => void;
   onRecoveryAction: (run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") => Promise<void>;
   onAcceptClip: (run: VideoRunHistoryRecord) => Promise<void>;
   onExtendClip: (run: VideoRunHistoryRecord) => void;
@@ -56,18 +61,23 @@ export default function ProductionWorkspace(props: {
               <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.aspectRatio} onChange={(e) => props.setAspectRatio(e.target.value)} />
               <select className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.desiredMode} onChange={(e) => props.setDesiredMode(e.target.value as "" | V2Mode)}>
                 <option value="">-- let planner decide --</option>
-                {V2_MODE_OPTIONS.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                {V2_MODE_OPTIONS.map((mode) => <option key={mode} value={mode}>{mode === "frames_to_video" ? "frames_to_video (recommended for anchor-first)" : mode === "ingredients_to_video" ? "ingredients_to_video (prompt-led / less stable)" : "scene_extension (continue validated clips)"}</option>)}
               </select>
+            </div>
+            <div className="rounded border border-zinc-800 bg-zinc-950/40 p-2 text-xs text-zinc-400">
+              <p>Mode guidance: <span className="text-zinc-200">frames_to_video</span> is recommended for anchor-first production and controlled transitions.</p>
+              <p><span className="text-zinc-200">ingredients_to_video</span> is more prompt-led and can be less stable.</p>
             </div>
             <label className="inline-flex items-center gap-2 text-xs text-zinc-300">
               <input type="checkbox" checked={props.exactEndStateRequired} onChange={(e) => props.setExactEndStateRequired(e.target.checked)} /> exact_end_state_required
             </label>
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => props.onGeneratePlan()} className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-violet-950">Generate Plan</button>
-              <button type="button" disabled={!props.hasRunnablePlan || props.executingRun} onClick={() => props.onRunPlan()} className="rounded bg-emerald-500 px-3 py-2 text-sm font-medium text-emerald-950 disabled:opacity-40">
+              <button type="button" disabled={!props.packReadyForPlan} onClick={() => props.onGeneratePlan()} className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-violet-950 disabled:opacity-40">Generate Plan</button>
+              <button type="button" disabled={!props.hasRunnablePlan || props.executingRun || !props.packReadyForPlan} onClick={() => props.onRunPlan()} className="rounded bg-emerald-500 px-3 py-2 text-sm font-medium text-emerald-950 disabled:opacity-40">
                 {props.executingRun ? "Running..." : "Run this plan"}
               </button>
             </div>
+            {!props.packReadyForPlan && props.blockedPlanReason ? <p className="text-xs text-amber-300">{props.blockedPlanReason}</p> : null}
             {props.pendingBranchLabel ? <p className="text-xs text-indigo-300">{props.pendingBranchLabel}</p> : null}
             {props.planResponse ? <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-xs">{JSON.stringify(props.planResponse, null, 2)}</pre> : null}
           </div>
@@ -80,10 +90,15 @@ export default function ProductionWorkspace(props: {
       </div>
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-        <h3 className="font-semibold">Output / Current Result</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-semibold">Last run result</h3>
+          {props.latestRun ? <button type="button" onClick={props.onClearCurrentResult} className="rounded border border-zinc-700 px-2 py-1 text-xs">Clear current result</button> : null}
+        </div>
         {props.latestRun ? (
           <div className="mt-3 space-y-2 text-sm">
             <p className={`font-medium uppercase ${statusTone(props.latestRun.status)}`}>{props.latestRun.status}</p>
+            <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
+            {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
             <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
             {props.latestRun.output_asset_url ? (
               <div className="space-y-2">
