@@ -41,7 +41,17 @@ export default function ProductionWorkspace(props: {
   selectedSequenceId: string;
 }) {
   const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun);
-  const canShowVideo = Boolean(props.latestRun && resolvedVideoUrl && (props.latestRun.status === "succeeded" || props.latestRun.status === "validated" || props.latestRun.status === "completed"));
+  const outputValidation =
+    props.latestRun?.output_validation && typeof props.latestRun.output_validation === "object"
+      ? (props.latestRun.output_validation as Record<string, unknown>)
+      : null;
+  const hasInvalidOutput = outputValidation?.valid === false;
+  const canShowVideo = Boolean(
+    props.latestRun
+    && resolvedVideoUrl
+    && !hasInvalidOutput
+    && (props.latestRun.status === "succeeded" || props.latestRun.status === "validated" || props.latestRun.status === "completed"),
+  );
 
   return (
     <section className="space-y-4">
@@ -101,8 +111,10 @@ export default function ProductionWorkspace(props: {
           <div className="mt-3 space-y-2 text-sm">
             <p className={`font-medium uppercase ${statusTone(props.latestRun.status)}`}>{props.latestRun.status}</p>
             <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
+            <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
             <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
+            {props.latestRun.failure_message ? <p className="text-xs text-rose-300">{props.latestRun.failure_message}</p> : null}
             {canShowVideo ? (
               <div className="space-y-2">
                 <video controls width="100%" className="w-full rounded-xl border border-zinc-800 bg-black">
@@ -110,9 +122,6 @@ export default function ProductionWorkspace(props: {
                 </video>
                 <div className="flex flex-wrap gap-2">
                   <DownloadAssetButton url={resolvedVideoUrl ?? ""} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
-                  <a href={resolvedVideoUrl ?? undefined} target="_blank" rel="noreferrer" className="rounded border border-zinc-700 px-2 py-1 text-xs">
-                    Open in new tab
-                  </a>
                   {(() => {
                     const run = props.latestRun;
                     return (
@@ -128,6 +137,11 @@ export default function ProductionWorkspace(props: {
                     );
                   })()}
                 </div>
+              </div>
+            ) : hasInvalidOutput ? (
+              <div className="rounded-xl border border-rose-500/40 bg-rose-950/20 p-3 text-sm text-rose-200">
+                <p>This run returned an invalid or unplayable video file.</p>
+                <p className="mt-1 text-xs text-rose-300">Provider returned an unplayable video output.</p>
               </div>
             ) : props.latestRun.status === "succeeded" ? <p className="text-xs text-amber-300">Run succeeded but no video URL was resolved.</p> : null}
           </div>

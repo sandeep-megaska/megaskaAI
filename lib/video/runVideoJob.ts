@@ -103,7 +103,7 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
     throw new Error("Unknown ai_backend_id.");
   }
 
-  const defaultBackendId = getVideoCapabilityByBackendId("veo-2")?.backendId ?? "veo-2";
+  const defaultBackendId = getVideoCapabilityByBackendId("veo-3.1")?.backendId ?? "veo-3.1";
   const backend = requestedBackend ?? findBackendById(defaultBackendId) ?? getDefaultBackendForType("video");
 
   if (backend.type !== "video") {
