@@ -63,6 +63,17 @@ type GeneratedVideoLike = {
   name?: string;
 };
 
+type GeneratedAssetCandidate = {
+  index: number;
+  source: string;
+  role: "video" | "image" | "thumbnail" | "poster" | "unknown";
+  mimeType: string | null;
+  uri: string | null;
+  downloadUri: string | null;
+  name: string | null;
+  videoBytes: string | undefined;
+};
+
 type ResolveVideoBytesDiagnostics = {
   hasInlineVideoBytes: boolean;
   uri: string | null;
@@ -358,7 +369,35 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     });
   }
 
-  const generatedVideo = operation.response?.generatedVideos?.[0]?.video as GeneratedVideoLike | undefined;
+  const providerEntries = Array.isArray(operation.response?.generatedVideos) ? operation.response.generatedVideos : [];
+  const candidates: GeneratedAssetCandidate[] = providerEntries.flatMap((entry, entryIndex) => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    const assets: Array<{ source: string; role: GeneratedAssetCandidate["role"]; data: GeneratedVideoLike | null }> = [
+      { source: "generatedVideos[].video", role: "video", data: (record.video as GeneratedVideoLike | undefined) ?? null },
+      { source: "generatedVideos[].image", role: "image", data: (record.image as GeneratedVideoLike | undefined) ?? null },
+      { source: "generatedVideos[].thumbnail", role: "thumbnail", data: (record.thumbnail as GeneratedVideoLike | undefined) ?? null },
+      { source: "generatedVideos[].poster", role: "poster", data: (record.poster as GeneratedVideoLike | undefined) ?? null },
+    ];
+    return assets
+      .filter((asset) => asset.data && typeof asset.data === "object")
+      .map((asset) => ({
+        index: entryIndex,
+        source: asset.source,
+        role: asset.role,
+        mimeType: typeof asset.data?.mimeType === "string" ? asset.data.mimeType : null,
+        uri: typeof asset.data?.uri === "string" ? asset.data.uri : null,
+        downloadUri: typeof asset.data?.downloadUri === "string" ? asset.data.downloadUri : null,
+        name: typeof asset.data?.name === "string" ? asset.data.name : null,
+        videoBytes: asset.data?.videoBytes,
+      }));
+  });
+
+  const selectedCandidate =
+    candidates.find((candidate) => Boolean(candidate.videoBytes) || (candidate.mimeType?.toLowerCase().startsWith("video/") ?? false) || candidate.role === "video")
+    ?? candidates[0]
+    ?? null;
+  const generatedVideo = selectedCandidate as (GeneratedAssetCandidate & GeneratedVideoLike) | null;
   if (!generatedVideo) {
     console.error("[veo-video-adapter] completed operation missing generated video", {
       pollCount,
@@ -379,16 +418,33 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     );
   }
 
-  console.log("[veo-video-adapter] provider response payload summary", {
-    pollCount,
-    generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
-    mimeType: generatedVideo.mimeType ?? "video/mp4",
-    outputVideoUri: generatedVideo.uri ?? null,
-    outputVideoDownloadUri: generatedVideo.downloadUri ?? null,
-    outputVideoFileName:
-      generatedVideo.name ?? extractFileNameFromVideoUri(generatedVideo.uri ?? undefined) ?? null,
-    hasInlineVideoBytes: Boolean(generatedVideo.videoBytes),
-  });
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[veo-video-adapter] provider response asset diagnostics", {
+      pollCount,
+      generatedVideosCount: providerEntries.length,
+      outputAssetCandidates: candidates.map((candidate) => ({
+        index: candidate.index,
+        source: candidate.source,
+        role: candidate.role,
+        mimeType: candidate.mimeType,
+        hasUri: Boolean(candidate.uri),
+        hasDownloadUri: Boolean(candidate.downloadUri),
+        hasInlineBytes: Boolean(candidate.videoBytes),
+      })),
+      selectedAsset: selectedCandidate
+        ? {
+            index: selectedCandidate.index,
+            source: selectedCandidate.source,
+            role: selectedCandidate.role,
+            mimeType: selectedCandidate.mimeType,
+            hasUri: Boolean(selectedCandidate.uri),
+            hasDownloadUri: Boolean(selectedCandidate.downloadUri),
+            hasInlineBytes: Boolean(selectedCandidate.videoBytes),
+          }
+        : null,
+      hasThumbnailOrPoster: candidates.some((candidate) => candidate.role === "thumbnail" || candidate.role === "poster"),
+    });
+  }
 
   let bytes: Buffer | null = null;
   let diagnostics: ResolveVideoBytesDiagnostics | null = null;
@@ -440,11 +496,26 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
         generatedVideosLength: operation.response?.generatedVideos?.length ?? 0,
       },
       generatedVideo: {
+        selectedAssetIndex: selectedCandidate?.index ?? null,
+        selectedAssetSource: selectedCandidate?.source ?? null,
+        selectedAssetRole: selectedCandidate?.role ?? null,
         uri: generatedVideo.uri ?? null,
         downloadUri: generatedVideo.downloadUri ?? null,
         fileName: generatedVideo.name ?? extractFileNameFromVideoUri(generatedVideo.uri ?? undefined) ?? null,
         mimeType: generatedVideo.mimeType ?? "video/mp4",
       },
+      availableGeneratedAssets:
+        process.env.NODE_ENV !== "production"
+          ? candidates.map((candidate) => ({
+              index: candidate.index,
+              source: candidate.source,
+              role: candidate.role,
+              mimeType: candidate.mimeType,
+              hasUri: Boolean(candidate.uri),
+              hasDownloadUri: Boolean(candidate.downloadUri),
+              hasInlineBytes: Boolean(candidate.videoBytes),
+            }))
+          : undefined,
       frameInputDiagnostics: frameInput.diagnostics,
       modelFrameSupport: frameInput.support,
       downloadDiagnostics: diagnostics,

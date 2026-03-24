@@ -7,6 +7,7 @@ import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
 import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
 import { validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
+import { classifyOutputAsset, type OutputAssetKind } from "@/lib/video/classifyOutputAsset";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -26,6 +27,16 @@ function json(status: number, body: Record<string, unknown>) {
 function parseRunMeta(runMeta: unknown): Record<string, unknown> {
   if (!runMeta || typeof runMeta !== "object" || Array.isArray(runMeta)) return {};
   return runMeta as Record<string, unknown>;
+}
+
+function parseExpectedOutputKind(value: unknown): "video" | "image" | null {
+  if (value === "video" || value === "image") return value;
+  return null;
+}
+
+function parseActualOutputKind(value: unknown): OutputAssetKind | null {
+  if (value === "video" || value === "image" || value === "unknown") return value;
+  return null;
 }
 
 function pickHttpUrl(values: unknown[]): string | null {
@@ -252,6 +263,7 @@ export async function GET() {
         selected_pack_name: selectedPackId ? (packMap.get(selectedPackId)?.pack_name ?? null) : null,
         request_payload_snapshot: requestPayloadSnapshot,
         output_asset_url: outputAssetUrl,
+        output_url: outputAssetUrl,
         output_thumbnail_url: output?.thumbnail_url ?? null,
         output_generation_status: output?.status ?? null,
         failure_message: typeof runMeta.failure_message === "string" ? runMeta.failure_message : null,
@@ -278,13 +290,54 @@ export async function GET() {
         runMeta.output_validation && typeof runMeta.output_validation === "object"
           ? (runMeta.output_validation as Record<string, unknown>)
           : null;
+      const requestedOutputKind = parseExpectedOutputKind(runMeta.requested_output_kind) ?? "video";
+      const classifiedOutput = classifyOutputAsset({
+        expectedKind: requestedOutputKind,
+        observedMimeType: typeof outputValidation?.observed_mime_type === "string"
+          ? outputValidation.observed_mime_type
+          : typeof outputValidation?.contentType === "string"
+            ? outputValidation.contentType
+            : null,
+        providerMimeType:
+          typeof (runMeta.provider_response as Record<string, unknown> | undefined)?.generatedVideo === "object"
+            ? ((runMeta.provider_response as Record<string, unknown>).generatedVideo as Record<string, unknown>).mimeType as string | null
+            : null,
+        persistedFileType: typeof runMeta.file_type === "string" ? runMeta.file_type : null,
+        outputUrl: outputAssetUrl,
+      });
+      const actualOutputKind = parseActualOutputKind(runMeta.actual_output_kind) ?? classifiedOutput.kind;
+      const outputMismatchReason =
+        typeof runMeta.output_mismatch_reason === "string"
+          ? runMeta.output_mismatch_reason
+          : classifiedOutput.mismatchReason;
+      const playableVideo = outputValidation?.valid === true && actualOutputKind === "video";
+
       if (status === "succeeded" && outputValidation?.valid === false) {
         status = "failed";
         row.status = "failed";
         row.failure_message = "Provider returned an unplayable video output.";
       }
+      if (requestedOutputKind === "video" && actualOutputKind !== "video") {
+        status = "failed";
+        row.status = "failed";
+        row.failure_message = actualOutputKind === "image"
+          ? "The provider returned an image instead of a playable video file."
+          : "Provider returned an unknown output asset type for a video request.";
+      }
       row.output_validation = outputValidation;
-      row.file_type = typeof outputValidation?.contentType === "string" ? outputValidation.contentType : null;
+      row.requested_output_kind = requestedOutputKind;
+      row.actual_output_kind = actualOutputKind;
+      row.mime_type =
+        typeof outputValidation?.observed_mime_type === "string"
+          ? outputValidation.observed_mime_type
+          : classifiedOutput.mimeType;
+      row.file_type = typeof runMeta.file_type === "string"
+        ? runMeta.file_type
+        : typeof outputValidation?.contentType === "string"
+          ? outputValidation.contentType
+          : row.mime_type;
+      row.output_mismatch_reason = outputMismatchReason ?? null;
+      row.playable_video = playableVideo;
 
       const runAspectRatio = String(row.request_payload_snapshot?.aspect_ratio ?? "9:16");
       const providerCapability = getVideoCapabilityByBackendId(row.provider_used);
@@ -504,6 +557,7 @@ export async function POST(request: Request) {
       : deriveProviderFromPlan(planContract);
 
     const initialMeta: Record<string, unknown> = {
+      requested_output_kind: "video",
       selected_pack_id: runRequest.selected_pack_id,
       fallback_prompt: runRequest.fallback_prompt ?? plan.fallback_prompt ?? null,
       request_payload_snapshot: runRequest.request_payload_snapshot ?? {},
@@ -608,20 +662,37 @@ export async function POST(request: Request) {
         (finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.downloadUri,
         (finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.uri,
       ]);
+      const expectedOutputKind: "video" | "image" = "video";
+      const providerReportedMimeType =
+        typeof (finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.mimeType === "string"
+          ? ((finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown>).mimeType as string)
+          : null;
+      const classifiedOutput = classifyOutputAsset({
+        expectedKind: expectedOutputKind,
+        observedMimeType: finalExecution.mimeType,
+        providerMimeType: providerReportedMimeType,
+        outputUrl: outputAssetUrl,
+      });
       const outputValidation = validatePlayableVideoOutput({
         provider: finalExecution.backendId,
         outputUrl: outputAssetUrl,
         mimeType: finalExecution.mimeType,
         bytesLength: finalExecution.bytes.length,
         durationSeconds: extractOutputDurationSeconds(finalExecution.providerResponseMeta),
+        expectedOutputKind,
+        actualOutputKind: classifiedOutput.kind,
+        mismatch: classifiedOutput.mismatch,
+        mismatchReason: classifiedOutput.mismatchReason,
       });
       if (process.env.NODE_ENV !== "production") {
-        console.log("[video-v2] output validation diagnostics", {
+        console.log("[video-v2] output truth diagnostics", {
           provider: finalExecution.backendId,
           outputUrlPresent: Boolean(outputAssetUrl),
-          contentType: finalExecution.mimeType,
+          observedContentType: finalExecution.mimeType,
+          providerReportedMimeType,
           fileSizeBytes: finalExecution.bytes.length,
           durationSeconds: outputValidation.observed.durationSeconds,
+          classification: classifiedOutput,
           valid: outputValidation.valid,
           safeRetryApplied,
         });
@@ -673,6 +744,11 @@ export async function POST(request: Request) {
         ...initialMeta,
         provider_response: finalExecution.providerResponseMeta,
         diagnostics: finalExecution.diagnostics,
+        file_type: classifiedOutput.mimeType,
+        mime_type: classifiedOutput.mimeType,
+        expected_output_kind: expectedOutputKind,
+        actual_output_kind: classifiedOutput.kind,
+        output_mismatch_reason: classifiedOutput.mismatchReason,
         output_validation: {
           valid: outputValidation.valid,
           errorMessage: outputValidation.errorMessage,
@@ -680,6 +756,13 @@ export async function POST(request: Request) {
           contentType: outputValidation.observed.contentType,
           fileSizeBytes: outputValidation.observed.fileSizeBytes,
           durationSeconds: outputValidation.observed.durationSeconds,
+          observed_mime_type: outputValidation.observed_mime_type ?? outputValidation.observed.contentType,
+          expected_output_kind: expectedOutputKind,
+          actual_output_kind: classifiedOutput.kind,
+          mismatch: classifiedOutput.mismatch,
+          mismatch_reason: classifiedOutput.mismatchReason,
+          classification_reason: classifiedOutput.reason,
+          classification_confidence: classifiedOutput.confidence,
         },
         safe_retry: {
           attempted: safeRetryApplied,
@@ -689,10 +772,13 @@ export async function POST(request: Request) {
         execution_notes: "Provider execution completed; output metadata persisted.",
       };
 
-      if (!outputValidation.valid) {
+      if (!outputValidation.valid || classifiedOutput.kind !== "video") {
+        const mismatchFailureMessage = classifiedOutput.kind === "image"
+          ? "The provider returned an image instead of a playable video file."
+          : "Provider returned an unknown output asset type for a video request.";
         const failMeta = {
           ...successMeta,
-          failure_message: outputValidation.errorMessage,
+          failure_message: classifiedOutput.kind !== "video" ? mismatchFailureMessage : outputValidation.errorMessage,
         };
         const { data: failedRun, error: failedUpdateError } = await supabase
           .from("video_generation_runs")
@@ -707,10 +793,16 @@ export async function POST(request: Request) {
         if (failedUpdateError || !failedRun) {
           return json(201, {
             success: true,
-            data: { ...insertedRun, status: "failed", output_generation_id: outputGeneration.id, run_meta: failMeta, failure_message: outputValidation.errorMessage },
+            data: {
+              ...insertedRun,
+              status: "failed",
+              output_generation_id: outputGeneration.id,
+              run_meta: failMeta,
+              failure_message: failMeta.failure_message,
+            },
           });
         }
-        return json(201, { success: true, data: { ...failedRun, failure_message: outputValidation.errorMessage } });
+        return json(201, { success: true, data: { ...failedRun, failure_message: failMeta.failure_message } });
       }
 
       const { data: updatedRun, error: updateError } = await supabase

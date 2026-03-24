@@ -6,6 +6,10 @@ type ValidationInput = {
   mimeType: string | null;
   bytesLength: number;
   durationSeconds?: number | null;
+  expectedOutputKind?: "video" | "image";
+  actualOutputKind?: "video" | "image" | "unknown";
+  mismatch?: boolean;
+  mismatchReason?: string | null;
 };
 
 export type VideoOutputValidation = {
@@ -25,6 +29,11 @@ export type VideoOutputValidation = {
     durationSeconds: number | null;
     minBytesRequired: number;
   };
+  observed_mime_type?: string | null;
+  actual_output_kind?: "video" | "image" | "unknown";
+  expected_output_kind?: "video" | "image";
+  mismatch?: boolean;
+  mismatch_reason?: string | null;
 };
 
 export function validatePlayableVideoOutput(input: ValidationInput): VideoOutputValidation {
@@ -59,5 +68,10 @@ export function validatePlayableVideoOutput(input: ValidationInput): VideoOutput
       durationSeconds: durationKnown ? (input.durationSeconds as number) : null,
       minBytesRequired: MIN_PLAYABLE_VIDEO_BYTES,
     },
+    observed_mime_type: normalizedMime,
+    actual_output_kind: input.actualOutputKind,
+    expected_output_kind: input.expectedOutputKind,
+    mismatch: input.mismatch,
+    mismatch_reason: input.mismatchReason ?? null,
   };
 }

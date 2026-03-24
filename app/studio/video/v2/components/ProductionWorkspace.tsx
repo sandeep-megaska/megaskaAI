@@ -1,8 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { excerpt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
+import { classifyOutputAsset } from "@/lib/video/classifyOutputAsset";
 
 type PlanApiResponse = {
   id?: string;
@@ -46,10 +48,24 @@ export default function ProductionWorkspace(props: {
       ? (props.latestRun.output_validation as Record<string, unknown>)
       : null;
   const hasInvalidOutput = outputValidation?.valid === false;
+  const expectedOutputKind = props.latestRun?.requested_output_kind ?? "video";
+  const classifiedOutput = classifyOutputAsset({
+    expectedKind: expectedOutputKind,
+    observedMimeType:
+      typeof outputValidation?.observed_mime_type === "string"
+        ? outputValidation.observed_mime_type
+        : props.latestRun?.mime_type ?? props.latestRun?.file_type ?? null,
+    providerMimeType: props.latestRun?.mime_type ?? props.latestRun?.file_type ?? null,
+    persistedFileType: props.latestRun?.file_type ?? null,
+    outputUrl: resolvedVideoUrl,
+  });
+  const actualOutputKind = props.latestRun?.actual_output_kind ?? classifiedOutput.kind;
+  const outputMismatchReason = props.latestRun?.output_mismatch_reason ?? classifiedOutput.mismatchReason;
   const canShowVideo = Boolean(
     props.latestRun
     && resolvedVideoUrl
     && !hasInvalidOutput
+    && actualOutputKind === "video"
     && (props.latestRun.status === "succeeded" || props.latestRun.status === "validated" || props.latestRun.status === "completed"),
   );
 
@@ -111,7 +127,7 @@ export default function ProductionWorkspace(props: {
           <div className="mt-3 space-y-2 text-sm">
             <p className={`font-medium uppercase ${statusTone(props.latestRun.status)}`}>{props.latestRun.status}</p>
             <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
-            <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"}</p>
+            <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"} · Actual: {actualOutputKind}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
             <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
             {props.latestRun.failure_message ? <p className="text-xs text-rose-300">{props.latestRun.failure_message}</p> : null}
@@ -121,7 +137,12 @@ export default function ProductionWorkspace(props: {
                   <source src={resolvedVideoUrl ?? undefined} type="video/mp4" />
                 </video>
                 <div className="flex flex-wrap gap-2">
-                  <DownloadAssetButton url={resolvedVideoUrl ?? ""} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
+                  <DownloadAssetButton
+                    url={resolvedVideoUrl ?? ""}
+                    filenamePrefix={`run-${shortId(props.latestRun.id)}-output`}
+                    mimeType={props.latestRun.mime_type ?? props.latestRun.file_type ?? null}
+                    assetKind={actualOutputKind}
+                  />
                   {(() => {
                     const run = props.latestRun;
                     return (
@@ -138,10 +159,39 @@ export default function ProductionWorkspace(props: {
                   })()}
                 </div>
               </div>
+            ) : actualOutputKind === "image" ? (
+              <div className="space-y-2">
+                <div className="relative h-80 w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
+                  <Image src={resolvedVideoUrl ?? ""} alt="Provider returned image output" fill className="object-contain" unoptimized />
+                </div>
+                <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-3 text-sm text-amber-200">
+                  <p>The provider returned an image instead of a playable video file.</p>
+                  {outputMismatchReason ? <p className="mt-1 text-xs text-amber-300">Reason: {outputMismatchReason}</p> : null}
+                </div>
+                <DownloadAssetButton
+                  url={resolvedVideoUrl ?? ""}
+                  filenamePrefix={`run-${shortId(props.latestRun.id)}-output`}
+                  mimeType={props.latestRun.mime_type ?? props.latestRun.file_type ?? null}
+                  assetKind="image"
+                />
+              </div>
             ) : hasInvalidOutput ? (
               <div className="rounded-xl border border-rose-500/40 bg-rose-950/20 p-3 text-sm text-rose-200">
                 <p>This run returned an invalid or unplayable video file.</p>
                 <p className="mt-1 text-xs text-rose-300">Provider returned an unplayable video output.</p>
+              </div>
+            ) : actualOutputKind === "unknown" ? (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-3 text-sm text-amber-200">
+                <p>Output type could not be verified.</p>
+                <p className="mt-1 text-xs text-amber-300">Only original download is available until type can be verified.</p>
+                <div className="mt-2">
+                  <DownloadAssetButton
+                    url={resolvedVideoUrl ?? ""}
+                    filenamePrefix={`run-${shortId(props.latestRun.id)}-output`}
+                    mimeType={props.latestRun.mime_type ?? props.latestRun.file_type ?? null}
+                    assetKind="unknown"
+                  />
+                </div>
               </div>
             ) : props.latestRun.status === "succeeded" ? <p className="text-xs text-amber-300">Run succeeded but no video URL was resolved.</p> : null}
           </div>

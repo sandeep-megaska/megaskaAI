@@ -210,14 +210,20 @@ export type ExecuteVideoRunResponse = {
 };
 
 export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
+  requested_output_kind?: "video" | "image" | null;
+  actual_output_kind?: "video" | "image" | "unknown" | null;
   plan_motion_request?: string | null;
   selected_pack_id?: string | null;
   selected_pack_name?: string | null;
   request_payload_snapshot?: Record<string, unknown> | null;
   output_asset_url?: string | null;
+  output_url?: string | null;
   output_thumbnail_url?: string | null;
   output_generation_status?: string | null;
   file_type?: string | null;
+  mime_type?: string | null;
+  output_mismatch_reason?: string | null;
+  playable_video?: boolean;
   output_validation?: Record<string, unknown> | null;
   failure_message?: string | null;
   validation?: VideoRunValidationSummary | null;
