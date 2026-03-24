@@ -188,6 +188,8 @@ export default function VideoV2Page() {
       ? `Complete required anchors first: ${selectedPackReadiness.missingRoles.join(", ")}.`
       : selectedPackReadiness && selectedPackReadiness.aggregateStabilityScore < 0.65
         ? "Improve anchor quality. Aggregate stability must reach at least 0.65."
+        : selectedPackReadiness && !selectedPackReadiness.isReady && selectedPackReadiness.warnings.length
+          ? selectedPackReadiness.warnings[0]
         : null;
   const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
   const [dismissedResultRunIds, setDismissedResultRunIds] = useState<string[]>([]);
