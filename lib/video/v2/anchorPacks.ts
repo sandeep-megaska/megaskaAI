@@ -35,10 +35,26 @@ export function computeItemStabilityScore(item: Partial<AnchorPackItem>) {
 export function computePackStability(input: { packType: AnchorPackType; items: Array<Partial<AnchorPackItem>> }) {
   if (!input.items.length) return 0;
 
+  const requiredRoles = REQUIRED_ROLES_BY_PACK_TYPE[input.packType];
+  const requiredItems = requiredRoles
+    .map((role) => input.items.find((item) => item.role === role))
+    .filter(Boolean) as Array<Partial<AnchorPackItem>>;
+
+  const resolveAssetKey = (item: Partial<AnchorPackItem>) =>
+    item.generation_id ?? item.generation?.asset_url ?? item.generation?.url ?? null;
+
+  const requiredAssetKeys = requiredItems.map(resolveAssetKey).filter((value): value is string => Boolean(value));
+  const hasAllRequiredRoles = requiredItems.length === requiredRoles.length;
+  const allRequiredRolesShareOneAsset =
+    hasAllRequiredRoles && requiredAssetKeys.length === requiredRoles.length && new Set(requiredAssetKeys).size === 1;
+
+  if (allRequiredRolesShareOneAsset) {
+    return 1;
+  }
+
   const itemAverage =
     input.items.reduce((sum, item) => sum + (item.stability_score ?? computeItemStabilityScore(item)), 0) / input.items.length;
 
-  const requiredRoles = REQUIRED_ROLES_BY_PACK_TYPE[input.packType];
   const presentRoleCount = requiredRoles.filter((role) => input.items.some((item) => item.role === role)).length;
   const roleCoverage = requiredRoles.length ? presentRoleCount / requiredRoles.length : 0;
 
