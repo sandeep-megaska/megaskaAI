@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { OutputAssetKind } from "@/lib/video/classifyOutputAsset";
 
 const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
 
@@ -116,29 +117,32 @@ export default function DownloadAssetButton({
   filenamePrefix,
   label = "Download",
   mimeType,
+  assetKind,
 }: {
   url: string;
   filenamePrefix: string;
   label?: string;
   mimeType?: string | null;
+  assetKind?: OutputAssetKind;
 }) {
   const [downloading, setDownloading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const isImageAsset = useMemo(() => {
+  const inferredImageAsset = useMemo(() => {
     const extension = getExtensionFromUrl(url);
     const extensionLooksImage = extension ? IMAGE_EXTENSIONS.has(extension) : false;
     const mimeLooksImage = Boolean(mimeType && mimeType.toLowerCase().startsWith("image/"));
     return extensionLooksImage || mimeLooksImage;
   }, [mimeType, url]);
-  const isVideoAsset = useMemo(() => {
+  const inferredVideoAsset = useMemo(() => {
     const extension = getExtensionFromUrl(url);
     const extensionLooksVideo = extension ? VIDEO_EXTENSIONS.has(extension) : false;
     const mimeLooksVideo = Boolean(mimeType && mimeType.toLowerCase().startsWith("video/"));
     return extensionLooksVideo || mimeLooksVideo;
   }, [mimeType, url]);
+  const resolvedAssetKind: OutputAssetKind = assetKind ?? (inferredVideoAsset ? "video" : inferredImageAsset ? "image" : "unknown");
   const isMp4Like = useMemo(() => {
     const extension = getExtensionFromUrl(url);
     const mime = mimeType?.toLowerCase() ?? "";
@@ -297,7 +301,7 @@ export default function DownloadAssetButton({
           >
             Download original
           </button>
-          {isVideoAsset ? (
+          {resolvedAssetKind === "video" ? (
             <>
               <button
                 type="button"
@@ -316,7 +320,7 @@ export default function DownloadAssetButton({
                 Open in new tab
               </button>
             </>
-          ) : isImageAsset ? (
+          ) : resolvedAssetKind === "image" ? (
             <>
               <button
                 type="button"
@@ -335,7 +339,9 @@ export default function DownloadAssetButton({
                 Download as PNG
               </button>
             </>
-          ) : null}
+          ) : (
+            <p className="px-2 py-1 text-[11px] text-amber-300">Output type unknown. Only original download is available.</p>
+          )}
         </div>
       ) : null}
 
