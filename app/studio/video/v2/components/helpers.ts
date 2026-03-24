@@ -2,6 +2,57 @@ export function getAssetUrl(item?: { asset_url?: string | null; url?: string | n
   return item?.asset_url ?? item?.url ?? null;
 }
 
+function pickFirstUrl(values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+  }
+  return null;
+}
+
+function walkForVideoUrl(node: unknown, depth = 0): string | null {
+  if (!node || depth > 6) return null;
+  if (typeof node === "string") {
+    const trimmed = node.trim();
+    return trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : null;
+  }
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      const found = walkForVideoUrl(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof node !== "object") return null;
+  const record = node as Record<string, unknown>;
+  const direct = pickFirstUrl([
+    record.output_asset_url,
+    record.asset_url,
+    record.video_url,
+    record.url,
+    record.output_url,
+    record.download_url,
+    record.downloadUri,
+    record.uri,
+  ]);
+  if (direct) return direct;
+  for (const value of Object.values(record)) {
+    const found = walkForVideoUrl(value, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function resolveRunVideoUrl(run?: { output_asset_url?: string | null; request_payload_snapshot?: Record<string, unknown> | null; run_meta?: Record<string, unknown> | null } | null) {
+  if (!run) return null;
+  const direct = pickFirstUrl([run.output_asset_url]);
+  if (direct) return direct;
+  const snapshot = walkForVideoUrl(run.request_payload_snapshot);
+  if (snapshot) return snapshot;
+  return walkForVideoUrl(run.run_meta);
+}
+
 export function shortId(id: string) {
   return id.slice(0, 8);
 }

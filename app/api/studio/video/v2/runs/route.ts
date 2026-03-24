@@ -27,6 +27,56 @@ function parseRunMeta(runMeta: unknown): Record<string, unknown> {
   return runMeta as Record<string, unknown>;
 }
 
+function pickHttpUrl(values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+  }
+  return null;
+}
+
+function findVideoUrlInNode(node: unknown, depth = 0): string | null {
+  if (!node || depth > 7) return null;
+  if (typeof node === "string") {
+    const trimmed = node.trim();
+    return trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : null;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findVideoUrlInNode(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof node !== "object") return null;
+  const record = node as Record<string, unknown>;
+  const direct = pickHttpUrl([
+    record.output_asset_url,
+    record.asset_url,
+    record.video_url,
+    record.url,
+    record.output_url,
+    record.download_url,
+    record.downloadUri,
+    record.uri,
+  ]);
+  if (direct) return direct;
+  for (const value of Object.values(record)) {
+    const found = findVideoUrlInNode(value, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function resolveOutputAssetUrl(input: { outputAssetUrl: string | null; runMeta: Record<string, unknown>; requestPayloadSnapshot?: Record<string, unknown> | null }) {
+  const direct = pickHttpUrl([input.outputAssetUrl]);
+  if (direct) return direct;
+  const fromSnapshot = findVideoUrlInNode(input.requestPayloadSnapshot);
+  if (fromSnapshot) return fromSnapshot;
+  return findVideoUrlInNode(input.runMeta);
+}
+
 function parsePlanContract(plan: Record<string, unknown>): DirectorPlanContract {
   return {
     mode_selected: String(plan.mode_selected ?? "ingredients_to_video") as V2Mode,
@@ -156,17 +206,23 @@ export async function GET() {
           )
         : null;
 
+      const requestPayloadSnapshot =
+        runMeta.request_payload_snapshot && typeof runMeta.request_payload_snapshot === "object"
+          ? (runMeta.request_payload_snapshot as Record<string, unknown>)
+          : null;
+      const outputAssetUrl = resolveOutputAssetUrl({
+        outputAssetUrl: output?.asset_url ?? output?.url ?? null,
+        runMeta,
+        requestPayloadSnapshot,
+      });
       const row: VideoRunHistoryRecord = {
         ...run,
         status,
         plan_motion_request: planMap.get(run.generation_plan_id)?.motion_request ?? null,
         selected_pack_id: selectedPackId,
         selected_pack_name: selectedPackId ? (packMap.get(selectedPackId)?.pack_name ?? null) : null,
-        request_payload_snapshot:
-          runMeta.request_payload_snapshot && typeof runMeta.request_payload_snapshot === "object"
-            ? (runMeta.request_payload_snapshot as Record<string, unknown>)
-            : null,
-        output_asset_url: output?.asset_url ?? output?.url ?? null,
+        request_payload_snapshot: requestPayloadSnapshot,
+        output_asset_url: outputAssetUrl,
         output_thumbnail_url: output?.thumbnail_url ?? null,
         output_generation_status: output?.status ?? null,
         failure_message: typeof runMeta.failure_message === "string" ? runMeta.failure_message : null,

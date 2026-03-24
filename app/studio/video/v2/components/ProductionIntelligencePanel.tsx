@@ -14,6 +14,8 @@ type ValidationResult = {
 export default function ProductionIntelligencePanel(props: {
   runs: VideoRunHistoryRecord[];
   loadingRuns: boolean;
+  selectedRunId: string | null;
+  onSelectRun: (run: VideoRunHistoryRecord) => void;
   validationResults: ValidationResult[];
   sequences: VideoSequence[];
   selectedSequenceId: string;
@@ -33,11 +35,16 @@ export default function ProductionIntelligencePanel(props: {
         <div className="mt-2 max-h-72 space-y-2 overflow-auto text-xs">
           {props.loadingRuns ? <p className="text-zinc-500">Loading…</p> : null}
           {props.runs.slice(0, 8).map((run) => (
-            <div key={run.id} className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+            <button
+              type="button"
+              key={run.id}
+              onClick={() => props.onSelectRun(run)}
+              className={`block w-full rounded-lg border p-2 text-left ${props.selectedRunId === run.id ? "border-cyan-500/60 bg-cyan-500/10" : "border-zinc-800 bg-zinc-950/50"}`}
+            >
               <p className={`font-medium uppercase ${statusTone(run.status)}`}>{run.status}</p>
               <p className="text-zinc-300">{shortId(run.id)} · {new Date(run.created_at).toLocaleTimeString()}</p>
               <p className="text-zinc-500">{run.provider_used ?? "n/a"} / {run.provider_model ?? "n/a"}</p>
-            </div>
+            </button>
           ))}
         </div>
       </section>

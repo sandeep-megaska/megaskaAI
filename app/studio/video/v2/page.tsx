@@ -152,6 +152,7 @@ export default function VideoV2Page() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [garments, setGarments] = useState<GarmentOption[]>([]);
   const [workspaceTab, setWorkspaceTab] = useState<"manual" | "auto">("manual");
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -194,8 +195,21 @@ export default function VideoV2Page() {
   const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
   const [dismissedResultRunIds, setDismissedResultRunIds] = useState<string[]>([]);
   const latestRunForSelectedPack = runHistory.find((run) => run.selected_pack_id === selectedPackId && !dismissedResultRunIds.includes(run.id)) ?? null;
-  const latestVisibleRun = latestRunForSelectedPack ?? runHistory.find((run) => !dismissedResultRunIds.includes(run.id)) ?? null;
+  const fallbackVisibleRun = latestRunForSelectedPack ?? runHistory.find((run) => !dismissedResultRunIds.includes(run.id)) ?? null;
+  const selectedVisibleRun =
+    (selectedRunId ? runHistory.find((run) => run.id === selectedRunId && !dismissedResultRunIds.includes(run.id)) : null) ?? null;
+  const latestVisibleRun = selectedVisibleRun ?? fallbackVisibleRun;
   const showingOlderRun = Boolean(latestVisibleRun && selectedPackId && latestVisibleRun.selected_pack_id && latestVisibleRun.selected_pack_id !== selectedPackId);
+
+  useEffect(() => {
+    if (!selectedRunId && fallbackVisibleRun?.id) {
+      setSelectedRunId(fallbackVisibleRun.id);
+      return;
+    }
+    if (selectedRunId && !runHistory.some((run) => run.id === selectedRunId && !dismissedResultRunIds.includes(run.id))) {
+      setSelectedRunId(fallbackVisibleRun?.id ?? null);
+    }
+  }, [selectedRunId, fallbackVisibleRun?.id, runHistory, dismissedResultRunIds]);
 
   async function runRecoveryAction(run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_run_id: run.id, retry_strategy: action, retry_reason: `Operator-triggered ${actionLabel(action).toLowerCase()}.` }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Recovery retry failed."); await Promise.all([loadRuns(), loadValidationResults()]); } catch (e) { setError(e instanceof Error ? e.message : "Recovery retry failed."); } }
   async function acceptClip(run: VideoRunHistoryRecord) { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ run_id: run.id, action_type: "accept", accepted_for_sequence: true }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to accept clip."); await loadRuns(); } catch (e) { setError(e instanceof Error ? e.message : "Failed to accept clip."); } }
@@ -311,6 +325,7 @@ export default function VideoV2Page() {
               onClearCurrentResult={() => {
                 if (!latestVisibleRun) return;
                 setDismissedResultRunIds((prev) => [...prev, latestVisibleRun.id]);
+                setSelectedRunId((prev) => (prev === latestVisibleRun.id ? null : prev));
               }}
               onRecoveryAction={runRecoveryAction}
               onAcceptClip={acceptClip}
@@ -362,6 +377,8 @@ export default function VideoV2Page() {
             <ProductionIntelligencePanel
               runs={runHistory}
               loadingRuns={loadingRuns}
+              selectedRunId={selectedRunId}
+              onSelectRun={(run) => setSelectedRunId(run.id)}
               validationResults={validationResults}
               sequences={sequences}
               selectedSequenceId={selectedSequenceId}

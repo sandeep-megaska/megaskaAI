@@ -2,7 +2,7 @@
 
 import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
-import { excerpt, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
+import { excerpt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
 
 type PlanApiResponse = {
   id?: string;
@@ -40,6 +40,9 @@ export default function ProductionWorkspace(props: {
   onAddToSequence: (run: VideoRunHistoryRecord) => Promise<void>;
   selectedSequenceId: string;
 }) {
+  const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun);
+  const canShowVideo = Boolean(props.latestRun && resolvedVideoUrl && (props.latestRun.status === "succeeded" || props.latestRun.status === "validated" || props.latestRun.status === "completed"));
+
   return (
     <section className="space-y-4">
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 shadow-lg shadow-black/20">
@@ -100,12 +103,16 @@ export default function ProductionWorkspace(props: {
             <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
             <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
-            {props.latestRun.output_asset_url ? (
+            {canShowVideo ? (
               <div className="space-y-2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={props.latestRun.output_thumbnail_url ?? props.latestRun.output_asset_url} alt="Latest run" className="h-40 w-full rounded-xl border border-zinc-800 object-cover" />
+                <video controls width="100%" className="w-full rounded-xl border border-zinc-800 bg-black">
+                  <source src={resolvedVideoUrl ?? undefined} type="video/mp4" />
+                </video>
                 <div className="flex flex-wrap gap-2">
-                  <DownloadAssetButton url={props.latestRun.output_asset_url} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
+                  <DownloadAssetButton url={resolvedVideoUrl ?? ""} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
+                  <a href={resolvedVideoUrl ?? undefined} target="_blank" rel="noreferrer" className="rounded border border-zinc-700 px-2 py-1 text-xs">
+                    Open in new tab
+                  </a>
                   {(() => {
                     const run = props.latestRun;
                     return (
@@ -122,7 +129,7 @@ export default function ProductionWorkspace(props: {
                   })()}
                 </div>
               </div>
-            ) : null}
+            ) : props.latestRun.status === "succeeded" ? <p className="text-xs text-amber-300">Run succeeded but no video URL was resolved.</p> : null}
           </div>
         ) : (
           <p className="mt-2 text-sm text-zinc-500">No run output yet.</p>
