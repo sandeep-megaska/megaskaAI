@@ -260,6 +260,66 @@ async function resolveVideoBytes({
   apiKey: string;
   video: GeneratedVideoLike;
 }): Promise<{ bytes: Buffer | null; diagnostics: ResolveVideoBytesDiagnostics }> {
+  const MIN_VIDEO_BYTES = 64 * 1024;
+
+  const isValidVideoContentType = (contentType: string | null): boolean => {
+    if (!contentType) return false;
+    return contentType.trim().toLowerCase().startsWith("video/");
+  };
+
+  const fetchVideoBytes = async ({
+    url,
+    mode,
+    withApiKeyHeader,
+  }: {
+    url: string;
+    mode: "no-auth" | "api-key" | "files-api";
+    withApiKeyHeader: boolean;
+  }): Promise<{ bytes: Buffer; contentType: string | null }> => {
+    const response = await fetch(
+      url,
+      withApiKeyHeader
+        ? {
+            headers: {
+              "x-goog-api-key": apiKey,
+            },
+          }
+        : undefined,
+    );
+
+    diagnostics.fetchStatus = response.status;
+    diagnostics.fetchStatusText = response.statusText;
+    diagnostics.attemptedWithAuthHeaders = withApiKeyHeader;
+    const contentType = response.headers.get("content-type");
+
+    if (!response.ok) {
+      throw new Error(
+        `Unable to download generated video bytes from provider (${response.status} ${response.statusText})`,
+      );
+    }
+
+    if (!isValidVideoContentType(contentType)) {
+      throw new Error(
+        `Invalid generated video content-type "${contentType ?? "unknown"}" for ${mode} download mode.`,
+      );
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < MIN_VIDEO_BYTES) {
+      throw new Error(`Video too small / likely invalid (${bytes.length} bytes).`);
+    }
+
+    diagnostics.bytesLength = bytes.length;
+    console.log("[veo-download]", {
+      url,
+      mode,
+      contentType,
+      bytesLength: bytes.length,
+    });
+
+    return { bytes, contentType };
+  };
+
   const diagnostics: ResolveVideoBytesDiagnostics = {
     hasInlineVideoBytes: Boolean(video.videoBytes),
     uri: video.uri ?? null,
@@ -301,25 +361,46 @@ async function resolveVideoBytes({
 
   diagnostics.attemptedDownloadUrl = downloadUrl;
   diagnostics.attemptedDownloadSource = downloadUri ? "downloadUri" : "uri";
-  diagnostics.attemptedWithAuthHeaders = true;
+  diagnostics.attemptedWithAuthHeaders = false;
 
-  const response = await fetch(downloadUrl, {
-    headers: {
-      "x-goog-api-key": apiKey,
-    },
-  });
-  diagnostics.fetchStatus = response.status;
-  diagnostics.fetchStatusText = response.statusText;
+  try {
+    const { bytes } = await fetchVideoBytes({
+      url: downloadUrl,
+      mode: "no-auth",
+      withApiKeyHeader: false,
+    });
+    return { bytes, diagnostics };
+  } catch {
+    try {
+      const { bytes } = await fetchVideoBytes({
+        url: downloadUrl,
+        mode: "api-key",
+        withApiKeyHeader: true,
+      });
+      return { bytes, diagnostics };
+    } catch (secondError) {
+      if (!diagnostics.fileName) {
+        throw secondError;
+      }
 
-  if (!response.ok) {
-    throw new Error(
-      `Unable to download generated video bytes from provider (${response.status} ${response.statusText})`,
-    );
+      const fileInfo = await ai.files.get({ name: diagnostics.fileName });
+      const filesApiUrl = fileInfo.downloadUri?.trim();
+      diagnostics.downloadUri = filesApiUrl ?? diagnostics.downloadUri;
+
+      if (!filesApiUrl) {
+        throw secondError;
+      }
+
+      diagnostics.attemptedDownloadSource = "downloadUri";
+      diagnostics.attemptedDownloadUrl = filesApiUrl;
+      const { bytes } = await fetchVideoBytes({
+        url: filesApiUrl,
+        mode: "files-api",
+        withApiKeyHeader: false,
+      });
+      return { bytes, diagnostics };
+    }
   }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  diagnostics.bytesLength = bytes.length;
-  return { bytes, diagnostics };
 }
 
 export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput> {
