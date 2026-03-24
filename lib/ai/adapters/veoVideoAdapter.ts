@@ -366,7 +366,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
       generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
     });
     throw new VideoGenerationOutputError(
-      "The provider completed the request but returned no video output. Try Veo 3.1 preview or a simpler strict-mode request.",
+      "The provider completed the request but returned no video output. Retry with a simpler Veo 3.1 request.",
       "generatedVideos-empty",
       {
         requestedModelId: input.model,

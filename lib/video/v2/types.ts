@@ -217,6 +217,8 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   output_asset_url?: string | null;
   output_thumbnail_url?: string | null;
   output_generation_status?: string | null;
+  file_type?: string | null;
+  output_validation?: Record<string, unknown> | null;
   failure_message?: string | null;
   validation?: VideoRunValidationSummary | null;
   retried_from_run_id?: string | null;

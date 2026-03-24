@@ -115,7 +115,7 @@ export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanCont
     director_prompt: buildDirectorPrompt(input, modeSelected),
     fallback_prompt: "Keep pose change minimal. Preserve identity, garment drape, and scene continuity.",
     negative_constraints: DEFAULT_NEGATIVE_CONSTRAINTS,
-    provider_order: input.preferredProviders?.length ? input.preferredProviders : ["veo-3.1", "veo-2"],
+    provider_order: input.preferredProviders?.length ? input.preferredProviders : ["veo-3.1", "veo-3.1-fast", "veo-2"],
     mode_suitability: readiness?.modeSuitability ?? [],
     pack_risk: readiness?.riskLevel ?? anchorRisk,
     missing_requirements: missingRequirements,

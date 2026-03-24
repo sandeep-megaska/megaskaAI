@@ -47,7 +47,7 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     allowedDurations: [5, 6, 7, 8],
     allowedAspectRatios: COMMON_ASPECT_RATIOS,
     safeMotionLevel: "minimal",
-    shouldBeDefaultRecommended: true,
+    shouldBeDefaultRecommended: false,
     shouldBeMarkedExperimental: false,
     notes: "Highest identity + garment preservation. Motion remains subtle and intentionally limited.",
     warning: "Use for production-safe fidelity output. Dynamic motion is intentionally constrained.",
@@ -100,7 +100,7 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     provider: "gemini-api",
     modelKey: "veo-3.1",
     label: "Veo 3.1",
-    providerModelId: "veo-3.1-generate-preview",
+    providerModelId: "veo-3.1-generate-001",
     recommendedPurpose: "experimental",
     supportsSourceImage: true,
     supportsLastFrame: true,
@@ -111,7 +111,7 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     allowedDurations: [4, 6, 8],
     allowedAspectRatios: COMMON_ASPECT_RATIOS,
     safeMotionLevel: "dynamic",
-    shouldBeDefaultRecommended: false,
+    shouldBeDefaultRecommended: true,
     shouldBeMarkedExperimental: true,
     notes: "Motion expansion path with strongest complexity support in this project.",
     warning: "Complex anchor stacks can still be rejected; fallback may simplify request shape.",
@@ -121,7 +121,7 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     provider: "gemini-api",
     modelKey: "veo-3.1-fast",
     label: "Veo 3.1 Fast",
-    providerModelId: "veo-3.1-fast-generate-preview",
+    providerModelId: "veo-3.1-fast-generate-001",
     recommendedPurpose: "experimental",
     supportsSourceImage: true,
     supportsLastFrame: true,
@@ -167,7 +167,7 @@ export function resolveVideoCapability(backend: AIBackend): VideoProviderCapabil
 
 export function getDefaultRecommendedVideoBackendId() {
   const entry = Object.values(VIDEO_PROVIDER_CAPABILITIES).find((capability) => capability.shouldBeDefaultRecommended);
-  return entry?.backendId ?? "veo-2";
+  return entry?.backendId ?? "veo-3.1";
 }
 
 export function getVideoCapabilityByBackendId(backendId?: string | null) {

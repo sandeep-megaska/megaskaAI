@@ -6,6 +6,7 @@ import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
 import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
+import { validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -75,6 +76,34 @@ function resolveOutputAssetUrl(input: { outputAssetUrl: string | null; runMeta: 
   const fromSnapshot = findVideoUrlInNode(input.requestPayloadSnapshot);
   if (fromSnapshot) return fromSnapshot;
   return findVideoUrlInNode(input.runMeta);
+}
+
+function extractOutputDurationSeconds(node: unknown): number | null {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+  const record = node as Record<string, unknown>;
+  const generatedVideo = record.generatedVideo && typeof record.generatedVideo === "object"
+    ? (record.generatedVideo as Record<string, unknown>)
+    : null;
+  const candidates = [record.duration_seconds, record.durationSeconds, generatedVideo?.duration_seconds, generatedVideo?.durationSeconds];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return null;
+}
+
+function simplifyPromptForSafeRetry(prompt: string) {
+  const trimmed = prompt.trim();
+  if (!trimmed) return "Generate a stable short motion clip from the source frame. Preserve subject identity and garment details.";
+  return [
+    "Create a stable short motion clip.",
+    "Preserve subject identity, garment details, and scene continuity.",
+    trimmed.slice(0, 900),
+  ].join("\n");
+}
+
+function prefersVeo31(provider: string | null | undefined) {
+  if (!provider) return false;
+  return provider.startsWith("veo-3.1");
 }
 
 function parsePlanContract(plan: Record<string, unknown>): DirectorPlanContract {
@@ -188,7 +217,7 @@ export async function GET() {
       const selectedPackId = typeof runMeta.selected_pack_id === "string" ? runMeta.selected_pack_id : null;
       const output = run.output_generation_id ? outputMap.get(run.output_generation_id) : null;
       const validation = validationMap.get(run.id);
-      const status: VideoRunStatus = validation ? "validated" : normalizeRunStatus(run.status);
+      let status: VideoRunStatus = validation ? "validated" : normalizeRunStatus(run.status);
       const pack = selectedPackId ? packMap.get(selectedPackId) : null;
       const plan = planMap.get(run.generation_plan_id);
       const packReadiness = pack
@@ -245,6 +274,17 @@ export async function GET() {
             }
           : null,
       };
+      const outputValidation =
+        runMeta.output_validation && typeof runMeta.output_validation === "object"
+          ? (runMeta.output_validation as Record<string, unknown>)
+          : null;
+      if (status === "succeeded" && outputValidation?.valid === false) {
+        status = "failed";
+        row.status = "failed";
+        row.failure_message = "Provider returned an unplayable video output.";
+      }
+      row.output_validation = outputValidation;
+      row.file_type = typeof outputValidation?.contentType === "string" ? outputValidation.contentType : null;
 
       const runAspectRatio = String(row.request_payload_snapshot?.aspect_ratio ?? "9:16");
       const providerCapability = getVideoCapabilityByBackendId(row.provider_used);
@@ -523,15 +563,69 @@ export async function POST(request: Request) {
 
     try {
       const selectedAspectRatio = String(runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16");
+      const requestedDuration = Number(runRequest.duration_seconds ?? plan.duration_seconds ?? 8);
       const execution = await runVideoJob({
         backendId: providerInfo.providerSelected,
         prompt: runRequest.director_prompt,
-        durationSeconds: Number(runRequest.duration_seconds ?? plan.duration_seconds ?? 8),
+        durationSeconds: requestedDuration,
         firstFrameUrl: primaryFrameUrl,
         aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
         requestedFidelityPriority: "maximum-fidelity",
         inputMode: "anchor-based",
       });
+      let finalExecution = execution;
+      let safeRetryApplied = false;
+
+      const initialOutputUrl = pickHttpUrl([
+        execution.rawOutputUri,
+        (execution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.downloadUri,
+        (execution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.uri,
+      ]);
+      const initialValidation = validatePlayableVideoOutput({
+        provider: execution.backendId,
+        outputUrl: initialOutputUrl,
+        mimeType: execution.mimeType,
+        bytesLength: execution.bytes.length,
+        durationSeconds: extractOutputDurationSeconds(execution.providerResponseMeta),
+      });
+
+      if (!initialValidation.valid && prefersVeo31(providerInfo.providerSelected)) {
+        safeRetryApplied = true;
+        const saferDuration = requestedDuration >= 8 ? 6 : requestedDuration;
+        finalExecution = await runVideoJob({
+          backendId: providerInfo.providerSelected,
+          prompt: simplifyPromptForSafeRetry(runRequest.director_prompt),
+          durationSeconds: saferDuration,
+          firstFrameUrl: primaryFrameUrl,
+          aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
+          requestedFidelityPriority: "balanced",
+          inputMode: "anchor-based",
+        });
+      }
+
+      const outputAssetUrl = pickHttpUrl([
+        finalExecution.rawOutputUri,
+        (finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.downloadUri,
+        (finalExecution.providerResponseMeta.generatedVideo as Record<string, unknown> | undefined)?.uri,
+      ]);
+      const outputValidation = validatePlayableVideoOutput({
+        provider: finalExecution.backendId,
+        outputUrl: outputAssetUrl,
+        mimeType: finalExecution.mimeType,
+        bytesLength: finalExecution.bytes.length,
+        durationSeconds: extractOutputDurationSeconds(finalExecution.providerResponseMeta),
+      });
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[video-v2] output validation diagnostics", {
+          provider: finalExecution.backendId,
+          outputUrlPresent: Boolean(outputAssetUrl),
+          contentType: finalExecution.mimeType,
+          fileSizeBytes: finalExecution.bytes.length,
+          durationSeconds: outputValidation.observed.durationSeconds,
+          valid: outputValidation.valid,
+          safeRetryApplied,
+        });
+      }
 
       const generationInsertPayload = {
         prompt: runRequest.director_prompt,
@@ -539,17 +633,17 @@ export async function POST(request: Request) {
         media_type: "Video",
         status: "completed",
         aspect_ratio: runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16",
-        asset_url: null,
-        url: null,
+        asset_url: outputAssetUrl,
+        url: outputAssetUrl,
         generation_kind: "video",
         source_generation_id: null,
         thumbnail_url: null,
         video_meta: {
-          provider: execution.provider,
-          backendId: execution.backendId,
-          backendModel: execution.backendModel,
-          providerModelId: execution.providerModelId,
-          providerResponse: execution.providerResponseMeta,
+          provider: finalExecution.provider,
+          backendId: finalExecution.backendId,
+          backendModel: finalExecution.backendModel,
+          providerModelId: finalExecution.providerModelId,
+          providerResponse: finalExecution.providerResponseMeta,
           note: "V2 slice 3A stores provider execution metadata; binary upload pipeline not yet linked here.",
         },
       } satisfies Record<string, unknown>;
@@ -577,10 +671,47 @@ export async function POST(request: Request) {
 
       const successMeta = {
         ...initialMeta,
-        provider_response: execution.providerResponseMeta,
-        diagnostics: execution.diagnostics,
+        provider_response: finalExecution.providerResponseMeta,
+        diagnostics: finalExecution.diagnostics,
+        output_validation: {
+          valid: outputValidation.valid,
+          errorMessage: outputValidation.errorMessage,
+          checks: outputValidation.checks,
+          contentType: outputValidation.observed.contentType,
+          fileSizeBytes: outputValidation.observed.fileSizeBytes,
+          durationSeconds: outputValidation.observed.durationSeconds,
+        },
+        safe_retry: {
+          attempted: safeRetryApplied,
+          provider_family: providerInfo.providerSelected,
+          strategy: "same_provider_veo_3_1",
+        },
         execution_notes: "Provider execution completed; output metadata persisted.",
       };
+
+      if (!outputValidation.valid) {
+        const failMeta = {
+          ...successMeta,
+          failure_message: outputValidation.errorMessage,
+        };
+        const { data: failedRun, error: failedUpdateError } = await supabase
+          .from("video_generation_runs")
+          .update({
+            status: "failed",
+            output_generation_id: outputGeneration.id,
+            run_meta: failMeta,
+          })
+          .eq("id", insertedRun.id)
+          .select("*")
+          .single();
+        if (failedUpdateError || !failedRun) {
+          return json(201, {
+            success: true,
+            data: { ...insertedRun, status: "failed", output_generation_id: outputGeneration.id, run_meta: failMeta, failure_message: outputValidation.errorMessage },
+          });
+        }
+        return json(201, { success: true, data: { ...failedRun, failure_message: outputValidation.errorMessage } });
+      }
 
       const { data: updatedRun, error: updateError } = await supabase
         .from("video_generation_runs")

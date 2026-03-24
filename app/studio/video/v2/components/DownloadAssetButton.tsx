@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const DOWNLOAD_ROUTE = "/api/studio/video/v2/assets/download";
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "gif", "avif"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v", "mkv"]);
 
 function inferFileName(url: string, fallbackPrefix: string) {
   try {
@@ -132,6 +133,17 @@ export default function DownloadAssetButton({
     const mimeLooksImage = Boolean(mimeType && mimeType.toLowerCase().startsWith("image/"));
     return extensionLooksImage || mimeLooksImage;
   }, [mimeType, url]);
+  const isVideoAsset = useMemo(() => {
+    const extension = getExtensionFromUrl(url);
+    const extensionLooksVideo = extension ? VIDEO_EXTENSIONS.has(extension) : false;
+    const mimeLooksVideo = Boolean(mimeType && mimeType.toLowerCase().startsWith("video/"));
+    return extensionLooksVideo || mimeLooksVideo;
+  }, [mimeType, url]);
+  const isMp4Like = useMemo(() => {
+    const extension = getExtensionFromUrl(url);
+    const mime = mimeType?.toLowerCase() ?? "";
+    return extension === "mp4" || extension === "m4v" || mime === "video/mp4";
+  }, [mimeType, url]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -184,6 +196,26 @@ export default function DownloadAssetButton({
     triggerBlobDownload(blob, filename);
   }
 
+  async function downloadAsMp4Alias() {
+    const originalName = inferFileName(url, filenamePrefix);
+    const baseName = getBaseFileName(originalName) || filenamePrefix;
+    const filename = isMp4Like ? `${baseName}.mp4` : `${baseName}-video.mp4`;
+    const params = new URLSearchParams({
+      asset_url: url,
+      filename,
+    });
+    const href = `${DOWNLOAD_ROUTE}?${params.toString()}`;
+    const response = await fetch(href, {
+      method: "GET",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      throw new Error(`Download failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    triggerBlobDownload(blob, filename);
+  }
+
   async function downloadConvertedImage(format: "jpg" | "png") {
     const originalName = inferFileName(url, filenamePrefix);
     const baseName = getBaseFileName(originalName) || filenamePrefix;
@@ -196,7 +228,7 @@ export default function DownloadAssetButton({
     triggerBlobDownload(blob, targetFilename);
   }
 
-  async function onSelectOption(option: "original" | "jpg" | "png") {
+  async function onSelectOption(option: "original" | "jpg" | "png" | "mp4" | "open") {
     try {
       setErrorMessage(null);
       setDownloading(true);
@@ -208,6 +240,14 @@ export default function DownloadAssetButton({
 
       if (option === "original") {
         await downloadOriginal();
+        return;
+      }
+      if (option === "mp4") {
+        await downloadAsMp4Alias();
+        return;
+      }
+      if (option === "open") {
+        window.open(url, "_blank", "noopener,noreferrer");
         return;
       }
 
@@ -257,7 +297,26 @@ export default function DownloadAssetButton({
           >
             Download original
           </button>
-          {isImageAsset ? (
+          {isVideoAsset ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => onSelectOption("mp4")}
+                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+              >
+                Download as MP4
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => onSelectOption("open")}
+                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+              >
+                Open in new tab
+              </button>
+            </>
+          ) : isImageAsset ? (
             <>
               <button
                 type="button"
