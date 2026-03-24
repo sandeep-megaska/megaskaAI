@@ -149,29 +149,28 @@ export async function GET(request: Request) {
     (input.generationId ? `generation-${input.generationId}` : "asset-download");
 
   const signedOrDirectUrl = await maybeSignSupabaseStorageUrl(resolvedAssetUrl, provisionalName);
-  const upstream = await fetch(signedOrDirectUrl, { redirect: "follow" });
+  const response = await fetch(signedOrDirectUrl, {
+    headers: {
+      "x-goog-api-key": process.env.GOOGLE_API_KEY ?? "",
+    },
+  });
 
-  if (!upstream.ok || !upstream.body) {
-    return asJson(502, {
-      success: false,
-      error: `Failed to retrieve asset (status ${upstream.status}).`,
-    });
+  console.log("[download-api]", {
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+  });
+
+  if (!response.ok) {
+    return new Response(JSON.stringify({ error: "Download failed", status: response.status }), { status: 502 });
   }
 
-  const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+  const contentType = response.headers.get("content-type") || "video/mp4";
   const finalFilename = ensureFileNameWithExtension(provisionalName, inferExtensionFromType(contentType));
 
-  const headers = new Headers();
-  headers.set("Content-Type", contentType);
-  headers.set("Content-Disposition", `attachment; filename="${finalFilename}"`);
-  headers.set("Cache-Control", "private, no-store");
-  headers.set("X-Content-Type-Options", "nosniff");
-
-  const contentLength = upstream.headers.get("content-length");
-  if (contentLength) headers.set("Content-Length", contentLength);
-
-  return new NextResponse(upstream.body, {
-    status: 200,
-    headers,
+  return new Response(response.body, {
+    headers: {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${finalFilename}"`,
+    },
   });
 }
