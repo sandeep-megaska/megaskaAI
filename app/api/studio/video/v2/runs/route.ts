@@ -23,6 +23,18 @@ function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
 
+function resolveStorageBucketName() {
+  const envBucket = process.env.SUPABASE_STORAGE_BUCKET;
+  if (typeof envBucket === "string" && !envBucket.trim()) {
+    throw new Error("SUPABASE_STORAGE_BUCKET is set but empty. Set it to an existing Supabase storage bucket (for example: brand-assets).");
+  }
+  const bucket = envBucket?.trim() || "brand-assets";
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[video-v2/runs] Using Supabase storage bucket:", bucket);
+  }
+  return bucket;
+}
+
 function parseRunMeta(runMeta: unknown): Record<string, unknown> {
   if (!runMeta || typeof runMeta !== "object" || Array.isArray(runMeta)) return {};
   return runMeta as Record<string, unknown>;
@@ -634,9 +646,10 @@ export async function POST(request: Request) {
         });
       }
 
+      const storageBucket = resolveStorageBucketName();
       const fileName = `videos/${insertedRun.id}.mp4`;
       const { error: uploadError } = await supabase.storage
-        .from("generations")
+        .from(storageBucket)
         .upload(fileName, finalExecution.bytes, {
           contentType: "video/mp4",
           upsert: true,
@@ -647,7 +660,7 @@ export async function POST(request: Request) {
       }
 
       const { data: publicUrlData } = supabase.storage
-        .from("generations")
+        .from(storageBucket)
         .getPublicUrl(fileName);
 
       const publicUrl = publicUrlData.publicUrl;
