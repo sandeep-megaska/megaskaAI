@@ -149,10 +149,10 @@ export async function GET(request: Request) {
     (input.generationId ? `generation-${input.generationId}` : "asset-download");
 
   const signedOrDirectUrl = await maybeSignSupabaseStorageUrl(resolvedAssetUrl, provisionalName);
+  const googleApiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
+  const fetchHeaders: HeadersInit = googleApiKey ? { "x-goog-api-key": googleApiKey } : {};
   const response = await fetch(signedOrDirectUrl, {
-    headers: {
-      "x-goog-api-key": process.env.GOOGLE_API_KEY ?? "",
-    },
+    headers: fetchHeaders,
   });
 
   console.log("[download-api]", {
