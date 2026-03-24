@@ -114,7 +114,7 @@ export default function ProductionContextPanel(props: {
             <p className="font-medium text-zinc-300">Required role guide</p>
             <p>Identity pack: required front, three_quarter_left, three_quarter_right.</p>
             <p>Garment pack: required front, back, detail.</p>
-            <p>Scene pack: required context, and at least two scene anchors are recommended.</p>
+            <p>Scene pack: required front + three_quarter_left + three_quarter_right + context, with at least 2 scene-compatible anchors.</p>
             <p>Hybrid pack: required front, fit_anchor, start_frame.</p>
           </div>
           <Link

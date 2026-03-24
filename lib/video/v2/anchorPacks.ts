@@ -18,6 +18,7 @@ const REQUIRED_ROLES_BY_PACK_TYPE: Record<AnchorPackType, AnchorPackItemRole[]> 
 
 const HIGH_STABILITY_THRESHOLD = 0.7;
 const READY_STABILITY_THRESHOLD = 0.65;
+const SCENE_COMPATIBLE_ROLES: AnchorPackItemRole[] = ["context", "start_frame", "end_frame"];
 
 export function computeItemStabilityScore(item: Partial<AnchorPackItem>) {
   const presentSignatures = [
@@ -62,14 +63,11 @@ export function computePackStability(input: { packType: AnchorPackType; items: A
 }
 
 export function isPackReady(pack: Pick<AnchorPack, "pack_type"> & { items: Array<Partial<AnchorPackItem>>; aggregateStability: number }) {
-  const requiredRoles = REQUIRED_ROLES_BY_PACK_TYPE[pack.pack_type];
-  const hasAllRequiredRoles = requiredRoles.every((role) => pack.items.some((item) => item.role === role));
-
-  if (pack.pack_type === "scene" && pack.items.length < 2) {
-    return false;
-  }
-
-  return hasAllRequiredRoles && pack.aggregateStability >= READY_STABILITY_THRESHOLD;
+  return computeReadinessDecision({
+    packType: pack.pack_type,
+    items: pack.items,
+    aggregateStabilityScore: pack.aggregateStability,
+  }).isReady;
 }
 
 function deriveRiskLevel(stability: number): AnchorRiskLevel {
@@ -79,7 +77,10 @@ function deriveRiskLevel(stability: number): AnchorRiskLevel {
 }
 
 function getMissingRoles(packType: AnchorPackType, roles: AnchorPackItemRole[]) {
-  const required = REQUIRED_ROLES_BY_PACK_TYPE[packType];
+  const required =
+    packType === "scene"
+      ? (["front", "three_quarter_left", "three_quarter_right", "context"] as AnchorPackItemRole[])
+      : REQUIRED_ROLES_BY_PACK_TYPE[packType];
   return required.filter((role) => !roles.includes(role));
 }
 
@@ -93,6 +94,54 @@ function getDuplicateRoles(items: Array<Partial<AnchorPackItem>>) {
   return Array.from(counts.entries())
     .filter(([, count]) => count > 1)
     .map(([role]) => role);
+}
+
+function computeReadinessDecision(input: {
+  packType: AnchorPackType;
+  items: Array<Partial<AnchorPackItem>>;
+  aggregateStabilityScore: number;
+}) {
+  const roles = input.items.map((item) => item.role).filter(Boolean) as AnchorPackItemRole[];
+  const uniqueRoles = Array.from(new Set(roles));
+  const missingRoles = getMissingRoles(input.packType, uniqueRoles);
+
+  const hasRequiredIdentityRoles = (["front", "three_quarter_left", "three_quarter_right"] as AnchorPackItemRole[]).every((role) =>
+    uniqueRoles.includes(role)
+  );
+  const contextCount = roles.filter((role) => role === "context").length;
+  const sceneAnchorCount = roles.filter((role) => SCENE_COMPATIBLE_ROLES.includes(role)).length;
+  const sceneReady =
+    input.packType === "scene" &&
+    hasRequiredIdentityRoles &&
+    contextCount >= 1 &&
+    sceneAnchorCount >= 2 &&
+    input.aggregateStabilityScore >= READY_STABILITY_THRESHOLD;
+
+  const genericReady = missingRoles.length === 0 && input.aggregateStabilityScore >= READY_STABILITY_THRESHOLD;
+  const isReady = input.packType === "scene" ? sceneReady : genericReady;
+
+  if (process.env.NODE_ENV !== "production" && input.packType === "scene") {
+    console.debug("[video-v2][anchor-pack][scene-readiness]", {
+      roleCounts: roles.reduce<Record<string, number>>((acc, role) => {
+        acc[role] = (acc[role] ?? 0) + 1;
+        return acc;
+      }, {}),
+      hasRequiredIdentityRoles,
+      contextCount,
+      sceneAnchorCount,
+      stability: Number(input.aggregateStabilityScore ?? 0),
+      ready: isReady,
+    });
+  }
+
+  return {
+    roles: uniqueRoles,
+    missingRoles,
+    hasRequiredIdentityRoles,
+    contextCount,
+    sceneAnchorCount,
+    isReady,
+  };
 }
 
 export function computeModeSuitability(input: {
@@ -154,14 +203,21 @@ export function buildPackReadinessReport(input: {
   aggregateStabilityScore: number;
   priorValidatedClipExists?: boolean;
 }): PackReadinessReport {
-  const roles = Array.from(new Set(input.items.map((item) => item.role).filter(Boolean) as AnchorPackItemRole[]));
-  const missingRoles = getMissingRoles(input.packType, roles);
+  const readinessDecision = computeReadinessDecision(input);
+  const roles = readinessDecision.roles;
+  const missingRoles = readinessDecision.missingRoles;
   const duplicateRoles = getDuplicateRoles(input.items);
 
   const warnings: string[] = [];
   if (duplicateRoles.length) warnings.push(`Duplicate roles detected: ${duplicateRoles.join(", ")}.`);
   if (input.items.some((item) => Number(item.stability_score ?? 0) < 0.45)) warnings.push("One or more anchors have low stability (<0.45).");
-  if (input.packType === "scene" && input.items.length < 2) warnings.push("Scene packs need at least 2 context-compatible anchors.");
+  if (input.packType === "scene" && readinessDecision.contextCount < 1) warnings.push("Scene packs require at least 1 context anchor.");
+  if (input.packType === "scene" && readinessDecision.sceneAnchorCount < 2) {
+    warnings.push("Scene packs require at least 2 scene-compatible anchors (context/start_frame/end_frame).");
+  }
+  if (input.packType === "scene" && !readinessDecision.hasRequiredIdentityRoles) {
+    warnings.push("Scene packs require identity roles: front, three_quarter_left, three_quarter_right.");
+  }
 
   const modeSuitability = computeModeSuitability({
     packType: input.packType,
@@ -176,7 +232,7 @@ export function buildPackReadinessReport(input: {
     modeSuitability.find((entry) => entry.level === "partial")?.mode ??
     ("ingredients_to_video" as V2Mode);
 
-  const isReady = missingRoles.length === 0 && input.aggregateStabilityScore >= READY_STABILITY_THRESHOLD && warnings.length === 0;
+  const isReady = readinessDecision.isReady;
 
   return {
     packType: input.packType,
