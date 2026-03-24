@@ -6,7 +6,7 @@ import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
 import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
-import { validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
+import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -615,14 +615,21 @@ export async function POST(request: Request) {
         bytesLength: finalExecution.bytes.length,
         durationSeconds: extractOutputDurationSeconds(finalExecution.providerResponseMeta),
       });
+      const outputClassification = classifyOutputAsset({
+        expectedOutputKind: "video",
+        mimeType: finalExecution.mimeType,
+        url: outputAssetUrl,
+      });
       if (process.env.NODE_ENV !== "production") {
+        console.log("[video-v2] output classification diagnostics", outputClassification);
         console.log("[video-v2] output validation diagnostics", {
           provider: finalExecution.backendId,
           outputUrlPresent: Boolean(outputAssetUrl),
+          urlReachable: outputValidation.checks.retrievable,
           contentType: finalExecution.mimeType,
           fileSizeBytes: finalExecution.bytes.length,
           durationSeconds: outputValidation.observed.durationSeconds,
-          valid: outputValidation.valid,
+          playable_video: outputValidation.valid,
           safeRetryApplied,
         });
       }
@@ -674,6 +681,7 @@ export async function POST(request: Request) {
         provider_response: finalExecution.providerResponseMeta,
         diagnostics: finalExecution.diagnostics,
         output_validation: {
+          classification: outputClassification,
           valid: outputValidation.valid,
           errorMessage: outputValidation.errorMessage,
           checks: outputValidation.checks,

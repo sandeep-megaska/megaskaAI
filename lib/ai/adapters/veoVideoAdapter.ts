@@ -61,6 +61,8 @@ type GeneratedVideoLike = {
   mimeType?: string;
   downloadUri?: string;
   name?: string;
+  type?: string;
+  role?: string;
 };
 
 type ResolveVideoBytesDiagnostics = {
@@ -75,6 +77,78 @@ type ResolveVideoBytesDiagnostics = {
   fetchStatusText: string | null;
   bytesLength: number;
 };
+
+type VeoAssetCandidate = {
+  index: number;
+  type: "video" | "image" | "unknown";
+  role: string | null;
+  url: string | null;
+  mimeType: string | null;
+  video: GeneratedVideoLike | null;
+};
+
+function normalizeAssetType(value: unknown): "video" | "image" | "unknown" {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toLowerCase();
+  if (normalized.includes("video")) return "video";
+  if (normalized.includes("image")) return "image";
+  return "unknown";
+}
+
+function collectVeoAssetCandidates(response: Record<string, unknown> | undefined): VeoAssetCandidate[] {
+  const candidates: VeoAssetCandidate[] = [];
+  if (!response || typeof response !== "object") {
+    return candidates;
+  }
+
+  const generatedVideos = Array.isArray(response.generatedVideos) ? response.generatedVideos : [];
+  generatedVideos.forEach((entry) => {
+    const video = (entry as { video?: GeneratedVideoLike })?.video;
+    if (!video) return;
+    candidates.push({
+      index: candidates.length,
+      type: "video",
+      role: "main",
+      url: video.downloadUri?.trim() || video.uri?.trim() || null,
+      mimeType: video.mimeType ?? null,
+      video,
+    });
+  });
+
+  const rawAssets = Array.isArray((response as { assets?: unknown[] }).assets)
+    ? ((response as { assets?: unknown[] }).assets as unknown[])
+    : [];
+
+  rawAssets.forEach((asset) => {
+    const typed = asset as {
+      type?: unknown;
+      role?: unknown;
+      mimeType?: unknown;
+      url?: unknown;
+      uri?: unknown;
+      downloadUri?: unknown;
+      video?: GeneratedVideoLike;
+    };
+    const assetType = normalizeAssetType(typed.type);
+    const mimeType = typeof typed.mimeType === "string" ? typed.mimeType : null;
+    const role = typeof typed.role === "string" ? typed.role : null;
+    const url =
+      (typeof typed.url === "string" && typed.url.trim())
+      || (typeof typed.downloadUri === "string" && typed.downloadUri.trim())
+      || (typeof typed.uri === "string" && typed.uri.trim())
+      || null;
+    candidates.push({
+      index: candidates.length,
+      type: assetType,
+      role,
+      url,
+      mimeType,
+      video: assetType === "video" ? (typed.video ?? (typed as GeneratedVideoLike)) : null,
+    });
+  });
+
+  return candidates;
+}
 
 type FrameSupport = {
   supportsSourceImage: boolean;
@@ -358,7 +432,34 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     });
   }
 
+  const assetCandidates = collectVeoAssetCandidates(operation.response as Record<string, unknown> | undefined);
+  console.log("VEO ASSET CANDIDATES:", assetCandidates.map((asset) => ({
+    index: asset.index,
+    type: asset.type,
+    role: asset.role,
+    hasUrl: Boolean(asset.url),
+    mime: asset.mimeType,
+  })));
+
   const generatedVideo = operation.response?.generatedVideos?.[0]?.video as GeneratedVideoLike | undefined;
+  const selectedAssetMeta = generatedVideo
+    ? {
+        selectedIndex:
+          assetCandidates.find((candidate) => candidate.video === generatedVideo)?.index
+          ?? assetCandidates.find((candidate) => candidate.url === (generatedVideo.downloadUri ?? generatedVideo.uri ?? null))?.index
+          ?? 0,
+        selectedType: "video",
+        selectedUrl: generatedVideo.downloadUri ?? generatedVideo.uri ?? null,
+        selectionReason: "Selected operation.response.generatedVideos[0].video (canonical primary provider path).",
+      }
+    : {
+        selectedIndex: null,
+        selectedType: "unknown",
+        selectedUrl: null,
+        selectionReason: "No operation.response.generatedVideos[0].video was present.",
+      };
+  console.log("[veo-video-adapter] selected asset", selectedAssetMeta);
+
   if (!generatedVideo) {
     console.error("[veo-video-adapter] completed operation missing generated video", {
       pollCount,

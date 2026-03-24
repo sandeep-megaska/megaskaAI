@@ -8,6 +8,15 @@ type ValidationInput = {
   durationSeconds?: number | null;
 };
 
+export type OutputAssetClassification = {
+  expected_output_kind: "video" | "image";
+  actual_output_kind: "video" | "image" | "unknown";
+  mime_type: string | null;
+  mismatch: boolean;
+  mismatch_reason: string | null;
+  confidence: number;
+};
+
 export type VideoOutputValidation = {
   valid: boolean;
   errorMessage: string | null;
@@ -26,6 +35,42 @@ export type VideoOutputValidation = {
     minBytesRequired: number;
   };
 };
+
+export function classifyOutputAsset(input: {
+  expectedOutputKind: "video" | "image";
+  mimeType?: string | null;
+  url?: string | null;
+}): OutputAssetClassification {
+  const normalizedMime = input.mimeType?.trim().toLowerCase() ?? null;
+  const normalizedUrl = input.url?.trim().toLowerCase() ?? null;
+
+  let actual: "video" | "image" | "unknown" = "unknown";
+  let confidence = 0.35;
+
+  if (normalizedMime?.startsWith("video/")) {
+    actual = "video";
+    confidence = 0.99;
+  } else if (normalizedMime?.startsWith("image/")) {
+    actual = "image";
+    confidence = 0.99;
+  } else if (normalizedUrl?.match(/\.(mp4|mov|webm)(\?|#|$)/)) {
+    actual = "video";
+    confidence = 0.7;
+  } else if (normalizedUrl?.match(/\.(jpg|jpeg|png|webp)(\?|#|$)/)) {
+    actual = "image";
+    confidence = 0.7;
+  }
+
+  const mismatch = actual !== input.expectedOutputKind;
+  return {
+    expected_output_kind: input.expectedOutputKind,
+    actual_output_kind: actual,
+    mime_type: normalizedMime,
+    mismatch,
+    mismatch_reason: mismatch ? `Expected ${input.expectedOutputKind} but observed ${actual}.` : null,
+    confidence,
+  };
+}
 
 export function validatePlayableVideoOutput(input: ValidationInput): VideoOutputValidation {
   const normalizedMime = input.mimeType?.trim().toLowerCase() ?? null;
