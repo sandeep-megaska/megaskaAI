@@ -9,11 +9,27 @@ function json(status: number, body: Record<string, unknown>) {
 
 async function recomputePack(supabase: ReturnType<typeof getSupabaseAdminClient>, packId: string) {
   const { data: pack } = await supabase.from("anchor_packs").select("id,pack_type").eq("id", packId).maybeSingle();
-  const { data: items } = await supabase.from("anchor_pack_items").select("*").eq("anchor_pack_id", packId);
+  const { data: items } = await supabase
+    .from("anchor_pack_items")
+    .select("*,generation:generations(id,asset_url,url)")
+    .eq("anchor_pack_id", packId);
   if (!pack) return;
 
   const aggregateStability = computePackStability({ packType: pack.pack_type, items: items ?? [] });
   const ready = isPackReady({ pack_type: pack.pack_type, items: items ?? [], aggregateStability });
+  if (process.env.NODE_ENV !== "production") {
+    const assetKeys = new Set(
+      (items ?? [])
+        .map((item) => item.generation_id ?? item.generation?.asset_url ?? item.generation?.url ?? null)
+        .filter((value): value is string => Boolean(value)),
+    );
+    console.debug("[video-v2][anchor-pack] recompute stability", {
+      packId,
+      anchors: (items ?? []).length,
+      uniqueAssetIds: assetKeys.size,
+      stability: aggregateStability,
+    });
+  }
 
   await supabase
     .from("anchor_packs")
