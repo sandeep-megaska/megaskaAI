@@ -1,6 +1,108 @@
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { resolveReuseCandidates } from "@/lib/video/v2/packReuse";
 import { assignRolesFromCandidates } from "@/lib/video/v2/roleAssigner";
+import { randomUUID } from "node:crypto";
+
+const CRITICAL_SYNTHESIS_ROLES = new Set(["front", "fit_anchor"]);
+
+function fileExtensionForMime(mimeType: string) {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/webp") return "webp";
+  return "jpg";
+}
+
+function guessMimeTypeFromUrl(url: string) {
+  const lower = url.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+async function persistSynthesizedGeneration(input: {
+  sourceGenerationId: string;
+  sourceProfileId: string;
+  clipIntentId: string;
+  workingPackId: string;
+  role: string;
+  syntheticPrompt: string;
+}) {
+  const supabase = getSupabaseAdminClient();
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET ?? "brand-assets";
+
+  const { data: sourceGeneration, error: sourceError } = await supabase
+    .from("generations")
+    .select("id,prompt,asset_url,url")
+    .eq("id", input.sourceGenerationId)
+    .maybeSingle<{ id: string; prompt: string | null; asset_url: string | null; url: string | null }>();
+
+  if (sourceError) throw new Error(sourceError.message);
+  if (!sourceGeneration) {
+    throw new Error(`Source generation ${input.sourceGenerationId} was not found.`);
+  }
+
+  const sourceUrl = sourceGeneration.asset_url ?? sourceGeneration.url;
+  if (!sourceUrl) throw new Error(`Source generation ${sourceGeneration.id} has no asset URL.`);
+
+  const response = await fetch(sourceUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch source generation image (${response.status}).`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const mimeType = response.headers.get("content-type") || guessMimeTypeFromUrl(sourceUrl);
+  const ext = fileExtensionForMime(mimeType);
+  const filePath = `image/v2/working-pack-synthesized/${input.clipIntentId}/${input.role}-${Date.now()}-${randomUUID()}.${ext}`;
+
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, bytes, {
+    contentType: mimeType,
+    upsert: false,
+  });
+  if (uploadError) throw new Error(`Supabase upload failed: ${uploadError.message}`);
+
+  const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(filePath);
+  if (!publicData?.publicUrl) throw new Error("Unable to resolve synthesized generation public URL.");
+
+  const videoMeta = {
+    source_profile_id: input.sourceProfileId,
+    clip_intent_id: input.clipIntentId,
+    working_pack_id: input.workingPackId,
+    synthesized_for_role: input.role,
+    generation_origin: "slice_b_synthesized_reference",
+  };
+
+  const { data: insertedGeneration, error: insertError } = await supabase
+    .from("generations")
+    .insert({
+      prompt: input.syntheticPrompt || sourceGeneration.prompt || `Synthesized ${input.role} reference`,
+      type: "Image",
+      media_type: "Image",
+      status: "completed",
+      generation_kind: "image",
+      source_generation_id: sourceGeneration.id,
+      asset_url: publicData.publicUrl,
+      url: publicData.publicUrl,
+      overlay_json: {
+        generation_origin: "slice_b_synthesized_reference",
+        source_generation_id: sourceGeneration.id,
+        synthesized_for_role: input.role,
+      },
+      video_meta: videoMeta,
+    })
+    .select("id,asset_url,url,prompt")
+    .single<{ id: string; asset_url: string | null; url: string | null; prompt: string | null }>();
+
+  if (insertError || !insertedGeneration) {
+    throw new Error(insertError?.message ?? "Failed to insert synthesized generation row.");
+  }
+
+  return {
+    generationId: insertedGeneration.id,
+    imageUrl: insertedGeneration.asset_url ?? insertedGeneration.url ?? publicData.publicUrl,
+    assetUrl: insertedGeneration.asset_url ?? insertedGeneration.url ?? publicData.publicUrl,
+    prompt: insertedGeneration.prompt ?? input.syntheticPrompt,
+    origin: videoMeta,
+  };
+}
 
 export async function autoBuildWorkingPack(input: { clipIntentId: string }) {
   const supabase = getSupabaseAdminClient();
@@ -53,7 +155,44 @@ export async function autoBuildWorkingPack(input: { clipIntentId: string }) {
 
   if (packError) throw new Error(packError.message);
 
-  const itemRows = assignment.assigned.map((item, index) => ({
+  const assignedWithPersistedSynth = await Promise.all(
+    assignment.assigned.map(async (item) => {
+      if (item.source_kind !== "synthesized") return item;
+
+      const sourceGenerationId = profile.primary_generation_id;
+      if (!sourceGenerationId) {
+        warnings.push(`Unable to persist synthesized ${item.role}: source profile has no primary generation.`);
+        return item;
+      }
+
+      try {
+        const persisted = await persistSynthesizedGeneration({
+          sourceGenerationId,
+          sourceProfileId: intent.source_profile_id,
+          clipIntentId: intent.id,
+          workingPackId: createdPack.id,
+          role: item.role,
+          syntheticPrompt: item.synthetic_prompt ?? `Synthesized ${item.role} reference`,
+        });
+
+        return {
+          ...item,
+          generation_id: persisted.generationId,
+          image_url: persisted.imageUrl,
+        };
+      } catch (error) {
+        warnings.push(
+          `Synthesized reference persistence failed for ${item.role}: ${error instanceof Error ? error.message : "unknown error"}.`,
+        );
+        if (CRITICAL_SYNTHESIS_ROLES.has(item.role)) {
+          throw error;
+        }
+        return item;
+      }
+    }),
+  );
+
+  const itemRows = assignedWithPersistedSynth.map((item, index) => ({
     working_pack_id: createdPack.id,
     role: item.role,
     generation_id: item.generation_id,
@@ -61,7 +200,11 @@ export async function autoBuildWorkingPack(input: { clipIntentId: string }) {
     synthetic_prompt: item.synthetic_prompt ?? null,
     confidence_score: item.confidence_score,
     sort_order: index,
-    item_meta: { source: item.source_kind },
+    item_meta: {
+      source: item.source_kind,
+      image_url: item.image_url ?? null,
+      generation_origin: item.source_kind === "synthesized" ? "slice_b_synthesized_reference" : "reuse",
+    },
   }));
 
   const { data: createdItems, error: itemError } = await supabase
@@ -89,10 +232,23 @@ export async function autoBuildWorkingPack(input: { clipIntentId: string }) {
     if (lineageError) throw new Error(lineageError.message);
   }
 
+  let packForReturn = createdPack;
+  if (warnings.length !== (createdPack.warning_messages ?? []).length) {
+    const { error: warningUpdateError } = await supabase
+      .from("working_packs")
+      .update({ warning_messages: warnings })
+      .eq("id", createdPack.id);
+    if (warningUpdateError) throw new Error(warningUpdateError.message);
+    packForReturn = {
+      ...createdPack,
+      warning_messages: warnings,
+    };
+  }
+
   await supabase.from("clip_intents").update({ status: "built" }).eq("id", intent.id);
 
   return {
-    pack: createdPack,
+    pack: packForReturn,
     items: createdItems ?? [],
     readiness: {
       score: readinessScore,
