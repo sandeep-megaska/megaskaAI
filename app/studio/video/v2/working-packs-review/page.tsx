@@ -44,6 +44,12 @@ type ExpansionResult = {
   reasons: string[];
 };
 
+type ReuseResult = {
+  roles_reused: string[];
+  roles_unresolved: string[];
+  reasons: string[];
+};
+
 export default function WorkingPackReviewPage() {
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
@@ -55,8 +61,10 @@ export default function WorkingPackReviewPage() {
   const [isCompiling, setIsCompiling] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExpanding, setIsExpanding] = useState(false);
+  const [isReusing, setIsReusing] = useState(false);
   const [fidelityState, setFidelityState] = useState<FidelityPlanResponse | null>(null);
   const [expansionState, setExpansionState] = useState<ExpansionResult | null>(null);
+  const [reuseState, setReuseState] = useState<ReuseResult | null>(null);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -173,6 +181,26 @@ export default function WorkingPackReviewPage() {
     }
   }
 
+  async function reuseAnchors() {
+    if (!selectedIntentId) return setError("Select a clip intent first.");
+    setError(null);
+    setNote(null);
+    setIsReusing(true);
+
+    try {
+      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/reuse-anchors`, { method: "POST" });
+      const payload = (await res.json()) as { data?: ReuseResult; error?: string };
+      if (!res.ok || !payload.data) throw new Error(payload.error ?? "Anchor reuse failed.");
+      setReuseState(payload.data);
+      setNote(`Reuse search complete. Reused: ${payload.data.roles_reused.join(", ") || "none"} · unresolved: ${payload.data.roles_unresolved.join(", ") || "none"}.`);
+      await Promise.all([loadPacks(), refreshFidelityPlan()]);
+    } catch (reuseError) {
+      setError(reuseError instanceof Error ? reuseError.message : "Anchor reuse failed.");
+    } finally {
+      setIsReusing(false);
+    }
+  }
+
   async function generateClip() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
     setError(null);
@@ -215,6 +243,7 @@ export default function WorkingPackReviewPage() {
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={autoBuild} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto-build Working Pack</button>
             <button type="button" onClick={refreshFidelityPlan} className="rounded bg-zinc-300 px-3 py-2 text-sm font-medium text-zinc-950">Refresh Fidelity Plan</button>
+            <button type="button" onClick={reuseAnchors} disabled={isReusing} className="rounded bg-sky-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isReusing ? "Searching Truth..." : "Search Existing Truth"}</button>
             <button type="button" onClick={expandAnchors} disabled={isExpanding} className="rounded bg-amber-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isExpanding ? "Expanding..." : "Generate Missing Anchors"}</button>
             <button type="button" onClick={compileIntent} disabled={isCompiling || compileBlockedReasons.length > 0} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isCompiling ? "Compiling..." : "Compile"}</button>
             <button type="button" onClick={generateClip} disabled={isGenerating || compileBlockedReasons.length > 0} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isGenerating ? "Generating..." : "Generate Clip"}</button>
@@ -242,6 +271,13 @@ export default function WorkingPackReviewPage() {
               <p>Roles created: {expansionState.roles_created.join(", ") || "none"}</p>
               <p>Roles failed: {expansionState.roles_failed.join(", ") || "none"}</p>
               {expansionState.reasons.length ? <p className="text-cyan-200">Reason: {expansionState.reasons.join(" | ")}</p> : null}
+            </div>
+          ) : null}
+          {reuseState ? (
+            <div className="rounded border border-sky-700/50 bg-sky-950/20 p-3 text-xs text-sky-100">
+              <p>Roles reused: {reuseState.roles_reused.join(", ") || "none"}</p>
+              <p>Roles unresolved: {reuseState.roles_unresolved.join(", ") || "none"}</p>
+              {reuseState.reasons.length ? <p className="text-sky-200">Reason: {reuseState.reasons.join(" | ")}</p> : null}
             </div>
           ) : null}
         </section>
