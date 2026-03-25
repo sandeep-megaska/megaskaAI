@@ -10,7 +10,7 @@ export function planCreativeFidelity(input: PlanCreativeFidelityInput): Creative
   const signals = parseIntentSignals(input.motionPrompt);
   const coverage = inferRoleCoverage(input.items);
   const risk = buildRiskSummary(signals);
-  const requirements = resolveRoleRequirements(risk.fidelityTier, coverage);
+  const requirements = resolveRoleRequirements(risk.fidelityTier, coverage, signals);
 
   return decideCreativeFidelity({
     clipIntentId: input.clipIntentId,
