@@ -1,7 +1,8 @@
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildClipIntentPrompt } from "@/lib/video/v2/buildClipIntentPrompt";
-import { computeFidelityPlan } from "@/lib/video/v2/fidelityPlanner";
+import { persistCreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/persistence";
+import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
@@ -68,7 +69,6 @@ function deriveAnchorRiskLevel(stability: number, motionComplexity: MotionComple
   return "low";
 }
 
-
 function toAnchorRole(role: string) {
   return (ANCHOR_ITEM_ROLES as readonly string[]).includes(role) ? role : null;
 }
@@ -78,6 +78,14 @@ function isPackReadyOrApproved(pack: WorkingPackRow) {
   const reviewStatus = String(meta.review_status ?? "").toLowerCase();
   const approved = Boolean(meta.approved);
   return pack.status === "ready" || reviewStatus === "approved" || approved;
+}
+
+function resolveCompileMode(baseMode: V2Mode, recommendedMode: V2Mode, warnings: string[]) {
+  if (recommendedMode === "ingredients_to_video" && baseMode === "frames_to_video") {
+    warnings.push("Planner guardrail downgraded mode to ingredients_to_video to preserve anchor truth.");
+    return "ingredients_to_video" as V2Mode;
+  }
+  return recommendedMode === "frames_to_video" ? "frames_to_video" : baseMode;
 }
 
 export async function compileClipIntent(input: { clipIntentId: string; force?: boolean }): Promise<CompileResult> {
@@ -112,10 +120,10 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   if (itemsError) throw new Error(itemsError.message);
   const items = (rawItems ?? []) as WorkingPackItemRow[];
 
-  const fidelityPlan = computeFidelityPlan({
+  const fidelityPlan = planCreativeFidelity({
     clipIntentId: intent.id,
-    motionPrompt: intent.motion_prompt,
     workingPackId: pack.id,
+    motionPrompt: intent.motion_prompt,
     items: items.map((item) => ({
       role: item.role,
       generation_id: item.generation_id,
@@ -123,25 +131,13 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     })),
   });
 
-  const { error: fidelityPlanError } = await supabase.from("clip_fidelity_plans").insert({
-    clip_intent_id: intent.id,
-    fidelity_tier: fidelityPlan.fidelity_tier,
-    motion_complexity: fidelityPlan.motion_complexity,
-    view_dependency: fidelityPlan.view_dependency,
-    garment_risk: fidelityPlan.garment_risk,
-    scene_risk: fidelityPlan.scene_risk,
-    required_roles: fidelityPlan.required_roles,
-    missing_roles: fidelityPlan.missing_roles,
-    allowed_synthesis_roles: fidelityPlan.allowed_synthesis_roles,
-    decision: fidelityPlan.decision,
-    decision_reason: fidelityPlan.reason,
-    recommended_mode: fidelityPlan.recommended_mode,
-  });
+  await persistCreativeFidelityPlan(supabase, fidelityPlan);
 
-  if (fidelityPlanError) throw new Error(fidelityPlanError.message);
-  if (fidelityPlan.decision === "block") throw new Error(fidelityPlan.reason);
+  if (fidelityPlan.decision === "block") {
+    throw new Error(fidelityPlan.reasons[0] ?? "Creative fidelity planner blocked compile.");
+  }
 
-  const warnings = [...(pack.warning_messages ?? [])];
+  const warnings = [...(pack.warning_messages ?? []), ...fidelityPlan.warnings];
   if (!isPackReadyOrApproved(pack)) {
     throw new Error("Working pack must be ready/approved before compile.");
   }
@@ -175,7 +171,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     priorValidatedClipExists: false,
   });
 
-  const modeSelected = readiness.recommendedMode as V2Mode;
+  const modeSelected = resolveCompileMode(readiness.recommendedMode as V2Mode, fidelityPlan.recommendedMode, warnings);
   const prompt = buildClipIntentPrompt({
     clip_goal: intent.clip_goal,
     scene_policy: intent.scene_policy,
@@ -201,6 +197,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
         working_pack_id: pack.id,
         source_profile_id: intent.source_profile_id,
         generation_origin: "slice_c_compiled",
+        creative_fidelity_decision: fidelityPlan.decision,
+        creative_fidelity_reasons: fidelityPlan.reasons,
       },
     })
     .select("id")
@@ -228,6 +226,12 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     compiled_anchor_pack_id: anchorPack.id,
     generation_origin: "slice_c_compiled",
     working_pack_readiness_score: Number(pack.readiness_score ?? 0),
+    creative_fidelity_plan: {
+      decision: fidelityPlan.decision,
+      reasons: fidelityPlan.reasons,
+      warnings: fidelityPlan.warnings,
+      recommended_mode: fidelityPlan.recommendedMode,
+    },
   };
 
   const { data: generationPlan, error: generationPlanError } = await supabase
@@ -235,7 +239,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     .insert({
       motion_request: intent.motion_prompt,
       mode_selected: modeSelected,
-      why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)}.`,
+      why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)} and creative fidelity decision ${fidelityPlan.decision}.`,
       recommended_pack_ids: [anchorPack.id],
       required_reference_roles: REQUIRED_ROLES,
       duration_seconds: Number(intent.duration_seconds ?? 8),
