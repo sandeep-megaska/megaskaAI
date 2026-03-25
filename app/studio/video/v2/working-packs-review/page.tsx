@@ -50,6 +50,27 @@ type ReuseResult = {
   reasons: string[];
 };
 
+type OrchestrationStep = {
+  id: string;
+  type: "planner_review" | "search_existing_truth" | "expand_missing_anchors" | "recheck_fidelity" | "ready_to_compile" | "compile" | "generate";
+  label: string;
+  status: "pending" | "ready" | "running" | "completed" | "blocked" | "failed" | "skipped";
+  reason?: string | null;
+  recommended: boolean;
+  autoRunnable: boolean;
+  details?: Record<string, unknown> | null;
+};
+
+type OrchestrationPlanResponse = {
+  status: "ready" | "needs_reuse" | "needs_expansion" | "needs_partial_expansion" | "blocked" | "in_progress" | "failed";
+  summary: string;
+  reasons: string[];
+  recommendations: string[];
+  steps: OrchestrationStep[];
+  compileReady: boolean;
+  generateReady: boolean;
+};
+
 export default function WorkingPackReviewPage() {
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
@@ -65,6 +86,7 @@ export default function WorkingPackReviewPage() {
   const [fidelityState, setFidelityState] = useState<FidelityPlanResponse | null>(null);
   const [expansionState, setExpansionState] = useState<ExpansionResult | null>(null);
   const [reuseState, setReuseState] = useState<ReuseResult | null>(null);
+  const [orchestrationState, setOrchestrationState] = useState<OrchestrationPlanResponse | null>(null);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -88,6 +110,19 @@ export default function WorkingPackReviewPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selectedIntentId) return;
+    setReuseState(null);
+    setExpansionState(null);
+    refreshFidelityPlan().catch((planError) => {
+      setError(planError instanceof Error ? planError.message : "Failed to refresh fidelity plan.");
+    });
+    refreshOrchestrationPlan().catch((orchestrationError) => {
+      setError(orchestrationError instanceof Error ? orchestrationError.message : "Failed to refresh orchestration plan.");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIntentId]);
 
   const activePack = useMemo(
     () => packs.find((pack) => pack.clip_intent_id === selectedIntentId) ?? null,
@@ -126,7 +161,7 @@ export default function WorkingPackReviewPage() {
     const score = payload.data?.readiness?.score ?? 0;
     const warnings = payload.data?.readiness?.warnings ?? [];
     setNote(`Working pack built. Readiness score: ${score.toFixed(2)}${warnings.length ? ` · warnings: ${warnings.join(" | ")}` : ""}`);
-    await loadPacks();
+    await Promise.all([loadPacks(), refreshOrchestrationPlan()]);
   }
 
   async function compileIntent() {
@@ -141,7 +176,7 @@ export default function WorkingPackReviewPage() {
       if (!res.ok || !payload.data) throw new Error(payload.error ?? "Compile failed.");
       setCompiledState(payload.data);
       setNote(`Compiled anchor pack ${payload.data.compiled_anchor_pack_id.slice(0, 8)} is ready.`);
-      await Promise.all([loadIntents(), loadPacks()]);
+      await Promise.all([loadIntents(), loadPacks(), refreshOrchestrationPlan()]);
     } catch (compileError) {
       setError(compileError instanceof Error ? compileError.message : "Compile failed.");
     } finally {
@@ -155,6 +190,36 @@ export default function WorkingPackReviewPage() {
     const payload = (await res.json()) as { data?: FidelityPlanResponse; error?: string };
     if (!res.ok || !payload.data) throw new Error(payload.error ?? "Failed to refresh fidelity plan.");
     setFidelityState(payload.data);
+  }
+
+  async function refreshOrchestrationPlan() {
+    if (!selectedIntentId) return;
+    const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/orchestrate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reuse_snapshot: reuseState
+          ? {
+            attempted: true,
+            rolesReused: reuseState.roles_reused,
+            rolesUnresolved: reuseState.roles_unresolved,
+            reasons: reuseState.reasons,
+          }
+          : { attempted: false, rolesReused: [], rolesUnresolved: [], reasons: [] },
+        expansion_snapshot: expansionState
+          ? {
+            attempted: true,
+            decision: expansionState.decision,
+            rolesCreated: expansionState.roles_created,
+            rolesFailed: expansionState.roles_failed,
+            reasons: expansionState.reasons,
+          }
+          : { attempted: false, decision: "not_needed", rolesCreated: [], rolesFailed: [], reasons: [] },
+      }),
+    });
+    const payload = (await res.json()) as { data?: OrchestrationPlanResponse; error?: string };
+    if (!res.ok || !payload.data) throw new Error(payload.error ?? "Failed to build orchestration plan.");
+    setOrchestrationState(payload.data);
   }
 
   async function expandAnchors() {
@@ -173,7 +238,7 @@ export default function WorkingPackReviewPage() {
           ? "No expansion needed."
           : `Anchor expansion ${payload.data.decision}. Created: ${payload.data.roles_created.join(", ") || "none"}.`,
       );
-      await Promise.all([loadPacks(), refreshFidelityPlan()]);
+      await Promise.all([loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
     } catch (expandError) {
       setError(expandError instanceof Error ? expandError.message : "Anchor expansion failed.");
     } finally {
@@ -193,7 +258,7 @@ export default function WorkingPackReviewPage() {
       if (!res.ok || !payload.data) throw new Error(payload.error ?? "Anchor reuse failed.");
       setReuseState(payload.data);
       setNote(`Reuse search complete. Reused: ${payload.data.roles_reused.join(", ") || "none"} · unresolved: ${payload.data.roles_unresolved.join(", ") || "none"}.`);
-      await Promise.all([loadPacks(), refreshFidelityPlan()]);
+      await Promise.all([loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
     } catch (reuseError) {
       setError(reuseError instanceof Error ? reuseError.message : "Anchor reuse failed.");
     } finally {
@@ -213,7 +278,7 @@ export default function WorkingPackReviewPage() {
       if (!res.ok || !payload.data?.run_id) throw new Error(payload.error ?? "Generate failed.");
       setLastRunId(payload.data.run_id);
       setNote(`Generation started via V2 runs pipeline. Run ${payload.data.run_id.slice(0, 8)} · status ${payload.data.status}.`);
-      await loadIntents();
+      await Promise.all([loadIntents(), refreshOrchestrationPlan()]);
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "Generate failed.");
     } finally {
@@ -243,10 +308,11 @@ export default function WorkingPackReviewPage() {
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={autoBuild} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto-build Working Pack</button>
             <button type="button" onClick={refreshFidelityPlan} className="rounded bg-zinc-300 px-3 py-2 text-sm font-medium text-zinc-950">Refresh Fidelity Plan</button>
+            <button type="button" onClick={refreshOrchestrationPlan} className="rounded bg-lime-300 px-3 py-2 text-sm font-medium text-zinc-950">Recheck Readiness</button>
             <button type="button" onClick={reuseAnchors} disabled={isReusing} className="rounded bg-sky-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isReusing ? "Searching Truth..." : "Search Existing Truth"}</button>
             <button type="button" onClick={expandAnchors} disabled={isExpanding} className="rounded bg-amber-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isExpanding ? "Expanding..." : "Generate Missing Anchors"}</button>
-            <button type="button" onClick={compileIntent} disabled={isCompiling || compileBlockedReasons.length > 0} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isCompiling ? "Compiling..." : "Compile"}</button>
-            <button type="button" onClick={generateClip} disabled={isGenerating || compileBlockedReasons.length > 0} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isGenerating ? "Generating..." : "Generate Clip"}</button>
+            <button type="button" onClick={compileIntent} disabled={isCompiling || compileBlockedReasons.length > 0 || orchestrationState?.compileReady === false} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isCompiling ? "Compiling..." : "Compile"}</button>
+            <button type="button" onClick={generateClip} disabled={isGenerating || compileBlockedReasons.length > 0 || orchestrationState?.generateReady === false} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isGenerating ? "Generating..." : "Generate Clip"}</button>
           </div>
           {compileBlockedReasons.length ? (
             <div className="rounded border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-200">
@@ -278,6 +344,24 @@ export default function WorkingPackReviewPage() {
               <p>Roles reused: {reuseState.roles_reused.join(", ") || "none"}</p>
               <p>Roles unresolved: {reuseState.roles_unresolved.join(", ") || "none"}</p>
               {reuseState.reasons.length ? <p className="text-sky-200">Reason: {reuseState.reasons.join(" | ")}</p> : null}
+            </div>
+          ) : null}
+          {orchestrationState ? (
+            <div className="rounded border border-lime-700/50 bg-lime-950/20 p-3 text-xs text-lime-100 space-y-2">
+              <p className="text-sm font-medium">Slice G orchestration: <span className="uppercase">{orchestrationState.status}</span></p>
+              <p>{orchestrationState.summary}</p>
+              {orchestrationState.recommendations.length ? <p className="text-lime-200">Next: {orchestrationState.recommendations.join(" | ")}</p> : null}
+              <div className="space-y-1">
+                {orchestrationState.steps.map((step) => (
+                  <div key={step.id} className="rounded border border-zinc-700/70 bg-zinc-950/50 p-2">
+                    <p>
+                      {step.label} · <span className={step.status === "ready" ? "text-emerald-300" : step.status === "blocked" || step.status === "failed" ? "text-rose-300" : "text-zinc-300"}>{step.status}</span>
+                      {step.recommended ? " · recommended" : ""}
+                    </p>
+                    {step.reason ? <p className="text-zinc-400">{step.reason}</p> : null}
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
         </section>
