@@ -26,7 +26,17 @@ export function decideCreativeFidelity(input: {
 
   if (input.roleRequirements.criticalMissingRoles.length > 0) {
     decision = "block";
-    reasons.push(`Critical required anchors missing: ${input.roleRequirements.criticalMissingRoles.join(", ")}.`);
+    if (
+      input.roleRequirements.criticalMissingRoles.includes("back")
+      && input.roleCoverage.synthesizedRoles.has("back")
+    ) {
+      reasons.push("Synthesized anchors cannot satisfy critical back-view requirements for this motion.");
+    } else if (input.roleRequirements.criticalMissingRoles.includes("back")) {
+      reasons.push("Back view is required for this shot but no real back anchor is available.");
+      reasons.push("Turning motion requires real rear-view truth to preserve garment fidelity.");
+    } else {
+      reasons.push(`Critical required anchors missing: ${input.roleRequirements.criticalMissingRoles.join(", ")}.`);
+    }
   } else if (input.roleRequirements.missingRoles.length > 0) {
     decision = "block";
     reasons.push(`Required anchors missing: ${input.roleRequirements.missingRoles.join(", ")}.`);

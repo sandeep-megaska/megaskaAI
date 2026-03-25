@@ -23,6 +23,11 @@ export type ParsedIntentSignals = {
   viewDependency: RiskLevel;
   garmentRisk: RiskLevel;
   sceneRisk: RiskLevel;
+  hasTurningMotion: boolean;
+  hasBackReveal: boolean;
+  hasWalkAwayMotion: boolean;
+  hasCloseupDetail: boolean;
+  hasWaterRotation: boolean;
   waterExposure: boolean;
   surrealExposure: boolean;
   unsafeConcepts: string[];

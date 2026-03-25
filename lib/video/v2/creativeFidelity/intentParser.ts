@@ -30,7 +30,14 @@ function classifySceneRisk(prompt: string): RiskLevel {
 
 export function parseIntentSignals(motionPrompt: string): ParsedIntentSignals {
   const prompt = motionPrompt.toLowerCase();
+  const hasTurningMotion = matchAny(prompt, [/\b(turn|turning|turns around|rotate|rotating|rotation|spin|spinning|twirl|twirling|pivot)\b/]);
+  const hasBackReveal = matchAny(prompt, [
+    /\b(show(?:s)? the back|reveal(?:s)? the back|back design|rear view|from behind|back shot|back view|turns around)\b/,
+  ]);
+  const hasWalkAwayMotion = matchAny(prompt, [/\b(walk away|walks away|walking away|turning away|rear exit|away from camera)\b/]);
+  const hasCloseupDetail = matchAny(prompt, [/\b(close[- ]?up|macro|texture detail|fabric detail|stitch detail)\b/]);
   const waterExposure = matchAny(prompt, [/\b(water|ocean|river|rain|underwater|splash|wet)\b/]);
+  const hasWaterRotation = waterExposure && (hasTurningMotion || matchAny(prompt, [/\b(jump|dive|entry|flip)\b/]));
   const surrealExposure = matchAny(prompt, [/\b(surreal|dreamlike|fantasy|impossible|levitating|shape-shift)\b/]);
 
   const unsafeConcepts = [
@@ -46,6 +53,11 @@ export function parseIntentSignals(motionPrompt: string): ParsedIntentSignals {
     viewDependency: classifyViewDependency(prompt),
     garmentRisk: classifyGarmentRisk(prompt),
     sceneRisk: classifySceneRisk(prompt),
+    hasTurningMotion,
+    hasBackReveal,
+    hasWalkAwayMotion,
+    hasCloseupDetail,
+    hasWaterRotation,
     waterExposure,
     surrealExposure,
     unsafeConcepts,
