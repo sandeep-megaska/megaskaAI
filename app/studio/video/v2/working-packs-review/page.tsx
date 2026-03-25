@@ -61,6 +61,24 @@ type OrchestrationStep = {
   details?: Record<string, unknown> | null;
 };
 
+type AssistedExecutionStepResult = {
+  step_type: "search_existing_truth" | "expand_missing_anchors" | "recheck_fidelity" | "compile" | "generate";
+  attempted: boolean;
+  success: boolean;
+  status: "completed" | "failed" | "blocked" | "skipped";
+  reason?: string | null;
+  details?: Record<string, unknown> | null;
+};
+
+type AssistedExecutionResult = {
+  action: "run_recommended_step" | "run_step" | "refresh_orchestration";
+  initial_step_type?: AssistedExecutionStepResult["step_type"] | null;
+  executed_steps: AssistedExecutionStepResult[];
+  orchestration_plan: OrchestrationPlanResponse;
+  summary: string;
+  recommendations: string[];
+};
+
 type OrchestrationPlanResponse = {
   status: "ready" | "needs_reuse" | "needs_expansion" | "needs_partial_expansion" | "blocked" | "in_progress" | "failed";
   summary: string;
@@ -87,6 +105,9 @@ export default function WorkingPackReviewPage() {
   const [expansionState, setExpansionState] = useState<ExpansionResult | null>(null);
   const [reuseState, setReuseState] = useState<ReuseResult | null>(null);
   const [orchestrationState, setOrchestrationState] = useState<OrchestrationPlanResponse | null>(null);
+  const [assistedState, setAssistedState] = useState<AssistedExecutionResult | null>(null);
+  const [assistedError, setAssistedError] = useState<string | null>(null);
+  const [assistedRunningStep, setAssistedRunningStep] = useState<string | null>(null);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -115,6 +136,8 @@ export default function WorkingPackReviewPage() {
     if (!selectedIntentId) return;
     setReuseState(null);
     setExpansionState(null);
+    setAssistedState(null);
+    setAssistedError(null);
     refreshFidelityPlan().catch((planError) => {
       setError(planError instanceof Error ? planError.message : "Failed to refresh fidelity plan.");
     });
@@ -266,6 +289,81 @@ export default function WorkingPackReviewPage() {
     }
   }
 
+  async function runAssistedExecution(action: "run_recommended_step" | "run_step" | "refresh_orchestration", stepType?: AssistedExecutionStepResult["step_type"]) {
+    if (!selectedIntentId) return setError("Select a clip intent first.");
+    setError(null);
+    setAssistedError(null);
+    setAssistedRunningStep(stepType ?? "recommended");
+
+    try {
+      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/run-next-step`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action,
+          step_type: stepType,
+          snapshots: {
+            reuse_snapshot: reuseState
+              ? {
+                attempted: true,
+                rolesReused: reuseState.roles_reused,
+                rolesUnresolved: reuseState.roles_unresolved,
+                reasons: reuseState.reasons,
+              }
+              : undefined,
+            expansion_snapshot: expansionState
+              ? {
+                attempted: true,
+                decision: expansionState.decision,
+                rolesCreated: expansionState.roles_created,
+                rolesFailed: expansionState.roles_failed,
+                reasons: expansionState.reasons,
+              }
+              : undefined,
+          },
+        }),
+      });
+
+      const payload = (await res.json()) as { data?: AssistedExecutionResult; error?: string };
+      if (!res.ok || !payload.data) throw new Error(payload.error ?? "Assisted execution failed.");
+
+      setAssistedState(payload.data);
+      setOrchestrationState(payload.data.orchestration_plan);
+
+      const reuseStep = payload.data.executed_steps.find((step) => step.step_type === "search_existing_truth");
+      if (reuseStep?.details) {
+        setReuseState({
+          roles_reused: Array.isArray(reuseStep.details.roles_reused) ? (reuseStep.details.roles_reused as string[]) : [],
+          roles_unresolved: Array.isArray(reuseStep.details.roles_unresolved) ? (reuseStep.details.roles_unresolved as string[]) : [],
+          reasons: reuseStep.reason ? [reuseStep.reason] : [],
+        });
+      }
+
+      const expansionStep = payload.data.executed_steps.find((step) => step.step_type === "expand_missing_anchors");
+      if (expansionStep?.details) {
+        setExpansionState({
+          decision: (expansionStep.details.decision as ExpansionResult["decision"]) ?? "blocked",
+          roles_created: Array.isArray(expansionStep.details.roles_created) ? (expansionStep.details.roles_created as string[]) : [],
+          roles_failed: Array.isArray(expansionStep.details.roles_failed) ? (expansionStep.details.roles_failed as string[]) : [],
+          reasons: expansionStep.reason ? [expansionStep.reason] : [],
+        });
+      }
+
+      const firstStep = payload.data.executed_steps[0];
+      if (firstStep) {
+        setNote(`${firstStep.step_type} ${firstStep.status}. ${firstStep.reason ?? payload.data.summary}`);
+      } else {
+        setNote(payload.data.summary);
+      }
+
+      await Promise.all([loadIntents(), loadPacks(), refreshFidelityPlan()]);
+    } catch (assistedExecutionError) {
+      setAssistedError(assistedExecutionError instanceof Error ? assistedExecutionError.message : "Assisted execution failed.");
+    } finally {
+      setAssistedRunningStep(null);
+    }
+  }
+
   async function generateClip() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
     setError(null);
@@ -309,6 +407,7 @@ export default function WorkingPackReviewPage() {
             <button type="button" onClick={autoBuild} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto-build Working Pack</button>
             <button type="button" onClick={refreshFidelityPlan} className="rounded bg-zinc-300 px-3 py-2 text-sm font-medium text-zinc-950">Refresh Fidelity Plan</button>
             <button type="button" onClick={refreshOrchestrationPlan} className="rounded bg-lime-300 px-3 py-2 text-sm font-medium text-zinc-950">Recheck Readiness</button>
+            <button type="button" onClick={() => runAssistedExecution("run_recommended_step")} disabled={Boolean(assistedRunningStep)} className="rounded bg-fuchsia-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{assistedRunningStep ? "Running Assisted Step..." : "Run Recommended Step"}</button>
             <button type="button" onClick={reuseAnchors} disabled={isReusing} className="rounded bg-sky-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isReusing ? "Searching Truth..." : "Search Existing Truth"}</button>
             <button type="button" onClick={expandAnchors} disabled={isExpanding} className="rounded bg-amber-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isExpanding ? "Expanding..." : "Generate Missing Anchors"}</button>
             <button type="button" onClick={compileIntent} disabled={isCompiling || compileBlockedReasons.length > 0 || orchestrationState?.compileReady === false} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isCompiling ? "Compiling..." : "Compile"}</button>
@@ -359,9 +458,29 @@ export default function WorkingPackReviewPage() {
                       {step.recommended ? " · recommended" : ""}
                     </p>
                     {step.reason ? <p className="text-zinc-400">{step.reason}</p> : null}
+                    {step.status === "ready" && ["search_existing_truth", "expand_missing_anchors", "recheck_fidelity", "compile", "generate"].includes(step.type) ? (
+                      <button
+                        type="button"
+                        onClick={() => runAssistedExecution("run_step", step.type as AssistedExecutionStepResult["step_type"])}
+                        disabled={Boolean(assistedRunningStep)}
+                        className="mt-2 rounded bg-fuchsia-300 px-2 py-1 text-xs font-medium text-zinc-950 disabled:opacity-40"
+                      >
+                        {assistedRunningStep === step.type ? `Running ${step.type}...` : `Run ${step.type}`}
+                      </button>
+                    ) : null}
                   </div>
                 ))}
               </div>
+            </div>
+          ) : null}
+          {assistedState ? (
+            <div className="rounded border border-fuchsia-700/50 bg-fuchsia-950/20 p-3 text-xs text-fuchsia-100 space-y-2">
+              <p className="text-sm font-medium">Assisted execution result</p>
+              <p>{assistedState.summary}</p>
+              {assistedState.recommendations.length ? <p className="text-fuchsia-200">Next: {assistedState.recommendations.join(" | ")}</p> : null}
+              {assistedState.executed_steps.map((step) => (
+                <p key={`${step.step_type}-${step.status}`}>{step.step_type}: {step.status}{step.reason ? ` · ${step.reason}` : ""}</p>
+              ))}
             </div>
           ) : null}
         </section>
@@ -397,6 +516,7 @@ export default function WorkingPackReviewPage() {
         </section>
 
         {error ? <p className="text-sm text-rose-300">{error}</p> : null}
+        {assistedError ? <p className="text-sm text-rose-300">{assistedError}</p> : null}
         {note ? <p className="text-sm text-emerald-300">{note}</p> : null}
       </div>
     </main>
