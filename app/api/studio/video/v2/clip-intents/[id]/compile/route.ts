@@ -1,0 +1,27 @@
+import { NextResponse } from "next/server";
+import { compileClipIntent } from "@/lib/video/v2/compileClipIntent";
+
+function json(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
+export async function POST(_: Request, context: { params: { id: string } }) {
+  try {
+    const clipIntentId = context.params.id?.trim();
+    if (!clipIntentId) return json(400, { success: false, error: "clip intent id is required." });
+
+    const compiled = await compileClipIntent({ clipIntentId });
+
+    return json(200, {
+      success: true,
+      data: {
+        clip_intent_id: compiled.clipIntentId,
+        compiled_anchor_pack_id: compiled.compiledAnchorPackId,
+        warnings: compiled.warnings,
+        run_request_preview: compiled.runRequest,
+      },
+    });
+  } catch (error) {
+    return json(400, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
+  }
+}
