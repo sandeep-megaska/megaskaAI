@@ -28,6 +28,10 @@ export async function POST(request: Request) {
       motion_prompt?: string;
       aspect_ratio?: string;
       duration_seconds?: number;
+      clip_goal?: string;
+      scene_policy?: string;
+      motion_template?: string;
+      fidelity_priority?: string;
     };
 
     if (!body.source_profile_id?.trim()) return json(400, { success: false, error: "source_profile_id is required." });
@@ -43,6 +47,10 @@ export async function POST(request: Request) {
         motion_prompt: body.motion_prompt.trim(),
         aspect_ratio: body.aspect_ratio?.trim() || "9:16",
         duration_seconds: Number(body.duration_seconds ?? 8),
+        clip_goal: body.clip_goal?.trim() || null,
+        scene_policy: body.scene_policy?.trim() || null,
+        motion_template: body.motion_template?.trim() || null,
+        fidelity_priority: body.fidelity_priority?.trim() || "maximum-fidelity",
         status: "ready",
       })
       .select("*")
