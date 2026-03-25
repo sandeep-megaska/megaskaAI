@@ -30,6 +30,20 @@ type CompileResponse = {
   run_request_preview: Record<string, unknown>;
 };
 
+type FidelityPlanResponse = {
+  decision: "proceed" | "warn" | "block";
+  missing_roles: string[];
+  critical_missing_roles: string[];
+  reasons: string[];
+};
+
+type ExpansionResult = {
+  decision: "expanded" | "partial" | "blocked" | "not_needed";
+  roles_created: string[];
+  roles_failed: string[];
+  reasons: string[];
+};
+
 export default function WorkingPackReviewPage() {
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
@@ -40,6 +54,9 @@ export default function WorkingPackReviewPage() {
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExpanding, setIsExpanding] = useState(false);
+  const [fidelityState, setFidelityState] = useState<FidelityPlanResponse | null>(null);
+  const [expansionState, setExpansionState] = useState<ExpansionResult | null>(null);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -124,6 +141,38 @@ export default function WorkingPackReviewPage() {
     }
   }
 
+  async function refreshFidelityPlan() {
+    if (!selectedIntentId) return;
+    const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/fidelity-plan`, { method: "POST" });
+    const payload = (await res.json()) as { data?: FidelityPlanResponse; error?: string };
+    if (!res.ok || !payload.data) throw new Error(payload.error ?? "Failed to refresh fidelity plan.");
+    setFidelityState(payload.data);
+  }
+
+  async function expandAnchors() {
+    if (!selectedIntentId) return setError("Select a clip intent first.");
+    setError(null);
+    setNote(null);
+    setIsExpanding(true);
+
+    try {
+      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/expand-anchors`, { method: "POST" });
+      const payload = (await res.json()) as { data?: ExpansionResult; error?: string };
+      if (!res.ok || !payload.data) throw new Error(payload.error ?? "Anchor expansion failed.");
+      setExpansionState(payload.data);
+      setNote(
+        payload.data.decision === "not_needed"
+          ? "No expansion needed."
+          : `Anchor expansion ${payload.data.decision}. Created: ${payload.data.roles_created.join(", ") || "none"}.`,
+      );
+      await Promise.all([loadPacks(), refreshFidelityPlan()]);
+    } catch (expandError) {
+      setError(expandError instanceof Error ? expandError.message : "Anchor expansion failed.");
+    } finally {
+      setIsExpanding(false);
+    }
+  }
+
   async function generateClip() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
     setError(null);
@@ -165,6 +214,8 @@ export default function WorkingPackReviewPage() {
           </select>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={autoBuild} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto-build Working Pack</button>
+            <button type="button" onClick={refreshFidelityPlan} className="rounded bg-zinc-300 px-3 py-2 text-sm font-medium text-zinc-950">Refresh Fidelity Plan</button>
+            <button type="button" onClick={expandAnchors} disabled={isExpanding} className="rounded bg-amber-300 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isExpanding ? "Expanding..." : "Generate Missing Anchors"}</button>
             <button type="button" onClick={compileIntent} disabled={isCompiling || compileBlockedReasons.length > 0} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isCompiling ? "Compiling..." : "Compile"}</button>
             <button type="button" onClick={generateClip} disabled={isGenerating || compileBlockedReasons.length > 0} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">{isGenerating ? "Generating..." : "Generate Clip"}</button>
           </div>
@@ -176,6 +227,21 @@ export default function WorkingPackReviewPage() {
                   <li key={reason}>{reason}</li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+          {fidelityState ? (
+            <div className="rounded border border-zinc-700/70 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+              <p>Planner decision: <span className="font-medium text-zinc-100">{fidelityState.decision}</span></p>
+              <p>Missing roles: {fidelityState.missing_roles.join(", ") || "none"}</p>
+              {fidelityState.critical_missing_roles.length ? <p className="text-amber-300">Critical missing: {fidelityState.critical_missing_roles.join(", ")}</p> : null}
+            </div>
+          ) : null}
+          {expansionState ? (
+            <div className="rounded border border-cyan-700/50 bg-cyan-950/20 p-3 text-xs text-cyan-100">
+              <p>Expansion decision: {expansionState.decision}</p>
+              <p>Roles created: {expansionState.roles_created.join(", ") || "none"}</p>
+              <p>Roles failed: {expansionState.roles_failed.join(", ") || "none"}</p>
+              {expansionState.reasons.length ? <p className="text-cyan-200">Reason: {expansionState.reasons.join(" | ")}</p> : null}
             </div>
           ) : null}
         </section>
