@@ -126,6 +126,7 @@ export default function DownloadAssetButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const hasUrl = Boolean(url?.trim());
 
   const isImageAsset = useMemo(() => {
     const extension = getExtensionFromUrl(url);
@@ -178,7 +179,7 @@ export default function DownloadAssetButton({
     const filename = inferFileName(url, filenamePrefix);
 
     const params = new URLSearchParams({
-      asset_url: url,
+      url,
       filename,
     });
 
@@ -201,7 +202,7 @@ export default function DownloadAssetButton({
     const baseName = getBaseFileName(originalName) || filenamePrefix;
     const filename = isMp4Like ? `${baseName}.mp4` : `${baseName}-video.mp4`;
     const params = new URLSearchParams({
-      asset_url: url,
+      url,
       filename,
     });
     const href = `${DOWNLOAD_ROUTE}?${params.toString()}`;
@@ -266,8 +267,9 @@ export default function DownloadAssetButton({
         <button
           type="button"
           onClick={() => onSelectOption("original")}
-          disabled={downloading}
+          disabled={downloading || !hasUrl}
           className="px-2 py-1 text-zinc-100 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+          title={!hasUrl ? "Missing asset URL" : undefined}
         >
           {downloading ? "Downloading..." : label}
         </button>
@@ -276,9 +278,9 @@ export default function DownloadAssetButton({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((value) => !value)}
-          disabled={downloading}
+          disabled={downloading || !hasUrl}
           className="border-l border-zinc-700 px-2 py-1 text-zinc-300 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
-          title="Download options"
+          title={!hasUrl ? "Missing asset URL" : "Download options"}
         >
           ▾
         </button>
