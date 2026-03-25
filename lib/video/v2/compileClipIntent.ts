@@ -1,6 +1,7 @@
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildClipIntentPrompt } from "@/lib/video/v2/buildClipIntentPrompt";
+import { computeFidelityPlan } from "@/lib/video/v2/fidelityPlanner";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
@@ -110,6 +111,35 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
 
   if (itemsError) throw new Error(itemsError.message);
   const items = (rawItems ?? []) as WorkingPackItemRow[];
+
+  const fidelityPlan = computeFidelityPlan({
+    clipIntentId: intent.id,
+    motionPrompt: intent.motion_prompt,
+    workingPackId: pack.id,
+    items: items.map((item) => ({
+      role: item.role,
+      generation_id: item.generation_id,
+      source_kind: item.source_kind,
+    })),
+  });
+
+  const { error: fidelityPlanError } = await supabase.from("clip_fidelity_plans").insert({
+    clip_intent_id: intent.id,
+    fidelity_tier: fidelityPlan.fidelity_tier,
+    motion_complexity: fidelityPlan.motion_complexity,
+    view_dependency: fidelityPlan.view_dependency,
+    garment_risk: fidelityPlan.garment_risk,
+    scene_risk: fidelityPlan.scene_risk,
+    required_roles: fidelityPlan.required_roles,
+    missing_roles: fidelityPlan.missing_roles,
+    allowed_synthesis_roles: fidelityPlan.allowed_synthesis_roles,
+    decision: fidelityPlan.decision,
+    decision_reason: fidelityPlan.reason,
+    recommended_mode: fidelityPlan.recommended_mode,
+  });
+
+  if (fidelityPlanError) throw new Error(fidelityPlanError.message);
+  if (fidelityPlan.decision === "block") throw new Error(fidelityPlan.reason);
 
   const warnings = [...(pack.warning_messages ?? [])];
   if (!isPackReadyOrApproved(pack)) {
