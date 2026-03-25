@@ -1,6 +1,7 @@
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildClipIntentPrompt } from "@/lib/video/v2/buildClipIntentPrompt";
+import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
@@ -129,9 +130,32 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     throw new Error(`Required role generation is missing for: ${missingGenerationRoles.join(", ")}.`);
   }
 
+  const roleSources = items.reduce<Record<string, "reused" | "synthesized" | "derived">>((acc, item) => {
+    if (item.source_kind === "reused" || item.source_kind === "synthesized" || item.source_kind === "derived") {
+      acc[item.role] = item.source_kind;
+    }
+    return acc;
+  }, {});
+
+  const fidelityPlan = planCreativeFidelity({
+    prompt: intent.motion_prompt,
+    aspect_ratio: intent.aspect_ratio,
+    duration_seconds: Number(intent.duration_seconds ?? 8),
+    available_roles: items.map((item) => item.role),
+    role_sources: roleSources,
+  });
+
+  if (fidelityPlan.decision === "block") {
+    const whyBlocked = fidelityPlan.reasons.slice(0, 4).join(" ");
+    throw new Error(`Creative fidelity planner blocked generation. ${whyBlocked}`);
+  }
+
   const compileItems = items.filter((item) => Boolean(item.generation_id));
   if (compileItems.length < items.length) {
     warnings.push("Some working pack items were skipped during compile because generation_id is missing.");
+  }
+  if (fidelityPlan.decision === "warn") {
+    warnings.push(`Creative fidelity planner warning: ${fidelityPlan.reasons.slice(0, 3).join(" ")}`);
   }
 
   const readinessItems = compileItems
@@ -145,7 +169,9 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     priorValidatedClipExists: false,
   });
 
-  const modeSelected = readiness.recommendedMode as V2Mode;
+  const modeSelected = (fidelityPlan.recommended_mode === "frames_to_video" && readiness.recommendedMode === "frames_to_video"
+    ? "frames_to_video"
+    : readiness.recommendedMode) as V2Mode;
   const prompt = buildClipIntentPrompt({
     clip_goal: intent.clip_goal,
     scene_policy: intent.scene_policy,
@@ -207,7 +233,9 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       mode_selected: modeSelected,
       why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)}.`,
       recommended_pack_ids: [anchorPack.id],
-      required_reference_roles: REQUIRED_ROLES,
+      required_reference_roles: (fidelityPlan.required_roles.length ? fidelityPlan.required_roles : [...REQUIRED_ROLES]).filter((role) =>
+        (ANCHOR_ITEM_ROLES as readonly string[]).includes(role),
+      ),
       duration_seconds: Number(intent.duration_seconds ?? 8),
       aspect_ratio: intent.aspect_ratio || "9:16",
       motion_complexity: motionComplexity,
@@ -221,8 +249,11 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       ],
       provider_order: ["veo-3.1", "veo-3.1-fast", "veo-2"],
       planner_model: "slice-c-compiler",
-      planner_version: "slice-c-compiler-v1",
-      debug_trace: traceabilitySnapshot,
+      planner_version: "slice-c-compiler-v2-fidelity-planner",
+      debug_trace: {
+        ...traceabilitySnapshot,
+        slice_d_fidelity_plan: fidelityPlan,
+      },
     })
     .select("id")
     .single();
@@ -239,7 +270,10 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     fallback_prompt: prompt.fallbackPrompt,
     aspect_ratio: intent.aspect_ratio || "9:16",
     duration_seconds: Number(intent.duration_seconds ?? 8),
-    request_payload_snapshot: traceabilitySnapshot,
+    request_payload_snapshot: {
+      ...traceabilitySnapshot,
+      slice_d_fidelity_plan: fidelityPlan,
+    },
   };
 
   const { error: intentUpdateError } = await supabase

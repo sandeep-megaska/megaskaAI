@@ -30,6 +30,14 @@ type CompileResponse = {
   run_request_preview: Record<string, unknown>;
 };
 
+type FidelityPlan = {
+  decision: "proceed" | "warn" | "block";
+  recommended_mode: "frames_to_video" | "ingredients_to_video";
+  reasons: string[];
+  recommendations: string[];
+  summary: { total_risk_score: number; safe_to_generate: boolean; requires_user_attention: boolean };
+};
+
 export default function WorkingPackReviewPage() {
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
@@ -40,6 +48,7 @@ export default function WorkingPackReviewPage() {
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [fidelityPlan, setFidelityPlan] = useState<FidelityPlan | null>(null);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -64,6 +73,23 @@ export default function WorkingPackReviewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    async function loadFidelityPlan() {
+      if (!selectedIntentId) {
+        setFidelityPlan(null);
+        return;
+      }
+      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/fidelity-plan`, { method: "POST" });
+      const payload = (await res.json()) as { data?: { plan?: FidelityPlan }; error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to load fidelity plan.");
+      setFidelityPlan(payload.data?.plan ?? null);
+    }
+
+    loadFidelityPlan().catch((planError) => {
+      setError(planError instanceof Error ? planError.message : "Failed to load fidelity plan.");
+    });
+  }, [selectedIntentId]);
+
   const activePack = useMemo(
     () => packs.find((pack) => pack.clip_intent_id === selectedIntentId) ?? null,
     [packs, selectedIntentId],
@@ -81,8 +107,11 @@ export default function WorkingPackReviewPage() {
     const roles = new Set((activePack.working_pack_items ?? []).map((item) => item.role));
     if (!roles.has("fit_anchor")) reasons.push("Required role missing: fit_anchor.");
     if (!roles.has("front")) reasons.push("Required role missing: front.");
+    if (fidelityPlan?.decision === "block") {
+      reasons.push(`Slice D blocked generation: ${(fidelityPlan.reasons ?? []).slice(0, 2).join(" ")}`);
+    }
     return reasons;
-  }, [activePack]);
+  }, [activePack, fidelityPlan]);
 
   async function autoBuild() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
@@ -185,6 +214,25 @@ export default function WorkingPackReviewPage() {
           <p className="mt-2 text-sm text-zinc-300">Compiled anchor pack: {compiledState?.compiled_anchor_pack_id?.slice(0, 8) ?? intents.find((intent) => intent.id === selectedIntentId)?.compiled_anchor_pack_id?.slice(0, 8) ?? "none"}</p>
           <p className="text-sm text-zinc-300">Run id: {lastRunId ? lastRunId.slice(0, 8) : "none"}</p>
           {compiledState?.warnings?.length ? <p className="mt-1 text-sm text-amber-300">Compile warnings: {compiledState.warnings.join(" | ")}</p> : null}
+        </section>
+
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <h2 className="font-medium">Slice D · Creative Fidelity Planner</h2>
+          {!fidelityPlan ? (
+            <p className="mt-2 text-sm text-zinc-400">No plan yet. Select an intent to evaluate.</p>
+          ) : (
+            <div className="mt-2 space-y-2 text-sm">
+              <p>
+                Decision:{" "}
+                <span className={fidelityPlan.decision === "block" ? "text-rose-300" : fidelityPlan.decision === "warn" ? "text-amber-300" : "text-emerald-300"}>
+                  {fidelityPlan.decision}
+                </span>{" "}
+                · mode {fidelityPlan.recommended_mode} · risk {Number(fidelityPlan.summary.total_risk_score ?? 0).toFixed(0)}
+              </p>
+              {fidelityPlan.reasons?.length ? <p className="text-zinc-300">Reasons: {fidelityPlan.reasons.slice(0, 3).join(" | ")}</p> : null}
+              {fidelityPlan.recommendations?.length ? <p className="text-cyan-200">Recommendations: {fidelityPlan.recommendations.slice(0, 3).join(" | ")}</p> : null}
+            </div>
+          )}
         </section>
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
