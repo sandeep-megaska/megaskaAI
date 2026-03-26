@@ -53,6 +53,17 @@ export function resolveRunVideoUrl(run?: { output_asset_url?: string | null; req
   return walkForVideoUrl(run.run_meta);
 }
 
+
+export function resolveRunPrompt(run?: { request_payload_snapshot?: Record<string, unknown> | null; run_meta?: Record<string, unknown> | null; prompt_used?: string | null } | null) {
+  if (!run) return null;
+  const fromSnapshot = run.request_payload_snapshot?.director_prompt;
+  if (typeof fromSnapshot === "string" && fromSnapshot.trim()) return fromSnapshot.trim();
+  if (typeof run.prompt_used === "string" && run.prompt_used.trim()) return run.prompt_used.trim();
+  const fromMeta = run.run_meta?.prompt_used;
+  if (typeof fromMeta === "string" && fromMeta.trim()) return fromMeta.trim();
+  return null;
+}
+
 export function shortId(id: string) {
   return id.slice(0, 8);
 }
