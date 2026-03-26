@@ -54,7 +54,11 @@ export default function SimpleVideoStudioPage() {
   const [generationStatus, setGenerationStatus] = useState<"idle" | "planning" | "processing" | "completed">("idle");
   const [outputAsset, setOutputAsset] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeOutputGenerationId, setActiveOutputGenerationId] = useState<string | null>(null);
+  const [activeOutputThumbnail, setActiveOutputThumbnail] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<string>("pending");
+  const [approved, setApproved] = useState(false);
+  const [promotingTruth, setPromotingTruth] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [fixingAngles, setFixingAngles] = useState(false);
@@ -164,10 +168,14 @@ export default function SimpleVideoStudioPage() {
       setGenerationStatus("processing");
       const generated = await generateSimpleVideo({ clipIntentId: intentId, startState, endState, durationSeconds, validationMode, motionComplexity });
       setActiveRunId(generated.run_id);
+      setApproved(false);
 
       for (let attempts = 0; attempts < 20; attempts += 1) {
         const run = await loadRunResult(generated.run_id);
         setOutcome(run.outcome);
+        setActiveOutputGenerationId(run.outputGenerationId);
+        setActiveOutputThumbnail(run.outputThumbnailUrl);
+        setApproved(run.acceptedForSequence);
         if (run.outputUrl) {
           setOutputAsset(run.outputUrl);
           setGenerationStatus("completed");
@@ -193,6 +201,7 @@ export default function SimpleVideoStudioPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ run_id: activeRunId, action_type: "accept", accepted_for_sequence: true }),
     });
+    setApproved(true);
     setNote("Clip approved.");
   }
 
@@ -207,8 +216,73 @@ export default function SimpleVideoStudioPage() {
     setNote("Retry queued with same segment plan.");
   }
 
+  async function onPromoteFrameToTruth() {
+    if (!activeOutputGenerationId || !activeOutputThumbnail || !skuCode.trim()) {
+      setNote("To promote to truth, add an SKU and generate a clip with a preview frame.");
+      return;
+    }
+    setPromotingTruth(true);
+    setError(null);
+    setNote(null);
+    try {
+      const extracted = await fetch("/api/studio/video/extract-frame", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          source_video_generation_id: activeOutputGenerationId,
+          frame_url: activeOutputThumbnail,
+          extraction_method: "thumbnail",
+        }),
+      });
+      const extractedPayload = (await extracted.json()) as { generationId?: string; error?: string };
+      if (!extracted.ok || !extractedPayload.generationId) {
+        throw new Error(extractedPayload.error ?? "Could not promote frame.");
+      }
+
+      const truthResponse = await fetch("/api/studio/video/v2/sku-truth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sku_code: skuCode.trim(),
+          role: endState,
+          generation_id: extractedPayload.generationId,
+          source_kind: "manual_verified_override",
+          label: `Simple review promotion (${endState.replaceAll("_", " ")})`,
+          notes: "Promoted from Simple Video Studio output panel.",
+          clip_intent_id: clipIntentId || undefined,
+          apply_now: Boolean(clipIntentId),
+        }),
+      });
+      if (!truthResponse.ok) {
+        const payload = (await truthResponse.json()) as { error?: string };
+        throw new Error(payload.error ?? "Could not register truth entry.");
+      }
+
+      setNote("Frame promoted to truth registry and linked to this SKU.");
+    } catch (promotionError) {
+      setError(promotionError instanceof Error ? promotionError.message : "Could not promote frame to truth.");
+    } finally {
+      setPromotingTruth(false);
+    }
+  }
+
   const missingTruth = readiness?.missingRoles ?? [];
   const needsFix = missingTruth.length > 0;
+
+  const statusBadge = approved
+    ? { label: "Approved", className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" }
+    : outcome === "pass"
+      ? { label: "Ready for review", className: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200" }
+      : outcome === "retry"
+        ? { label: "Needs retry", className: "border-amber-500/40 bg-amber-500/10 text-amber-200" }
+        : { label: "Review pending", className: "border-zinc-600 bg-zinc-800/50 text-zinc-200" };
+  const outputSummary = approved
+    ? "Accepted in this simple workflow. You can continue sequence assembly later in advanced mode."
+    : outcome === "pass"
+      ? "Clip looks viable from validation. Approve or continue with a targeted retry."
+      : outcome === "retry"
+        ? "Validation suggests another pass. Retry safer defaults or retry this segment."
+        : "Review the clip and choose the next action.";
 
   return (
     <main className="min-h-screen bg-zinc-950 p-6 text-zinc-100">
@@ -347,26 +421,48 @@ export default function SimpleVideoStudioPage() {
 
         <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-5">
           <h2 className="text-lg font-semibold">Output</h2>
-          {generationStatus === "idle" && !outputAsset ? <p className="mt-2 text-sm text-zinc-400">Your generated clip will appear here once ready.</p> : null}
-          {generationStatus !== "idle" ? (
-            <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              {["Checking", "Planning", "Compiling", "Generating"].map((step, index) => (
-                <span key={step} className={`rounded-full border px-3 py-1 ${index <= (generationStatus === "planning" ? 1 : generationStatus === "processing" ? 3 : 4) ? "border-cyan-400/60 bg-cyan-500/10" : "border-zinc-700"}`}>{step}</span>
-              ))}
+          {generationStatus === "idle" && !outputAsset ? (
+            <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+              <p className="text-sm text-zinc-200">No output yet</p>
+              <p className="mt-1 text-xs text-zinc-400">Generate a clip to unlock review actions (approve, retry, promote, download).</p>
+            </div>
+          ) : null}
+
+          {generationStatus === "planning" || generationStatus === "processing" ? (
+            <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
+              <p className="text-sm font-medium text-cyan-100">Generation in progress</p>
+              <div className="mt-3 grid gap-2 text-xs">
+                {[
+                  { label: "Checking truth", active: true },
+                  { label: "Preparing plan", active: true },
+                  { label: "Generating clip", active: generationStatus === "processing" },
+                  { label: "Reviewing output", active: false },
+                ].map((step) => (
+                  <div key={step.label} className={`rounded-lg border px-3 py-2 ${step.active ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100" : "border-zinc-700 text-zinc-400"}`}>
+                    {step.label}
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
 
           {outputAsset ? (
             <div className="mt-5 space-y-4">
               <video src={outputAsset} controls className="w-full max-w-3xl rounded-xl border border-zinc-700 bg-black" />
-              <div className="inline-flex rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">Outcome: {outcome}</div>
+              <div className={`inline-flex rounded-full border px-3 py-1 text-xs ${statusBadge.className}`}>{statusBadge.label}</div>
+              <p className="text-sm text-zinc-300">{outputSummary}</p>
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => onApprove().catch((approveError) => setError(approveError instanceof Error ? approveError.message : "Approve failed."))} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Approve</button>
                 <button type="button" onClick={() => activeRunId ? retrySafer(activeRunId).catch((retryError) => setError(retryError instanceof Error ? retryError.message : "Retry failed.")) : null} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Retry safer</button>
-                <button type="button" onClick={() => onRetrySameSegment().catch((retryError) => setError(retryError instanceof Error ? retryError.message : "Retry failed."))} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Retry this segment</button>
-                <Link href="/studio/video/v2/working-packs-review" className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Promote frame to truth</Link>
+                {readiness?.strategy === "segmented" ? (
+                  <button type="button" onClick={() => onRetrySameSegment().catch((retryError) => setError(retryError instanceof Error ? retryError.message : "Retry failed."))} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Retry this segment</button>
+                ) : null}
+                <button type="button" onClick={() => onPromoteFrameToTruth().catch((promotionError) => setError(promotionError instanceof Error ? promotionError.message : "Promotion failed."))} disabled={promotingTruth} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60">{promotingTruth ? "Promoting…" : "Promote frame to truth"}</button>
                 <a href={outputAsset} download className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Download</a>
               </div>
+              <p className="text-xs text-zinc-500">Retry Safer uses validation mode, low motion, locked camera, and shortest safe duration by reusing the current run orchestration.</p>
+              {!skuCode.trim() ? <p className="text-xs text-amber-200">Add an SKU code to enable truth promotion in one click.</p> : null}
+              <Link href="/studio/video/v2/working-packs-review" className="inline-block text-xs text-zinc-400 underline underline-offset-4 hover:text-zinc-200">Open advanced review & truth registry</Link>
             </div>
           ) : null}
 
