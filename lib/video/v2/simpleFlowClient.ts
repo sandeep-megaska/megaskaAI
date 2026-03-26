@@ -229,6 +229,7 @@ export async function fixMissingAngles(
 }
 
 export async function generateSimpleVideo(input: { clipIntentId: string; startState: SimpleViewState; endState: SimpleViewState; durationSeconds: 4 | 6 | 8; validationMode: boolean; motionComplexity: "low" | "medium" | "high"; }) {
+  console.info("[SimpleVideo] calling endpoint", { endpoint: `/api/studio/video/v2/clip-intents/${input.clipIntentId}/orchestrate` });
   const orchestration = await fetchJson<{ compileReady: boolean; generateReady: boolean; summary?: string; reasons?: string[] }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/orchestrate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -247,11 +248,13 @@ export async function generateSimpleVideo(input: { clipIntentId: string; startSt
     throw new Error(orchestration.reasons?.[0] ?? orchestration.summary ?? "Clip is not ready to generate yet.");
   }
 
+  console.info("[SimpleVideo] calling endpoint", { endpoint: `/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile` });
   await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
   });
 
+  console.info("[SimpleVideo] calling endpoint", { endpoint: `/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate` });
   const generated = await fetchJson<{ run_id: string; status: string }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
