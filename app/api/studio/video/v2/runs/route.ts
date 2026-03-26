@@ -6,6 +6,7 @@ import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
 import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
+import { buildCanonicalRunSnapshot, normalizePrompt, resolvePersistedRunPrompt } from "@/lib/video/v2/promptPropagation";
 import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
 import type {
   AnchorPack,
@@ -170,7 +171,7 @@ export async function GET() {
 
     const [{ data: plans }, { data: packs }, { data: outputs }, { data: validations }] = await Promise.all([
       planIds.length
-        ? supabase.from("video_generation_plans").select("id,motion_request,provider_order").in("id", planIds)
+        ? supabase.from("video_generation_plans").select("id,motion_request,provider_order,director_prompt").in("id", planIds)
         : Promise.resolve({ data: [] }),
       packIds.length
         ? supabase
@@ -239,6 +240,14 @@ export async function GET() {
         runMeta.request_payload_snapshot && typeof runMeta.request_payload_snapshot === "object"
           ? (runMeta.request_payload_snapshot as Record<string, unknown>)
           : null;
+      const persistedPrompt = resolvePersistedRunPrompt({
+        requestPayloadSnapshot,
+        runMeta,
+        planDirectorPrompt: typeof plan?.director_prompt === "string" ? plan.director_prompt : null,
+      });
+      const hydratedRequestPayloadSnapshot = persistedPrompt
+        ? { ...(requestPayloadSnapshot ?? {}), director_prompt: persistedPrompt }
+        : requestPayloadSnapshot;
       const outputAssetUrl = resolveOutputAssetUrl({
         outputAssetUrl: output?.asset_url ?? output?.url ?? null,
         runMeta,
@@ -250,7 +259,8 @@ export async function GET() {
         plan_motion_request: planMap.get(run.generation_plan_id)?.motion_request ?? null,
         selected_pack_id: selectedPackId,
         selected_pack_name: selectedPackId ? (packMap.get(selectedPackId)?.pack_name ?? null) : null,
-        request_payload_snapshot: requestPayloadSnapshot,
+        request_payload_snapshot: hydratedRequestPayloadSnapshot,
+        prompt_used: persistedPrompt,
         output_asset_url: outputAssetUrl,
         output_thumbnail_url: output?.thumbnail_url ?? null,
         output_generation_status: output?.status ?? null,
@@ -483,7 +493,8 @@ export async function POST(request: Request) {
     if (!runRequest.generation_plan_id?.trim()) return json(400, { success: false, error: "generation_plan_id is required." });
     if (!runRequest.selected_pack_id?.trim()) return json(400, { success: false, error: "selected_pack_id is required." });
     if (!runRequest.mode_selected?.trim()) return json(400, { success: false, error: "mode_selected is required." });
-    if (!runRequest.director_prompt?.trim()) return json(400, { success: false, error: "director_prompt is required." });
+    const canonicalDirectorPrompt = normalizePrompt(runRequest.director_prompt);
+    if (!canonicalDirectorPrompt) return json(400, { success: false, error: "Cannot execute video run: compiled prompt is missing." });
 
     const [{ data: plan, error: planError }, { data: pack, error: packError }] = await Promise.all([
       supabase.from("video_generation_plans").select("*").eq("id", runRequest.generation_plan_id).single(),
@@ -503,10 +514,24 @@ export async function POST(request: Request) {
       ? { providerSelected: runRequest.provider_selected, modelSelected: runRequest.model_selected }
       : deriveProviderFromPlan(planContract);
 
+    const requestPayloadSnapshot = buildCanonicalRunSnapshot({
+      requestPayloadSnapshot: runRequest.request_payload_snapshot ?? {},
+      directorPrompt: canonicalDirectorPrompt,
+      fallbackPrompt: runRequest.fallback_prompt ?? plan.fallback_prompt ?? null,
+      modeSelected: runRequest.mode_selected,
+      providerSelected: providerInfo.providerSelected,
+      modelSelected: providerInfo.modelSelected,
+      anchorCount: Array.isArray(pack.anchor_pack_items) ? pack.anchor_pack_items.length : undefined,
+    });
+
     const initialMeta: Record<string, unknown> = {
       selected_pack_id: runRequest.selected_pack_id,
-      fallback_prompt: runRequest.fallback_prompt ?? plan.fallback_prompt ?? null,
-      request_payload_snapshot: runRequest.request_payload_snapshot ?? {},
+      prompt_used: canonicalDirectorPrompt,
+      mode_selected: runRequest.mode_selected,
+      provider_selected: providerInfo.providerSelected,
+      model_selected: providerInfo.modelSelected,
+      fallback_prompt: normalizePrompt(runRequest.fallback_prompt ?? plan.fallback_prompt ?? null),
+      request_payload_snapshot: requestPayloadSnapshot,
       execution_notes: "Run accepted by V2 execute endpoint.",
       retried_from_run_id: runRequest.source_run_id ?? null,
       retry_strategy: runRequest.retry_strategy ?? null,
@@ -538,8 +563,8 @@ export async function POST(request: Request) {
     if (runError || !insertedRun) return json(400, { success: false, error: runError?.message ?? "Failed to create run." });
 
     const extensionSourceVideoUrl =
-      typeof runRequest.request_payload_snapshot?.source_output_asset_url === "string"
-        ? runRequest.request_payload_snapshot.source_output_asset_url
+      typeof (requestPayloadSnapshot as Record<string, unknown>).source_output_asset_url === "string"
+        ? ((requestPayloadSnapshot as Record<string, unknown>).source_output_asset_url as string)
         : null;
     const primaryFrameUrl = runRequest.action_type === "extend" ? extensionSourceVideoUrl : resolvePrimaryFrameUrl(pack as AnchorPack);
     if (!primaryFrameUrl) {
@@ -566,7 +591,7 @@ export async function POST(request: Request) {
       const requestedDuration = Number(runRequest.duration_seconds ?? plan.duration_seconds ?? 8);
       const execution = await runVideoJob({
         backendId: providerInfo.providerSelected,
-        prompt: runRequest.director_prompt,
+        prompt: canonicalDirectorPrompt,
         durationSeconds: requestedDuration,
         firstFrameUrl: primaryFrameUrl,
         aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
@@ -594,7 +619,7 @@ export async function POST(request: Request) {
         const saferDuration = requestedDuration >= 8 ? 6 : requestedDuration;
         finalExecution = await runVideoJob({
           backendId: providerInfo.providerSelected,
-          prompt: simplifyPromptForSafeRetry(runRequest.director_prompt),
+          prompt: simplifyPromptForSafeRetry(canonicalDirectorPrompt),
           durationSeconds: saferDuration,
           firstFrameUrl: primaryFrameUrl,
           aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
@@ -659,7 +684,7 @@ export async function POST(request: Request) {
       const publicUrl = publicUrlData.publicUrl;
 
       const generationInsertPayload = {
-        prompt: runRequest.director_prompt,
+        prompt: canonicalDirectorPrompt,
         type: "Video",
         media_type: "Video",
         status: "completed",
