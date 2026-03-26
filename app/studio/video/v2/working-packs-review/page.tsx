@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { buildSkuTruthCandidates, type SkuTruthCandidateImage } from "@/lib/video/v2/skuTruth/ui";
+import { compileV2ClipIntent, generateV2ClipIntent, type V2PlannerOverrides } from "@/lib/video/v2/generationFlowClient";
 
 type ClipIntent = {
   id: string;
@@ -380,6 +381,17 @@ export default function WorkingPackReviewPage() {
     await Promise.all([loadPacks(), refreshOrchestrationPlan()]);
   }
 
+  function buildPlannerOverrides(): V2PlannerOverrides {
+    return {
+      requestedStart: requestedStartState,
+      requestedEnd: requestedEndState,
+      motionComplexity,
+      requestedDurationSeconds: startEndFrameMode ? 8 : durationSeconds,
+      validationMode,
+      startEndFrameMode,
+    };
+  }
+
   async function compileIntent() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
     setError(null);
@@ -387,24 +399,15 @@ export default function WorkingPackReviewPage() {
     setIsCompiling(true);
 
     try {
-      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/compile`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          planner_overrides: {
-            requestedStart: requestedStartState,
-            requestedEnd: requestedEndState,
-            motionComplexity,
-            requestedDurationSeconds: startEndFrameMode ? 8 : durationSeconds,
-            validationMode,
-            startEndFrameMode,
-          },
-        }),
-      });
-      const payload = (await res.json()) as { data?: CompileResponse; error?: string };
-      if (!res.ok || !payload.data) throw new Error(payload.error ?? "Compile failed.");
-      setCompiledState(payload.data);
-      setNote(`Compiled anchor pack ${payload.data.compiled_anchor_pack_id.slice(0, 8)} is ready.`);
+      const compiled = await compileV2ClipIntent(selectedIntentId, buildPlannerOverrides());
+      const payload = {
+        clip_intent_id: selectedIntentId,
+        compiled_anchor_pack_id: compiled.compiled_anchor_pack_id,
+        warnings: compiled.warnings,
+        run_request_preview: {},
+      } satisfies CompileResponse;
+      setCompiledState(payload);
+      setNote(`Compiled anchor pack ${payload.compiled_anchor_pack_id.slice(0, 8)} is ready.`);
       await Promise.all([loadIntents(), loadPacks(), refreshOrchestrationPlan()]);
     } catch (compileError) {
       setError(compileError instanceof Error ? compileError.message : "Compile failed.");
@@ -596,11 +599,9 @@ export default function WorkingPackReviewPage() {
     setIsGenerating(true);
 
     try {
-      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/generate`, { method: "POST" });
-      const payload = (await res.json()) as { data?: { run_id: string; status: string; compiled_anchor_pack_id: string | null }; error?: string };
-      if (!res.ok || !payload.data?.run_id) throw new Error(payload.error ?? "Generate failed.");
-      setLastRunId(payload.data.run_id);
-      setNote(`Generation started via V2 runs pipeline. Run ${payload.data.run_id.slice(0, 8)} · status ${payload.data.status}.`);
+      const payload = await generateV2ClipIntent(selectedIntentId);
+      setLastRunId(payload.run_id);
+      setNote(`Generation started via V2 runs pipeline. Run ${payload.run_id.slice(0, 8)} · status ${payload.status}.`);
       await Promise.all([loadIntents(), refreshOrchestrationPlan()]);
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "Generate failed.");

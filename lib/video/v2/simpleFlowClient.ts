@@ -1,5 +1,6 @@
 import { resolveRunVideoUrl } from "@/app/studio/video/v2/components/helpers";
 import type { VideoRunHistoryRecord } from "@/lib/video/v2/types";
+import { runV2ClipGenerationFlow, type V2PlannerOverrides } from "@/lib/video/v2/generationFlowClient";
 
 export type SimpleMode = "strict" | "balanced" | "creative";
 
@@ -120,48 +121,22 @@ export async function generateSimpleVideo(input: {
   hasEndFrame: boolean;
   mode: SimpleMode;
 }) {
-  const modeOverrides =
+  const modeOverrides: Pick<V2PlannerOverrides, "validationMode" | "motionComplexity"> =
     input.mode === "strict"
-      ? { validation_mode: true, motion_complexity: "low" as const }
+      ? { validationMode: true, motionComplexity: "low" }
       : input.mode === "creative"
-        ? { validation_mode: false, motion_complexity: "high" as const }
-        : { validation_mode: false, motion_complexity: "medium" as const };
+        ? { validationMode: false, motionComplexity: "high" }
+        : { validationMode: false, motionComplexity: "medium" };
 
-  const orchestration = await fetchJson<{ compileReady: boolean; generateReady: boolean; summary?: string; reasons?: string[] }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/orchestrate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      planner_overrides: {
-        requested_start: "start_frame",
-        requested_end: input.hasEndFrame ? "end_frame" : "start_frame",
-        duration_seconds: input.durationSeconds,
-        start_end_frame_mode: input.hasEndFrame,
-        ...modeOverrides,
-      },
-    }),
-  });
-
-  if (!orchestration.compileReady || !orchestration.generateReady) {
-    throw new Error(orchestration.reasons?.[0] ?? orchestration.summary ?? "Clip is not ready to generate yet.");
-  }
-
-  await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      planner_overrides: {
-        requested_start: "start_frame",
-        requested_end: input.hasEndFrame ? "end_frame" : "start_frame",
-        duration_seconds: input.durationSeconds,
-        start_end_frame_mode: input.hasEndFrame,
-        ...modeOverrides,
-      },
-    }),
-  });
-
-  const generated = await fetchJson<{ run_id: string; status: string }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+  const { generated } = await runV2ClipGenerationFlow({
+    clipIntentId: input.clipIntentId,
+    plannerOverrides: {
+      requestedStart: "start_frame",
+      requestedEnd: input.hasEndFrame ? "end_frame" : "start_frame",
+      requestedDurationSeconds: input.durationSeconds,
+      startEndFrameMode: input.hasEndFrame,
+      ...modeOverrides,
+    },
   });
 
   return generated;
