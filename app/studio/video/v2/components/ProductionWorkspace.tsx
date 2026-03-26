@@ -124,8 +124,8 @@ export default function ProductionWorkspace(props: {
             {runtimeFidelity ? (
               <div className="rounded border border-cyan-500/30 bg-cyan-950/20 p-2 text-xs text-cyan-100">
                 <p>Exact End State: {runtimeFidelity.exact_end_state_required ? "Enabled" : "Disabled"}</p>
-                <p>Start Frame: {String(runtimeFidelity.start_frame_role ?? "n/a")}</p>
-                <p>End Frame: {String(runtimeFidelity.end_frame_role ?? "n/a")}</p>
+                <p>Start Frame Assigned: {runtimeFidelity.start_frame_assigned ? "yes" : "no"}</p>
+                <p>End Frame Assigned: {runtimeFidelity.end_frame_assigned ? "yes" : "no"}</p>
                 <p>Mode Lock: {String(runtimeFidelity.mode_lock ?? "none")}</p>
                 <p>Fidelity Prompt Hardening: {runtimeFidelity.prompt_hardening_enabled ? "enabled" : "disabled"}</p>
               </div>

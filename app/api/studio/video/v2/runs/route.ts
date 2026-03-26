@@ -8,7 +8,7 @@ import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
 import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolveRuntimeFrameUrls } from "@/lib/video/v2/runs";
 import { buildCanonicalRunSnapshot, normalizePrompt, resolvePersistedRunPrompt } from "@/lib/video/v2/promptPropagation";
 import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
-import { validateRuntimeFidelity } from "@/lib/video/v2/fidelityRuntime";
+import { validateRuntimeExecution } from "@/lib/video/v2/fidelityRuntime";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -536,12 +536,17 @@ export async function POST(request: Request) {
       typeof runtimeFidelity?.start_frame_generation_id === "string" ? runtimeFidelity.start_frame_generation_id : null;
     const endFrameGenerationId =
       typeof runtimeFidelity?.end_frame_generation_id === "string" ? runtimeFidelity.end_frame_generation_id : null;
-    validateRuntimeFidelity({
-      exactEndStateRequired,
-      modeSelected: runRequest.mode_selected,
-      startFrameGenerationId,
-      endFrameGenerationId,
-    });
+    try {
+      validateRuntimeExecution({
+        exactEndStateRequired,
+        modeSelected: runRequest.mode_selected,
+        startFrameGenerationId,
+        endFrameGenerationId,
+        canonicalDirectorPrompt,
+      });
+    } catch (error) {
+      return json(400, { success: false, error: error instanceof Error ? error.message : "Run validation failed." });
+    }
 
     const initialMeta: Record<string, unknown> = {
       selected_pack_id: runRequest.selected_pack_id,

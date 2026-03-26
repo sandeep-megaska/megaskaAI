@@ -5,6 +5,7 @@ import { persistCreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/per
 import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { buildCompileTraceabilitySnapshot } from "@/lib/video/v2/compileTraceability";
 import {
+  buildRuntimeFidelityMetadata,
   detectExactEndStateRequired,
   getVerifiedAnchorIds,
   hardenPromptForExactState,
@@ -314,15 +315,17 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     request_payload_snapshot: {
       ...traceabilitySnapshot,
       runtime_fidelity: {
-        exact_end_state_required: exactEndStateRequired,
+        ...buildRuntimeFidelityMetadata({
+          exactEndStateRequired,
+          startFrameGenerationId: frameSelection.startFrameGenerationId,
+          endFrameGenerationId: frameSelection.endFrameGenerationId,
+        }),
         exact_end_state_reason: frameSelection.exactEndStateReason,
         start_frame_generation_id: frameSelection.startFrameGenerationId,
         end_frame_generation_id: frameSelection.endFrameGenerationId,
         start_frame_role: frameSelection.startRole,
         end_frame_role: frameSelection.endRole,
         used_verified_front_back_pair: frameSelection.usedVerifiedFrontBackPair,
-        mode_lock: exactEndStateRequired ? "frames_to_video" : null,
-        prompt_hardening_enabled: exactEndStateRequired,
         prioritized_verified_anchor_generation_ids: getVerifiedAnchorIds(items),
       },
     },
