@@ -54,7 +54,7 @@ function buildReuseReason(snapshot: ReuseSnapshot | null | undefined): string | 
 export function buildOrchestrationPlan(input: BuildOrchestrationInput): OrchestrationPlan {
   const missingRoles = input.planner.missingRoles;
   const criticalMissingRoles = input.planner.criticalMissingRoles;
-  const compileBlockingReasons = getCompileBlockingReasons(input.workingPack, input.planner);
+  const compileBlockingReasons = getCompileBlockingReasons(input.workingPack, input.planner, input.transitionPlan);
   const compileReady = compileBlockingReasons.length === 0;
   const generateReady = compileReady && Boolean(input.compileSnapshot.compiledAnchorPackId);
 
@@ -62,13 +62,20 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
   const reasons: string[] = [...input.planner.reasons];
   const recommendations: string[] = [];
 
+  if (input.transitionPlan?.strategy === "segmented") {
+    recommendations.push("Transition Plan: Segmented. Run adjacent A→B and B→C segments with local anchors.");
+  }
+  if (input.transitionPlan?.strategy === "blocked_missing_intermediate") {
+    recommendations.push(input.transitionPlan.recommendations[0] ?? "Intermediate State Required before compile.");
+  }
+
   steps.push(step("planner_review", "Planner review", "completed", false, true, input.planner.decision));
 
   if (!missingRoles.length && input.planner.decision !== "block") {
     steps.push(step("search_existing_truth", "Search existing truth", "skipped", false, false, "No missing truth roles."));
     steps.push(step("expand_missing_anchors", "Generate missing anchors", "skipped", false, false, "No missing truth roles."));
     steps.push(step("recheck_fidelity", "Recheck fidelity", "completed", false, true, "Planner already reports full required truth coverage."));
-    steps.push(step("ready_to_compile", "Ready to compile", compileReady ? "ready" : "blocked", true, false, compileReady ? "All required truth is satisfied." : compileBlockingReasons[0]));
+    steps.push(step("ready_to_compile", "Ready to compile", compileReady ? "ready" : "blocked", true, false, compileReady ? "All required truth is satisfied." : compileBlockingReasons[0], { transition_strategy: input.transitionPlan?.strategy ?? "none" }));
     steps.push(step("compile", "Compile", compileReady ? "ready" : "blocked", compileReady, false, compileReady ? "Manual compile is available." : compileBlockingReasons[0]));
     steps.push(step("generate", "Generate", generateReady ? "ready" : "pending", generateReady, false, generateReady ? "Compiled anchor pack exists; generation can be user-triggered." : "Generate remains user-triggered after compile."));
 
@@ -85,6 +92,7 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
         expansionSnapshot: input.expansionSnapshot ?? null,
         compileReady,
         generateReady,
+      transitionPlan: input.transitionPlan ?? null,
       };
     }
 
@@ -101,6 +109,7 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
       expansionSnapshot: input.expansionSnapshot ?? null,
       compileReady,
       generateReady,
+      transitionPlan: input.transitionPlan ?? null,
     };
   }
 
@@ -221,5 +230,6 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
     expansionSnapshot: input.expansionSnapshot ?? null,
     compileReady,
     generateReady,
+    transitionPlan: input.transitionPlan ?? null,
   };
 }

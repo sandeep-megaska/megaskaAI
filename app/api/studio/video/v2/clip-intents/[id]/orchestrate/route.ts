@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildAnchorExpansionContext } from "@/lib/video/v2/anchorExpansion/plannerBridge";
 import { normalizeExpansionSnapshot, normalizeReuseSnapshot, orchestrateClipIntent } from "@/lib/video/v2/orchestration/orchestrate";
+import { buildTransitionPlan } from "@/lib/video/v2/intermediateStateEngine";
 
 type WorkingPackRow = {
   id: string;
@@ -51,6 +52,20 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     if (intentError) return json(500, { success: false, error: intentError.message });
     if (!intent) return json(404, { success: false, error: "Clip intent not found." });
 
+    const transitionPlan = buildTransitionPlan({
+      clipIntentId,
+      motionPrompt: expansionContext.motionPrompt,
+      items: expansionContext.items.map((item) => ({
+        id: item.id,
+        role: item.role,
+        generation_id: item.generation_id,
+        source_kind: item.source_kind,
+        confidence_score: item.confidence_score,
+      })),
+      garmentRisk: expansionContext.planner.riskSummary.garmentRisk,
+      allowDirectFrontBack: true,
+    });
+
     const plan = orchestrateClipIntent({
       planner: expansionContext.planner,
       workingPack: {
@@ -65,6 +80,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       },
       reuseSnapshot: normalizeReuseSnapshot(body.reuse_snapshot),
       expansionSnapshot: normalizeExpansionSnapshot(body.expansion_snapshot),
+      transitionPlan,
     });
 
     return json(200, { success: true, data: plan });

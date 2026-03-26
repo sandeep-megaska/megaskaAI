@@ -15,6 +15,7 @@ import {
 } from "@/lib/video/v2/fidelityRuntime";
 import { getPhase1TemplateById } from "@/lib/video/v2/templateMode";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type AnchorPackItemRole, type V2Mode } from "@/lib/video/v2/types";
+import { buildTransitionPlan, compileTransitionSegments } from "@/lib/video/v2/intermediateStateEngine";
 
 type ClipIntentRow = {
   id: string;
@@ -235,6 +236,37 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   const motionComplexity = classifyMotionComplexity(intent.motion_prompt);
   const anchorRisk = deriveAnchorRiskLevel(Number(pack.readiness_score ?? 0), motionComplexity);
 
+  const transitionPlan = buildTransitionPlan({
+    clipIntentId: intent.id,
+    motionPrompt: intent.motion_prompt,
+    items: items.map((item) => ({
+      id: item.id,
+      role: item.role,
+      generation_id: item.generation_id,
+      source_kind: item.source_kind,
+      confidence_score: item.confidence_score,
+      sort_order: item.sort_order,
+    })),
+    garmentRisk: fidelityPlan.riskSummary.garmentRisk,
+    allowDirectFrontBack: modeSelected === "frames_to_video",
+  });
+
+  if (transitionPlan.strategy === "blocked_missing_intermediate") {
+    throw new Error(
+      transitionPlan.recommendations[0]
+      ?? "Intermediate transition state is required before compile for this reveal motion.",
+    );
+  }
+
+  const compiledTransitionSegments = compileTransitionSegments(transitionPlan);
+  if (transitionPlan.strategy === "segmented" && compiledTransitionSegments.length < 2) {
+    throw new Error("Segmented transition plan requires at least two adjacent ready segments.");
+  }
+
+  if (transitionPlan.direct_transition_discouraged) {
+    warnings.push("Direct reveal is discouraged for this clip. Use segmented transition anchors when available.");
+  }
+
   const { data: anchorPack, error: anchorPackError } = await supabase
     .from("anchor_packs")
     .insert({
@@ -251,6 +283,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
         generation_origin: "slice_c_compiled",
         creative_fidelity_decision: fidelityPlan.decision,
         creative_fidelity_reasons: fidelityPlan.reasons,
+        transition_plan_strategy: transitionPlan.strategy,
+        transition_plan_coverage: transitionPlan.coverage,
       },
     })
     .select("id")
@@ -313,7 +347,11 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       provider_order: ["veo-3.1", "veo-3.1-fast", "veo-2"],
       planner_model: "slice-c-compiler",
       planner_version: "slice-c-compiler-v1",
-      debug_trace: traceabilitySnapshot,
+      debug_trace: {
+        ...traceabilitySnapshot,
+        transition_plan: transitionPlan,
+        transition_segments: compiledTransitionSegments,
+      },
     })
     .select("id")
     .single();
@@ -355,6 +393,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
         used_verified_front_back_pair: frameSelection.usedVerifiedFrontBackPair,
         prioritized_verified_anchor_generation_ids: getVerifiedAnchorIds(items),
       },
+      transition_plan: transitionPlan,
+      transition_segments: compiledTransitionSegments,
     },
   };
 

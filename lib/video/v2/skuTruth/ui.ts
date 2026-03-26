@@ -30,6 +30,10 @@ export type SkuTruthCandidateImage = {
 
 const ROLE_KEYWORDS: Array<{ keyword: string; role: string }> = [
   { keyword: "fit_anchor", role: "fit_anchor" },
+  { keyword: "mid_turn_left", role: "three_quarter_left" },
+  { keyword: "mid_turn_right", role: "three_quarter_right" },
+  { keyword: "side_left", role: "left_profile" },
+  { keyword: "side_right", role: "right_profile" },
   { keyword: "three_quarter_left", role: "three_quarter_left" },
   { keyword: "three_quarter_right", role: "three_quarter_right" },
   { keyword: "left_profile", role: "left_profile" },

@@ -3,6 +3,7 @@ import { buildAnchorExpansionContext } from "@/lib/video/v2/anchorExpansion/plan
 import { orchestrateClipIntent } from "@/lib/video/v2/orchestration/orchestrate";
 import type { OrchestrationPlan } from "@/lib/video/v2/orchestration/types";
 import type { OrchestrationSnapshots } from "@/lib/video/v2/assistedExecution/types";
+import { buildTransitionPlan } from "@/lib/video/v2/intermediateStateEngine";
 
 type WorkingPackRow = {
   id: string;
@@ -37,6 +38,20 @@ export async function refreshOrchestrationPlan(clipIntentId: string, snapshots?:
   if (intentError) throw new Error(intentError.message);
   if (!intent) throw new Error("Clip intent not found.");
 
+  const transitionPlan = buildTransitionPlan({
+    clipIntentId,
+    motionPrompt: expansionContext.motionPrompt,
+    items: expansionContext.items.map((item) => ({
+      id: item.id,
+      role: item.role,
+      generation_id: item.generation_id,
+      source_kind: item.source_kind,
+      confidence_score: item.confidence_score,
+    })),
+    garmentRisk: expansionContext.planner.riskSummary.garmentRisk,
+    allowDirectFrontBack: true,
+  });
+
   return orchestrateClipIntent({
     planner: expansionContext.planner,
     workingPack: {
@@ -51,5 +66,6 @@ export async function refreshOrchestrationPlan(clipIntentId: string, snapshots?:
     },
     reuseSnapshot: snapshots?.reuseSnapshot ?? null,
     expansionSnapshot: snapshots?.expansionSnapshot ?? null,
+    transitionPlan,
   });
 }
