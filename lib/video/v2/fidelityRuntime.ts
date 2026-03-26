@@ -13,6 +13,8 @@ export type RuntimeFrameSelection = {
   endFrameGenerationId: string | null;
   startRole: string | null;
   endRole: string | null;
+  usedVerifiedFrontBackPair: boolean;
+  exactEndStateReason: string | null;
 };
 
 const VERIFIED_SOURCE_PRIORITY: Record<string, number> = {
@@ -38,6 +40,17 @@ function pickBestForRole(items: RuntimeAnchorItem[], role: string) {
   return matches[0];
 }
 
+function isVerifiedTruthSource(sourceKind: string) {
+  return sourceKind === "manual_verified_override" || sourceKind === "sku_verified_truth";
+}
+
+function pickBestVerifiedForRole(items: RuntimeAnchorItem[], role: string) {
+  const verifiedMatches = items.filter((item) => item.role === role && item.generation_id && isVerifiedTruthSource(item.source_kind));
+  if (!verifiedMatches.length) return null;
+  verifiedMatches.sort((a, b) => anchorRank(b) - anchorRank(a));
+  return verifiedMatches[0];
+}
+
 function detectEndRole(prompt: string) {
   const normalized = prompt.toLowerCase();
   if (/\b(back design|show(?:s)? the back|rear reveal|rear view|turn(?:s|ing)? to back|front\s*to\s*back|exact back view|from behind|back view)\b/.test(normalized)) {
@@ -55,15 +68,31 @@ export function detectExactEndStateRequired(motionPrompt: string) {
   const normalized = motionPrompt.toLowerCase();
   const parsed = parseIntentSignals(motionPrompt);
   const explicitExact = /\b(exact|precise|must match|no variation|strict fidelity)\b/.test(normalized);
-  const explicitReveal = /\b(reveal|show|turn to|front\s*to\s*back|rear reveal|back design)\b/.test(normalized);
+  const explicitReveal = /\b(reveal|show|turn to|front(?:\s*|-)\s*to(?:\s*|-)\s*back|rear reveal|back design)\b/.test(normalized);
   const geometrySensitive = /\b(garment geometry|strap placement|silhouette|cut line|product reveal)\b/.test(normalized);
+  const explicitBackReveal =
+    /\b(show(?:s)?(?: the)? back design|turn(?:s|ing)? to back|rear reveal|front(?:\s*|-)\s*to(?:\s*|-)\s*back reveal)\b/.test(normalized);
 
-  return parsed.hasBackReveal || parsed.hasWalkAwayMotion || (explicitExact && explicitReveal) || geometrySensitive;
+  return parsed.hasBackReveal || parsed.hasWalkAwayMotion || explicitBackReveal || (explicitExact && explicitReveal) || geometrySensitive;
 }
 
 export function selectRuntimeFrames(input: { motionPrompt: string; items: RuntimeAnchorItem[]; exactEndStateRequired: boolean }): RuntimeFrameSelection {
   const withGeneration = input.items.filter((item) => Boolean(item.generation_id));
-  const start = pickBestForRole(withGeneration, "front") ?? pickBestForRole(withGeneration, "fit_anchor");
+  const verifiedFront = pickBestVerifiedForRole(withGeneration, "front");
+  const verifiedBack = pickBestVerifiedForRole(withGeneration, "back");
+
+  if (input.exactEndStateRequired && verifiedFront && verifiedBack) {
+    return {
+      startFrameGenerationId: verifiedFront.generation_id ?? null,
+      endFrameGenerationId: verifiedBack.generation_id ?? null,
+      startRole: verifiedFront.role ?? "front",
+      endRole: verifiedBack.role ?? "back",
+      usedVerifiedFrontBackPair: true,
+      exactEndStateReason: "verified_front_back_truth_pair",
+    };
+  }
+
+  const start = verifiedFront ?? pickBestForRole(withGeneration, "front") ?? pickBestForRole(withGeneration, "fit_anchor");
 
   const endRole = detectEndRole(input.motionPrompt);
   const end = endRole ? pickBestForRole(withGeneration, endRole) : null;
@@ -74,6 +103,8 @@ export function selectRuntimeFrames(input: { motionPrompt: string; items: Runtim
       endFrameGenerationId: null,
       startRole: start?.role ?? null,
       endRole: null,
+      usedVerifiedFrontBackPair: false,
+      exactEndStateReason: null,
     };
   }
 
@@ -82,6 +113,8 @@ export function selectRuntimeFrames(input: { motionPrompt: string; items: Runtim
     endFrameGenerationId: end?.generation_id ?? null,
     startRole: start?.role ?? null,
     endRole,
+    usedVerifiedFrontBackPair: false,
+    exactEndStateReason: endRole ? "prompt_end_role_match" : "prompt_end_role_missing",
   };
 }
 

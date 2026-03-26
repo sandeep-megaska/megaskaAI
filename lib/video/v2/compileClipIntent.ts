@@ -315,10 +315,12 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       ...traceabilitySnapshot,
       runtime_fidelity: {
         exact_end_state_required: exactEndStateRequired,
+        exact_end_state_reason: frameSelection.exactEndStateReason,
         start_frame_generation_id: frameSelection.startFrameGenerationId,
         end_frame_generation_id: frameSelection.endFrameGenerationId,
         start_frame_role: frameSelection.startRole,
         end_frame_role: frameSelection.endRole,
+        used_verified_front_back_pair: frameSelection.usedVerifiedFrontBackPair,
         mode_lock: exactEndStateRequired ? "frames_to_video" : null,
         prompt_hardening_enabled: exactEndStateRequired,
         prioritized_verified_anchor_generation_ids: getVerifiedAnchorIds(items),
