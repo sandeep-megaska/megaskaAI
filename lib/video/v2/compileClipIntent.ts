@@ -50,6 +50,15 @@ type WorkingPackItemRow = {
   sort_order: number;
 };
 
+export type CompilePlannerOverrides = {
+  requestedStart?: "front" | "three_quarter_left" | "three_quarter_right" | "mid_turn_left" | "mid_turn_right" | "back" | "detail" | "fit_anchor" | "start_frame" | "end_frame";
+  requestedEnd?: "front" | "three_quarter_left" | "three_quarter_right" | "mid_turn_left" | "mid_turn_right" | "back" | "detail" | "fit_anchor" | "start_frame" | "end_frame";
+  motionComplexity?: MotionComplexity;
+  requestedDurationSeconds?: 4 | 6 | 8;
+  validationMode?: boolean;
+  startEndFrameMode?: boolean;
+};
+
 type CompileResult = {
   clipIntentId: string;
   workingPackId: string;
@@ -102,7 +111,7 @@ function resolveCompileMode(baseMode: V2Mode, recommendedMode: V2Mode, warnings:
 }
 
 
-export async function compileClipIntent(input: { clipIntentId: string; force?: boolean }): Promise<CompileResult> {
+export async function compileClipIntent(input: { clipIntentId: string; force?: boolean; plannerOverrides?: CompilePlannerOverrides }): Promise<CompileResult> {
   const supabase = getSupabaseAdminClient();
 
   const { data: intent, error: intentError } = await supabase
@@ -237,6 +246,12 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   const anchorRisk = deriveAnchorRiskLevel(Number(pack.readiness_score ?? 0), motionComplexity);
 
   const transitionPlan = buildTransitionPlan({
+    requestedStart: input.plannerOverrides?.requestedStart,
+    requestedEnd: input.plannerOverrides?.requestedEnd,
+    requestedDurationSeconds: input.plannerOverrides?.requestedDurationSeconds,
+    validationMode: input.plannerOverrides?.validationMode,
+    startEndFrameMode: input.plannerOverrides?.startEndFrameMode,
+    motionComplexity: input.plannerOverrides?.motionComplexity,
     clipIntentId: intent.id,
     motionPrompt: intent.motion_prompt,
     items: items.map((item) => ({
@@ -333,7 +348,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)} and creative fidelity decision ${fidelityPlan.decision}.`,
       recommended_pack_ids: [anchorPack.id],
       required_reference_roles: requiredRoles,
-      duration_seconds: Number(intent.duration_seconds ?? 8),
+      duration_seconds: transitionPlan.compiled_video_plan.total_duration_seconds,
       aspect_ratio: intent.aspect_ratio || "9:16",
       motion_complexity: motionComplexity,
       anchor_risk_level: anchorRisk,
@@ -367,7 +382,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     director_prompt: hardenedDirectorPrompt,
     fallback_prompt: promptBase.fallbackPrompt,
     aspect_ratio: intent.aspect_ratio || "9:16",
-    duration_seconds: Number(intent.duration_seconds ?? 8),
+    duration_seconds: transitionPlan.compiled_video_plan.total_duration_seconds,
     request_payload_snapshot: {
       ...traceabilitySnapshot,
       template_mode: selectedTemplate

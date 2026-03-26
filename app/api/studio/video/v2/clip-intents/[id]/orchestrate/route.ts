@@ -29,6 +29,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const body = (await request.json().catch(() => ({}))) as {
       reuse_snapshot?: unknown;
       expansion_snapshot?: unknown;
+      planner_overrides?: {
+        requested_start?: "front" | "three_quarter_left" | "three_quarter_right" | "mid_turn_left" | "mid_turn_right" | "back" | "detail" | "fit_anchor" | "start_frame" | "end_frame";
+        requested_end?: "front" | "three_quarter_left" | "three_quarter_right" | "mid_turn_left" | "mid_turn_right" | "back" | "detail" | "fit_anchor" | "start_frame" | "end_frame";
+        motion_complexity?: "low" | "medium" | "high";
+        duration_seconds?: 4 | 6 | 8;
+        validation_mode?: boolean;
+        start_end_frame_mode?: boolean;
+      };
     };
 
     const expansionContext = await buildAnchorExpansionContext(clipIntentId);
@@ -64,6 +72,12 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       })),
       garmentRisk: expansionContext.planner.riskSummary.garmentRisk,
       allowDirectFrontBack: true,
+      requestedStart: body.planner_overrides?.requested_start,
+      requestedEnd: body.planner_overrides?.requested_end,
+      requestedDurationSeconds: body.planner_overrides?.duration_seconds,
+      validationMode: body.planner_overrides?.validation_mode,
+      startEndFrameMode: body.planner_overrides?.start_end_frame_mode,
+      motionComplexity: body.planner_overrides?.motion_complexity,
     });
 
     const plan = orchestrateClipIntent({

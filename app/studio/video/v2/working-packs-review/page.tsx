@@ -57,9 +57,20 @@ type FidelityPlanResponse = {
     intermediate_state_required: boolean;
     intermediate_state_recommended: boolean;
     states: Array<{ state_label: string; source_kind: string; is_verified: boolean }>;
-    segments: Array<{ segment_id: string; from_label: string; to_label: string; status: "ready" | "blocked"; reason: string }>;
+    segments: Array<{ segment_id: string; from_label: string; to_label: string; status: "ready" | "blocked"; reason: string; duration_seconds?: number; required_anchor_roles?: string[] }>;
     missing_state_labels: string[];
     recommendations: string[];
+    compiled_video_plan?: {
+      strategy: "direct_transition" | "segmented_transition";
+      state_path: string[];
+      total_duration_seconds: 4 | 6 | 8;
+      per_segment_durations: number[];
+      warnings: string[];
+      blocked_reasons: string[];
+    };
+    risk_tier?: "tier1_safe" | "tier2_medium" | "tier3_high";
+    requested_start_state?: string;
+    requested_end_state?: string;
   };
 };
 
@@ -139,6 +150,7 @@ function provenanceLabel(sourceKind: string) {
 }
 
 export default function WorkingPackReviewPage() {
+  const VIDEO_STATE_OPTIONS = ["front", "three_quarter_left", "three_quarter_right", "mid_turn_left", "mid_turn_right", "back", "detail", "fit_anchor", "start_frame", "end_frame"] as const;
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
   const [packs, setPacks] = useState<WorkingPack[]>([]);
@@ -164,6 +176,12 @@ export default function WorkingPackReviewPage() {
   const [selectedCandidateGenerationId, setSelectedCandidateGenerationId] = useState("");
   const [selectedRoleSuggested, setSelectedRoleSuggested] = useState<string | null>(null);
   const [didManuallySetRole, setDidManuallySetRole] = useState(false);
+  const [requestedStartState, setRequestedStartState] = useState<(typeof VIDEO_STATE_OPTIONS)[number]>("front");
+  const [requestedEndState, setRequestedEndState] = useState<(typeof VIDEO_STATE_OPTIONS)[number]>("back");
+  const [motionComplexity, setMotionComplexity] = useState<"low" | "medium" | "high">("low");
+  const [durationSeconds, setDurationSeconds] = useState<4 | 6 | 8>(6);
+  const [validationMode, setValidationMode] = useState(true);
+  const [startEndFrameMode, setStartEndFrameMode] = useState(false);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -251,6 +269,9 @@ export default function WorkingPackReviewPage() {
     if (fidelityState?.transition_plan?.strategy === "blocked_missing_intermediate") {
       reasons.push(fidelityState.transition_plan.recommendations[0] ?? "Intermediate state is required before compile.");
     }
+    if (fidelityState?.transition_plan?.compiled_video_plan?.blocked_reasons?.length) {
+      reasons.push(...fidelityState.transition_plan.compiled_video_plan.blocked_reasons);
+    }
     return reasons;
   }, [activePack, fidelityState]);
 
@@ -260,6 +281,16 @@ export default function WorkingPackReviewPage() {
     setDidManuallySetRole(false);
     setOverrideRole("");
   }, [selectedIntentId]);
+
+  useEffect(() => {
+    if (startEndFrameMode && durationSeconds !== 8) {
+      setDurationSeconds(8);
+      return;
+    }
+    if (!startEndFrameMode && validationMode && durationSeconds !== 4) {
+      setDurationSeconds(4);
+    }
+  }, [durationSeconds, startEndFrameMode, validationMode]);
 
 
   async function loadSkuTruth(nextSkuCode?: string) {
@@ -356,7 +387,20 @@ export default function WorkingPackReviewPage() {
     setIsCompiling(true);
 
     try {
-      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/compile`, { method: "POST" });
+      const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/compile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planner_overrides: {
+            requestedStart: requestedStartState,
+            requestedEnd: requestedEndState,
+            motionComplexity,
+            requestedDurationSeconds: startEndFrameMode ? 8 : durationSeconds,
+            validationMode,
+            startEndFrameMode,
+          },
+        }),
+      });
       const payload = (await res.json()) as { data?: CompileResponse; error?: string };
       if (!res.ok || !payload.data) throw new Error(payload.error ?? "Compile failed.");
       setCompiledState(payload.data);
@@ -371,7 +415,18 @@ export default function WorkingPackReviewPage() {
 
   async function refreshFidelityPlan() {
     if (!selectedIntentId) return;
-    const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/fidelity-plan`, { method: "POST" });
+    const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/fidelity-plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requested_start: requestedStartState,
+        requested_end: requestedEndState,
+        motion_complexity: motionComplexity,
+        duration_seconds: startEndFrameMode ? 8 : durationSeconds,
+        validation_mode: validationMode,
+        start_end_frame_mode: startEndFrameMode,
+      }),
+    });
     const payload = (await res.json()) as { data?: FidelityPlanResponse; error?: string };
     if (!res.ok || !payload.data) throw new Error(payload.error ?? "Failed to refresh fidelity plan.");
     setFidelityState(payload.data);
@@ -400,6 +455,14 @@ export default function WorkingPackReviewPage() {
             reasons: expansionState.reasons,
           }
           : { attempted: false, decision: "not_needed", rolesCreated: [], rolesFailed: [], reasons: [] },
+        planner_overrides: {
+          requested_start: requestedStartState,
+          requested_end: requestedEndState,
+          motion_complexity: motionComplexity,
+          duration_seconds: startEndFrameMode ? 8 : durationSeconds,
+          validation_mode: validationMode,
+          start_end_frame_mode: startEndFrameMode,
+        },
       }),
     });
     const payload = (await res.json()) as { data?: OrchestrationPlanResponse; error?: string };
@@ -565,6 +628,42 @@ export default function WorkingPackReviewPage() {
               <option key={intent.id} value={intent.id}>{intent.intent_label} ({intent.id.slice(0, 8)})</option>
             ))}
           </select>
+          <div className="grid gap-2 md:grid-cols-3">
+            <label className="text-xs text-zinc-300">Start state
+              <select className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm" value={requestedStartState} onChange={(event) => setRequestedStartState(event.target.value as (typeof VIDEO_STATE_OPTIONS)[number])}>
+                {VIDEO_STATE_OPTIONS.map((state) => <option key={`start-${state}`} value={state}>{state}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-zinc-300">End state
+              <select className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm" value={requestedEndState} onChange={(event) => setRequestedEndState(event.target.value as (typeof VIDEO_STATE_OPTIONS)[number])}>
+                {VIDEO_STATE_OPTIONS.map((state) => <option key={`end-${state}`} value={state}>{state}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-zinc-300">Motion complexity
+              <select className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm" value={motionComplexity} onChange={(event) => setMotionComplexity(event.target.value as "low" | "medium" | "high")}>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            <label className="text-xs text-zinc-300">Duration
+              <select className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm" value={durationSeconds} onChange={(event) => setDurationSeconds(Number(event.target.value) as 4 | 6 | 8)} disabled={startEndFrameMode}>
+                <option value={4}>4s</option>
+                <option value={6}>6s</option>
+                <option value={8}>8s</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 rounded border border-zinc-700 px-2 py-2 text-xs text-zinc-300">
+              <input type="checkbox" checked={validationMode} onChange={(event) => setValidationMode(event.target.checked)} />
+              Validation mode (defaults to 4s)
+            </label>
+            <label className="flex items-center gap-2 rounded border border-zinc-700 px-2 py-2 text-xs text-zinc-300">
+              <input type="checkbox" checked={startEndFrameMode} onChange={(event) => setStartEndFrameMode(event.target.checked)} />
+              Start/end frame mode (forces 8s)
+            </label>
+          </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={autoBuild} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Auto-build Working Pack</button>
             <button type="button" onClick={refreshFidelityPlan} className="rounded bg-zinc-300 px-3 py-2 text-sm font-medium text-zinc-950">Refresh Fidelity Plan</button>
@@ -593,19 +692,30 @@ export default function WorkingPackReviewPage() {
               {fidelityState.transition_plan ? (
                 <div className="mt-2 rounded border border-zinc-700/70 bg-zinc-950/50 p-2 space-y-1">
                   <p>Transition Plan: <span className="font-medium text-zinc-100">{fidelityState.transition_plan.strategy === "segmented" ? "Segmented" : fidelityState.transition_plan.strategy === "blocked_missing_intermediate" ? "Intermediate State Required" : "Direct / N/A"}</span></p>
+                  {fidelityState.transition_plan.risk_tier ? <p>Garment risk: <span className={`font-medium ${fidelityState.transition_plan.risk_tier === "tier3_high" ? "text-rose-300" : fidelityState.transition_plan.risk_tier === "tier2_medium" ? "text-amber-300" : "text-emerald-300"}`}>{fidelityState.transition_plan.risk_tier}</span></p> : null}
                   <p>State Coverage: <span className="text-zinc-100">{fidelityState.transition_plan.coverage}</span></p>
                   <p>Direct Transition: <span className={fidelityState.transition_plan.direct_transition_discouraged ? "text-amber-300" : "text-emerald-300"}>{fidelityState.transition_plan.direct_transition_discouraged ? "Discouraged" : "Allowed"}</span></p>
                   <p>Available States: {fidelityState.transition_plan.states.map((state) => state.state_label).join(" → ") || "none"}</p>
+                  {fidelityState.transition_plan.compiled_video_plan ? (
+                    <>
+                      <p>Compiled strategy: <span className="text-zinc-100">{fidelityState.transition_plan.compiled_video_plan.strategy}</span></p>
+                      <p>State path: {fidelityState.transition_plan.compiled_video_plan.state_path.join(" → ") || "none"}</p>
+                      <p>Total duration: {fidelityState.transition_plan.compiled_video_plan.total_duration_seconds}s</p>
+                      <p>Per-segment durations: {fidelityState.transition_plan.compiled_video_plan.per_segment_durations.join("s, ")}s</p>
+                    </>
+                  ) : null}
                   {fidelityState.transition_plan.missing_state_labels.length ? <p className="text-amber-300">Missing Intermediate States: {fidelityState.transition_plan.missing_state_labels.join(", ")}</p> : null}
                   {fidelityState.transition_plan.segments.length ? (
                     <div>
                       {fidelityState.transition_plan.segments.map((segment, index) => (
                         <p key={segment.segment_id}>
-                          Segment {index + 1}: {segment.from_label} → {segment.to_label} · {segment.status === "ready" ? "Ready" : "Blocked"}
+                          Segment {index + 1}: {segment.from_label} → {segment.to_label} · {segment.status === "ready" ? "Ready" : "Blocked"}{segment.duration_seconds ? ` · ${segment.duration_seconds}s` : ""}{segment.required_anchor_roles?.length ? ` · anchors: ${segment.required_anchor_roles.join(", ")}` : ""}
                         </p>
                       ))}
                     </div>
                   ) : null}
+                  {fidelityState.transition_plan.compiled_video_plan?.warnings?.length ? <p className="text-amber-200">Warnings: {fidelityState.transition_plan.compiled_video_plan.warnings.join(" | ")}</p> : null}
+                  {fidelityState.transition_plan.compiled_video_plan?.blocked_reasons?.length ? <p className="text-rose-300">Blocked reasons: {fidelityState.transition_plan.compiled_video_plan.blocked_reasons.join(" | ")}</p> : null}
                   {fidelityState.transition_plan.recommendations.length ? <p className="text-cyan-200">Recommendation: {fidelityState.transition_plan.recommendations.join(" | ")}</p> : null}
                 </div>
               ) : null}
