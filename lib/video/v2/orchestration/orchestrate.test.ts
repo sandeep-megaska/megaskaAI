@@ -153,6 +153,36 @@ void (async () => {
   assert.equal(postRecoveryReady.status, "ready");
   assert.equal(postRecoveryReady.compileReady, true);
 
+
+  const readyAfterSkuTruth = buildOrchestrationPlan(baseInput({
+    planner: {
+      ...baseInput().planner,
+      decision: "proceed",
+      missingRoles: [],
+      criticalMissingRoles: [],
+      requiredRoles: ["front", "fit_anchor", "back"],
+      reasons: ["Verified SKU truth attached for back role."],
+    },
+    workingPack: {
+      ...baseInput().workingPack,
+      roles: ["front", "fit_anchor", "back"],
+    },
+    reuseSnapshot: {
+      attempted: true,
+      rolesReused: ["back"],
+      rolesUnresolved: [],
+      reasons: ["Back role recovered from SKU verified truth."],
+    },
+    expansionSnapshot: {
+      attempted: false,
+      decision: "not_needed",
+      rolesCreated: [],
+      rolesFailed: [],
+      reasons: ["Verified truth already satisfied missing role."],
+    },
+  }));
+  assert.equal(readyAfterSkuTruth.status, "ready");
+
   const noHiddenGenerateWhenIncomplete = buildOrchestrationPlan(baseInput({
     planner: {
       ...baseInput().planner,

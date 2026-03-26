@@ -6,6 +6,13 @@ function hasRealRole(context: AnchorExpansionContext, role: string) {
   return context.items.some((item) => item.role === role && item.generation_id && item.source_kind !== "synthesized");
 }
 
+
+function hasVerifiedRole(context: AnchorExpansionContext, role: string) {
+  return context.items.some((item) =>
+    item.role === role && item.generation_id && (item.source_kind === "sku_verified_truth" || item.source_kind === "manual_verified_override"),
+  );
+}
+
 function averageRealConfidence(context: AnchorExpansionContext) {
   const real = context.items.filter((item) => item.generation_id && item.source_kind !== "synthesized");
   if (!real.length) return 0;
@@ -14,6 +21,16 @@ function averageRealConfidence(context: AnchorExpansionContext) {
 
 export function evaluateExpansionEligibility(context: AnchorExpansionContext, role: string): ExpansionEligibility {
   const blockers: string[] = [];
+
+  if (hasVerifiedRole(context, role)) {
+    return {
+      role,
+      eligible_for_expansion: false,
+      eligibility_reason: "Verified role truth already exists; expansion is not allowed.",
+      confidence_level: "high",
+      blockers: ["verified truth already present"],
+    };
+  }
   const avgConfidence = averageRealConfidence(context);
   const sourceTruthCount = 1 + (context.sourceProfile.additional_generation_ids?.length ?? 0);
   const notes = `${context.sourceProfile.garment_notes ?? ""} ${context.motionPrompt}`;

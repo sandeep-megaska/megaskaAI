@@ -20,6 +20,7 @@ export default function CreateClipPage() {
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [intentLabel, setIntentLabel] = useState("Create hero product clip");
   const [motionPrompt, setMotionPrompt] = useState("Subtle body sway with garment fidelity lock.");
+  const [skuCode, setSkuCode] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +90,7 @@ export default function CreateClipPage() {
         source_profile_id: selectedProfileId,
         intent_label: intentLabel,
         motion_prompt: motionPrompt,
+        sku_code: skuCode.trim() || undefined,
       }),
     });
     const payload = (await res.json()) as { data?: { id: string }; error?: string };
@@ -142,6 +144,7 @@ export default function CreateClipPage() {
           <h2 className="font-medium">3) Create clip intent</h2>
           <input className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={intentLabel} onChange={(event) => setIntentLabel(event.target.value)} />
           <textarea className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={motionPrompt} onChange={(event) => setMotionPrompt(event.target.value)} />
+          <input className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="SKU / dress code (optional)" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
           <button type="button" onClick={createIntent} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950">Create Clip Intent</button>
         </section>
 

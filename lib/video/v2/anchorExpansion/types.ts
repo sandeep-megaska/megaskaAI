@@ -3,7 +3,13 @@ import type { CreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/types
 export type ExpansionDecision = "expanded" | "partial" | "blocked" | "not_needed";
 export type ExpansionConfidence = "low" | "medium" | "high";
 
-export type ExpansionProvenance = "user_uploaded" | "reused_existing" | "expanded_generated" | "synthesized_support";
+export type ExpansionProvenance =
+  | "manual_verified_override"
+  | "sku_verified_truth"
+  | "user_uploaded"
+  | "reused_existing"
+  | "expanded_generated"
+  | "synthesized_support";
 
 export type ExpansionEligibility = {
   role: string;

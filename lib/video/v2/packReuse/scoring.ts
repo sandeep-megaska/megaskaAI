@@ -1,8 +1,14 @@
+import { truthPriorityScore } from "@/lib/video/v2/skuTruth/ranking";
 import type { PackReuseContext, ReuseCandidate, ReuseCandidateRecord, ReuseConfidence } from "@/lib/video/v2/packReuse/types";
 
 const CRITICAL_SYNTHETIC_BLOCK = new Set(["synthesized_support"]);
 
-function normalizeProvenance(sourceKind: string): "user_uploaded" | "reused_existing" | "expanded_generated" | "synthesized_support" {
+function normalizeProvenance(
+  sourceKind: string,
+): "manual_verified_override" | "sku_verified_truth" | "user_uploaded" | "reused_existing" | "expanded_generated" | "synthesized_support" {
+  if (sourceKind === "manual_verified_override") return "manual_verified_override";
+  if (sourceKind === "sku_verified_truth") return "sku_verified_truth";
+  if (sourceKind === "user_uploaded") return "user_uploaded";
   if (sourceKind === "expanded_generated") return "expanded_generated";
   if (sourceKind === "synthesized") return "synthesized_support";
   return "reused_existing";
@@ -56,10 +62,7 @@ export function scoreReuseCandidate(input: {
   score += roleMatch.score;
   reasons.push(roleMatch.label);
 
-  if (provenance === "reused_existing") score += 6;
-  if (provenance === "expanded_generated") score += 7;
-  if (provenance === "user_uploaded") score += 8;
-  if (provenance === "synthesized_support") score -= 12;
+  score += truthPriorityScore(provenance) / 5;
 
   score += Math.max(0, Math.min(5, Number((candidate.quality_score * 5).toFixed(2))));
   score += Math.max(0, 3 - recencyRank);

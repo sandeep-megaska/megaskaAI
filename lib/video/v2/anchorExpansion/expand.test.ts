@@ -102,12 +102,54 @@ void (async () => {
   );
   assert.equal(insufficientTruth.eligible_for_expansion, false);
 
+
+  const verifiedBackBlocked = evaluateExpansionEligibility(
+    buildContext({
+      items: [
+        { id: "i-front", role: "front", generation_id: "g-front", source_kind: "reused", confidence_score: 0.91 },
+        { id: "i-fit", role: "fit_anchor", generation_id: "g-fit", source_kind: "reused", confidence_score: 0.87 },
+        { id: "i-back", role: "back", generation_id: "g-back-real", source_kind: "sku_verified_truth", confidence_score: 1 },
+      ],
+      planner: {
+        ...buildContext().planner,
+        missingRoles: ["detail"],
+        criticalMissingRoles: [],
+        requiredRoles: ["front", "fit_anchor", "back", "detail"],
+      },
+    }),
+    "back",
+  );
+  assert.equal(verifiedBackBlocked.eligible_for_expansion, false);
+
   const noMissing = await expandMissingAnchorsForTest(
     buildContext({ planner: { ...buildContext().planner, missingRoles: [] } }),
     undefined,
     {},
   );
   assert.equal(noMissing.decision, "not_needed");
+
+  const partialExpanded = await expandMissingAnchorsForTest(
+    buildContext({
+      planner: {
+        ...buildContext().planner,
+        missingRoles: ["back", "detail"],
+        criticalMissingRoles: ["back"],
+        requiredRoles: ["front", "fit_anchor", "back", "detail"],
+      },
+      items: [
+        { id: "i-front", role: "front", generation_id: "g-front", source_kind: "reused", confidence_score: 0.91 },
+        { id: "i-fit", role: "fit_anchor", generation_id: "g-fit", source_kind: "reused", confidence_score: 0.87 },
+        { id: "i-back", role: "back", generation_id: "g-back-real", source_kind: "manual_verified_override", confidence_score: 1 },
+      ],
+    }),
+    undefined,
+    {
+      generate: async () => ({ bytes: Buffer.from("fake"), mimeType: "image/png", backendId: "gemini", backendModel: "gemini-2.5" }),
+      persist: async () => ({ generationId: "gen-detail-1", assetId: "gen-detail-1" }),
+    },
+  );
+  assert.equal((partialExpanded.roles_created as string[]).some((role) => role === "detail"), true);
+  assert.equal((partialExpanded.roles_created as string[]).some((role) => role === "back"), false);
 
   const expanded = await expandMissingAnchorsForTest(buildContext(), undefined, {
     generate: async () => ({ bytes: Buffer.from("fake"), mimeType: "image/png", backendId: "gemini", backendModel: "gemini-2.5" }),

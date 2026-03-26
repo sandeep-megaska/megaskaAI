@@ -32,6 +32,7 @@ export async function POST(request: Request) {
       scene_policy?: string;
       motion_template?: string;
       fidelity_priority?: string;
+      sku_code?: string;
     };
 
     if (!body.source_profile_id?.trim()) return json(400, { success: false, error: "source_profile_id is required." });
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
         scene_policy: body.scene_policy?.trim() || null,
         motion_template: body.motion_template?.trim() || null,
         fidelity_priority: body.fidelity_priority?.trim() || "maximum-fidelity",
+        sku_code: body.sku_code?.trim()?.toUpperCase() || null,
         status: "ready",
       })
       .select("*")
