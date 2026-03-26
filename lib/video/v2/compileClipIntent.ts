@@ -113,6 +113,50 @@ function resolveCompileMode(baseMode: V2Mode, recommendedMode: V2Mode, warnings:
   return recommendedMode === "frames_to_video" ? "frames_to_video" : baseMode;
 }
 
+function hasSimpleFrameConfig(pack: WorkingPackRow): boolean {
+  const meta = asObject(pack.pack_meta);
+  const config = asObject(meta.simple_frame_config);
+  return Boolean(config.enabled);
+}
+
+function shouldApplySimpleFrameTruthDebtOverride(input: {
+  plannerOverrides?: CompilePlannerOverrides;
+  transitionPlan: ReturnType<typeof buildTransitionPlan>;
+  truthDebtDecision: "allow" | "allow_with_warning" | "downgrade" | "block";
+  motionComplexity: MotionComplexity;
+  pack: WorkingPackRow;
+  compileItems: WorkingPackItemRow[];
+}): { apply: boolean; reason: string } {
+  const requestedStart = input.plannerOverrides?.requestedStart;
+  const requestedEnd = input.plannerOverrides?.requestedEnd;
+  const duration = input.transitionPlan.compiled_video_plan.total_duration_seconds;
+  const hasStartFrame = input.compileItems.some((item) => item.role === "start_frame" && Boolean(item.generation_id));
+  const hasEndFrame = input.compileItems.some((item) => item.role === "end_frame" && Boolean(item.generation_id));
+  const simpleConfigExists = hasSimpleFrameConfig(input.pack);
+  const strictOrBalancedMode = input.motionComplexity !== "high";
+  const frameRequestEligible = requestedStart === "start_frame" && (requestedEnd === "end_frame" || requestedEnd === "start_frame");
+  const frameToFrame = requestedEnd === "end_frame";
+  const shortDuration = duration === 4 || duration === 6 || duration === 8;
+  const safeTransitionPlan = input.transitionPlan.strategy !== "blocked_missing_intermediate";
+  const highRiskMotionRequested = input.motionComplexity === "high";
+  const obviousMotionMismatch = input.transitionPlan.target_direction === "other";
+
+  if (!frameRequestEligible) return { apply: false, reason: "requested state path is not start_frame constrained." };
+  if (!simpleConfigExists) return { apply: false, reason: "simple-frame-config marker is missing." };
+  if (!hasStartFrame) return { apply: false, reason: "start_frame generation is missing." };
+  if (frameToFrame && !hasEndFrame) return { apply: false, reason: "end_frame generation is required for frame-to-frame compile." };
+  if (!shortDuration) return { apply: false, reason: `duration ${duration}s is outside supported simple-frame range (4/6/8).` };
+  if (!strictOrBalancedMode) return { apply: false, reason: "creative/high-motion mode cannot use frame-based truth override." };
+  if (highRiskMotionRequested) return { apply: false, reason: "extreme motion prompt detected; truth debt hard block is retained." };
+  if (obviousMotionMismatch) return { apply: false, reason: "requested motion does not align with supplied frame transition direction." };
+  if (!safeTransitionPlan) return { apply: false, reason: "transition planner indicates missing intermediate truth." };
+  if (input.truthDebtDecision === "allow" || input.truthDebtDecision === "allow_with_warning") {
+    return { apply: false, reason: "truth debt already allows compile without override." };
+  }
+
+  return { apply: true, reason: "frame-constrained simple workflow supplied sufficient start/end truth for controlled compile." };
+}
+
 
 export async function compileClipIntent(input: { clipIntentId: string; force?: boolean; plannerOverrides?: CompilePlannerOverrides }): Promise<CompileResult> {
   const supabase = getSupabaseAdminClient();
@@ -299,11 +343,47 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     printContinuityRisk: fidelityPlan.riskSummary.viewDependency,
   });
 
-  if (truthDebt.decision === "block") {
+  const truthDebtOverride = shouldApplySimpleFrameTruthDebtOverride({
+    plannerOverrides: input.plannerOverrides,
+    transitionPlan,
+    truthDebtDecision: truthDebt.decision,
+    motionComplexity,
+    pack,
+    compileItems,
+  });
+
+  const truthDebtDecisionDetail = {
+    clipIntentId: intent.id,
+    decision: truthDebt.decision,
+    level: truthDebt.debtLevel,
+    reasons: truthDebt.reasons,
+    overrideApplied: truthDebtOverride.apply,
+    overrideReason: truthDebtOverride.reason,
+  };
+  console.info("[compile][truth-debt]", truthDebtDecisionDetail);
+
+  if (truthDebt.decision === "block" && !truthDebtOverride.apply) {
+    console.warn("[compile][truth-debt][blocked]", {
+      clipIntentId: intent.id,
+      reason: truthDebt.reasons[0] ?? "Truth debt rules blocked compile.",
+      overrideReason: truthDebtOverride.reason,
+    });
     throw new Error(truthDebt.reasons[0] ?? "Truth debt rules blocked compile.");
   }
-  if (truthDebt.decision === "downgrade") {
+  if (truthDebt.decision === "downgrade" && !truthDebtOverride.apply) {
+    console.warn("[compile][truth-debt][downgrade]", {
+      clipIntentId: intent.id,
+      reason: truthDebt.downgradeRecommendation ?? "Truth debt requires downgrade before compile.",
+      overrideReason: truthDebtOverride.reason,
+    });
     throw new Error(truthDebt.downgradeRecommendation ?? "Truth debt requires downgrade before compile.");
+  }
+  if (truthDebtOverride.apply) {
+    warnings.push(`Truth debt override applied for frame-constrained simple workflow: ${truthDebtOverride.reason}`);
+    console.info("[compile][truth-debt][override-allow]", {
+      clipIntentId: intent.id,
+      reason: truthDebtOverride.reason,
+    });
   }
   warnings.push(...truthDebt.warnings);
 
