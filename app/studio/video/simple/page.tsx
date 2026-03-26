@@ -97,6 +97,7 @@ export default function SimpleVideoStudioPage() {
         durationSeconds,
         aspectRatio,
         skuCode,
+        mode,
       });
 
       const generated = await generateSimpleVideo({

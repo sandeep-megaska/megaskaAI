@@ -1,4 +1,5 @@
 import { resolveRunVideoUrl } from "@/app/studio/video/v2/components/helpers";
+import type { Phase1TemplateId } from "@/lib/video/v2/templateMode";
 import type { VideoRunHistoryRecord } from "@/lib/video/v2/types";
 import { orchestrateV2ClipIntent, type V2PlannerOverrides } from "@/lib/video/v2/generationFlowClient";
 
@@ -36,6 +37,8 @@ export type SimpleRunResult = {
   acceptedForSequence: boolean;
   failureMessage: string | null;
 };
+
+const SIMPLE_STRICT_TEMPLATE_ID: Phase1TemplateId = "front_still_luxury";
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -77,8 +80,17 @@ export async function createSimpleClipIntent(input: {
   prompt: string;
   durationSeconds: 4 | 6 | 8;
   aspectRatio: "9:16" | "16:9" | "1:1";
+  mode: SimpleMode;
 }): Promise<SimpleClipIntentContext> {
   const sourceProfileId = await ensureSourceProfile(input.startGenerationId);
+  const strictMode = input.mode === "strict";
+  const productionMode = strictMode ? "phase1_template" : "experimental_freeform";
+  const templateId = strictMode ? SIMPLE_STRICT_TEMPLATE_ID : null;
+  console.info("[simple-video] create intent mode", {
+    selectedSimpleMode: input.mode,
+    production_mode: productionMode,
+    phase1_template_id: templateId,
+  });
 
   const intent = await fetchJson<{ id: string }>("/api/studio/video/v2/clip-intents", {
     method: "POST",
@@ -90,7 +102,8 @@ export async function createSimpleClipIntent(input: {
       duration_seconds: input.durationSeconds,
       aspect_ratio: input.aspectRatio,
       sku_code: input.skuCode?.trim() || undefined,
-      production_mode: "experimental_freeform",
+      production_mode: productionMode,
+      phase1_template_id: templateId,
     }),
   });
 
@@ -135,19 +148,35 @@ export async function generateSimpleVideo(input: {
     startEndFrameMode: input.hasEndFrame,
     ...modeOverrides,
   };
+  console.info("[simple-video] planner overrides", {
+    selectedSimpleMode: input.mode,
+    validation_mode: Boolean(plannerOverrides.validationMode),
+  });
 
   await orchestrateV2ClipIntent(input.clipIntentId, plannerOverrides);
 
-  await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
+  const compileResult = await fetchJson<{ run_request_preview?: { mode_selected?: string; request_payload_snapshot?: { template_mode?: { production_mode?: string; template_id?: string | null } | null } | null } }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ planner_overrides: plannerOverrides }),
+  });
+  console.info("[simple-video] compile mode", {
+    selectedSimpleMode: input.mode,
+    finalCompileMode: compileResult.run_request_preview?.mode_selected ?? null,
+    production_mode: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
+    phase1_template_id: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.template_id ?? null,
   });
 
   const generated = await fetchJson<{ run_id: string; status: string }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ planner_overrides: plannerOverrides }),
+  });
+  console.info("[simple-video] generate mode", {
+    selectedSimpleMode: input.mode,
+    validation_mode: Boolean(plannerOverrides.validationMode),
+    finalGenerateMode: compileResult.run_request_preview?.mode_selected ?? null,
+    production_mode: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
   });
 
   return { run_id: generated.run_id };
