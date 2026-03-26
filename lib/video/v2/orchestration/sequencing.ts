@@ -54,7 +54,7 @@ function buildReuseReason(snapshot: ReuseSnapshot | null | undefined): string | 
 export function buildOrchestrationPlan(input: BuildOrchestrationInput): OrchestrationPlan {
   const missingRoles = input.planner.missingRoles;
   const criticalMissingRoles = input.planner.criticalMissingRoles;
-  const compileBlockingReasons = getCompileBlockingReasons(input.workingPack, input.planner, input.transitionPlan);
+  const compileBlockingReasons = getCompileBlockingReasons(input.workingPack, input.planner, input.transitionPlan, input.governance?.truthDebt);
   const compileReady = compileBlockingReasons.length === 0;
   const generateReady = compileReady && Boolean(input.compileSnapshot.compiledAnchorPackId);
 
@@ -93,6 +93,7 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
         compileReady,
         generateReady,
       transitionPlan: input.transitionPlan ?? null,
+      governance: input.governance ?? null,
       };
     }
 
@@ -110,6 +111,7 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
       compileReady,
       generateReady,
       transitionPlan: input.transitionPlan ?? null,
+      governance: input.governance ?? null,
     };
   }
 
@@ -231,5 +233,6 @@ export function buildOrchestrationPlan(input: BuildOrchestrationInput): Orchestr
     compileReady,
     generateReady,
     transitionPlan: input.transitionPlan ?? null,
+    governance: input.governance ?? null,
   };
 }

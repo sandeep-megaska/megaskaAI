@@ -16,10 +16,13 @@ import {
 import { getPhase1TemplateById } from "@/lib/video/v2/templateMode";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type AnchorPackItemRole, type V2Mode } from "@/lib/video/v2/types";
 import { buildTransitionPlan, compileTransitionSegments } from "@/lib/video/v2/intermediateStateEngine";
+import { buildGarmentConstitution } from "@/lib/video/v2/governance/garmentConstitution";
+import { assessTruthDebt } from "@/lib/video/v2/governance/truthDebt";
 
 type ClipIntentRow = {
   id: string;
   source_profile_id: string;
+  sku_code?: string | null;
   motion_prompt: string;
   aspect_ratio: string;
   duration_seconds: number;
@@ -116,7 +119,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
 
   const { data: intent, error: intentError } = await supabase
     .from("clip_intents")
-    .select("id,source_profile_id,motion_prompt,aspect_ratio,duration_seconds,clip_goal,scene_policy,motion_template,fidelity_priority,compiled_anchor_pack_id")
+    .select("id,source_profile_id,sku_code,motion_prompt,aspect_ratio,duration_seconds,clip_goal,scene_policy,motion_template,fidelity_priority,compiled_anchor_pack_id")
     .eq("id", input.clipIntentId)
     .maybeSingle<ClipIntentRow>();
 
@@ -266,6 +269,44 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     allowDirectFrontBack: modeSelected === "frames_to_video",
   });
 
+  const garmentConstitution = buildGarmentConstitution({
+    skuCode: intent.sku_code?.trim() || `clip-intent-${intent.id}`,
+    motionPrompt: intent.motion_prompt,
+    items: items.map((item) => ({
+      role: item.role,
+      generation_id: item.generation_id,
+      source_kind: item.source_kind,
+      confidence_score: item.confidence_score,
+    })),
+  });
+
+  const truthDebt = assessTruthDebt({
+    startState: transitionPlan.planned_sequence[0] ?? "front",
+    endState: transitionPlan.planned_sequence[transitionPlan.planned_sequence.length - 1] ?? null,
+    garmentRiskTier: garmentConstitution.riskTier,
+    silhouetteClass: garmentConstitution.silhouetteClass,
+    coverageClass: garmentConstitution.coverageClass,
+    motionComplexity,
+    cameraComplexity: runtimeModeSelected === "frames_to_video" ? "simple" : "cinematic",
+    availableAnchors: items.map((item) => ({
+      role: item.role,
+      sourceKind: item.source_kind,
+      isVerified: VERIFIED_SOURCE_KINDS.has(String(item.source_kind ?? "").toLowerCase()),
+    })),
+    hasTransitionTruth: transitionPlan.strategy === "segmented" && compileTransitionSegments(transitionPlan).length >= 2,
+    backRevealRequested: transitionPlan.target_direction !== "other",
+    silhouetteRisk: fidelityPlan.riskSummary.garmentRisk,
+    printContinuityRisk: fidelityPlan.riskSummary.viewDependency,
+  });
+
+  if (truthDebt.decision === "block") {
+    throw new Error(truthDebt.reasons[0] ?? "Truth debt rules blocked compile.");
+  }
+  if (truthDebt.decision === "downgrade") {
+    throw new Error(truthDebt.downgradeRecommendation ?? "Truth debt requires downgrade before compile.");
+  }
+  warnings.push(...truthDebt.warnings);
+
   if (transitionPlan.strategy === "blocked_missing_intermediate") {
     throw new Error(
       transitionPlan.recommendations[0]
@@ -300,6 +341,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
         creative_fidelity_reasons: fidelityPlan.reasons,
         transition_plan_strategy: transitionPlan.strategy,
         transition_plan_coverage: transitionPlan.coverage,
+        garment_constitution: garmentConstitution,
+        truth_debt: truthDebt,
       },
     })
     .select("id")
@@ -364,6 +407,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       planner_version: "slice-c-compiler-v1",
       debug_trace: {
         ...traceabilitySnapshot,
+        garment_constitution: garmentConstitution,
+        truth_debt: truthDebt,
         transition_plan: transitionPlan,
         transition_segments: compiledTransitionSegments,
       },
@@ -410,6 +455,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       },
       transition_plan: transitionPlan,
       transition_segments: compiledTransitionSegments,
+      garment_constitution: garmentConstitution,
+      truth_debt: truthDebt,
     },
   };
 
