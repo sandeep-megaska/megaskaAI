@@ -3,9 +3,12 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { persistCreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/persistence";
 import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { buildTransitionPlan, compileTransitionSegments } from "@/lib/video/v2/intermediateStateEngine";
+import { buildGarmentConstitution } from "@/lib/video/v2/governance/garmentConstitution";
+import { assessTruthDebt } from "@/lib/video/v2/governance/truthDebt";
 
 type ClipIntentRow = {
   id: string;
+  sku_code: string | null;
   motion_prompt: string;
 };
 
@@ -32,7 +35,7 @@ export async function POST(_: NextRequest, context: { params: Promise<{ id: stri
     const supabase = getSupabaseAdminClient();
     const { data: intent, error: intentError } = await supabase
       .from("clip_intents")
-      .select("id,motion_prompt")
+      .select("id,sku_code,motion_prompt")
       .eq("id", clipIntentId)
       .maybeSingle<ClipIntentRow>();
 
@@ -81,6 +84,35 @@ export async function POST(_: NextRequest, context: { params: Promise<{ id: stri
       allowDirectFrontBack: true,
     });
 
+    const garmentConstitution = buildGarmentConstitution({
+      skuCode: intent.sku_code?.trim() || `clip-intent-${intent.id}`,
+      motionPrompt: intent.motion_prompt,
+      items: items.map((item) => ({
+        role: item.role,
+        generation_id: item.generation_id,
+        source_kind: item.source_kind,
+      })),
+    });
+
+    const truthDebt = assessTruthDebt({
+      startState: transitionPlan.planned_sequence[0] ?? "front",
+      endState: transitionPlan.planned_sequence[transitionPlan.planned_sequence.length - 1] ?? null,
+      garmentRiskTier: garmentConstitution.riskTier,
+      silhouetteClass: garmentConstitution.silhouetteClass,
+      coverageClass: garmentConstitution.coverageClass,
+      motionComplexity: plan.riskSummary.motionComplexity,
+      cameraComplexity: plan.recommendedMode === "frames_to_video" ? "simple" : "cinematic",
+      availableAnchors: items.map((item) => ({
+        role: item.role,
+        sourceKind: item.source_kind,
+        isVerified: item.source_kind === "sku_verified_truth" || item.source_kind === "manual_verified_override",
+      })),
+      hasTransitionTruth: transitionPlan.strategy === "segmented",
+      backRevealRequested: transitionPlan.target_direction !== "other",
+      silhouetteRisk: plan.riskSummary.garmentRisk,
+      printContinuityRisk: plan.riskSummary.viewDependency,
+    });
+
     return json(200, {
       success: true,
       data: {
@@ -94,6 +126,8 @@ export async function POST(_: NextRequest, context: { params: Promise<{ id: stri
         missing_roles: plan.missingRoles,
         critical_missing_roles: plan.criticalMissingRoles,
         allowed_synthesis_roles: plan.allowedSynthesisRoles,
+        garment_constitution: garmentConstitution,
+        truth_debt: truthDebt,
         transition_plan: transitionPlan,
         compiled_transition_segments: compileTransitionSegments(transitionPlan),
       },

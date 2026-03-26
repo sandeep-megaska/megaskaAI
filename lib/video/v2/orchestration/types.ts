@@ -1,5 +1,6 @@
 import type { CreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/types";
 import type { TransitionPlan } from "@/lib/video/v2/intermediateStateEngine";
+import type { GarmentConstitution, TruthDebtResult } from "@/lib/video/v2/governance/types";
 
 export type OrchestrationStatus =
   | "ready"
@@ -71,6 +72,10 @@ export type OrchestrationPlan = {
   compileReady: boolean;
   generateReady: boolean;
   transitionPlan?: TransitionPlan | null;
+  governance?: {
+    garmentConstitution: GarmentConstitution;
+    truthDebt: TruthDebtResult;
+  } | null;
 };
 
 export type BuildOrchestrationInput = {
@@ -80,4 +85,8 @@ export type BuildOrchestrationInput = {
   reuseSnapshot?: ReuseSnapshot | null;
   expansionSnapshot?: ExpansionSnapshot | null;
   transitionPlan?: TransitionPlan | null;
+  governance?: {
+    garmentConstitution: GarmentConstitution;
+    truthDebt: TruthDebtResult;
+  } | null;
 };

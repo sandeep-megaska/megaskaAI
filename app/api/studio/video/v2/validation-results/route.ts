@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { evaluateJudgePass } from "@/lib/video/v2/governance/judgePass";
+import type { JudgePassInput } from "@/lib/video/v2/governance/types";
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -33,11 +35,14 @@ export async function POST(request: Request) {
       decision?: "pass" | "retry" | "reject" | "manual_review";
       failure_reasons?: string[];
       validation_meta?: Record<string, unknown>;
+      judge_input?: JudgePassInput;
     };
 
     if (!body.video_generation_run_id?.trim()) return json(400, { success: false, error: "video_generation_run_id is required." });
     if (typeof body.overall_score !== "number") return json(400, { success: false, error: "overall_score is required." });
     if (!body.decision) return json(400, { success: false, error: "decision is required." });
+
+    const judgePass = body.judge_input ? evaluateJudgePass(body.judge_input) : null;
 
     const supabase = getSupabaseAdminClient();
     const { data, error } = await supabase
@@ -51,7 +56,10 @@ export async function POST(request: Request) {
         overall_score: body.overall_score,
         decision: body.decision,
         failure_reasons: body.failure_reasons ?? [],
-        validation_meta: body.validation_meta ?? {},
+        validation_meta: {
+          ...(body.validation_meta ?? {}),
+          ...(judgePass ? { judge_pass: judgePass } : {}),
+        },
       })
       .select("*")
       .single();
@@ -63,7 +71,7 @@ export async function POST(request: Request) {
       .update({ status: "validated" })
       .eq("id", body.video_generation_run_id);
 
-    return json(201, { success: true, data: { ...data, linked_run_status: "validated" } });
+    return json(201, { success: true, data: { ...data, linked_run_status: "validated", judge_pass: judgePass } });
   } catch (error) {
     return json(500, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }

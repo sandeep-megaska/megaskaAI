@@ -1,8 +1,14 @@
 import type { CreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/types";
 import type { WorkingPackSnapshot } from "@/lib/video/v2/orchestration/types";
 import type { TransitionPlan } from "@/lib/video/v2/intermediateStateEngine";
+import type { TruthDebtResult } from "@/lib/video/v2/governance/types";
 
-export function getCompileBlockingReasons(workingPack: WorkingPackSnapshot, planner: CreativeFidelityPlan, transitionPlan?: TransitionPlan | null): string[] {
+export function getCompileBlockingReasons(
+  workingPack: WorkingPackSnapshot,
+  planner: CreativeFidelityPlan,
+  transitionPlan?: TransitionPlan | null,
+  truthDebt?: TruthDebtResult | null,
+): string[] {
   const reasons: string[] = [];
 
   if (workingPack.status !== "ready") reasons.push("Working pack must be ready/approved before compile.");
@@ -20,6 +26,12 @@ export function getCompileBlockingReasons(workingPack: WorkingPackSnapshot, plan
 
   if (transitionPlan?.direct_transition_discouraged && transitionPlan.strategy !== "segmented") {
     reasons.push("Direct transition is discouraged for this motion. Add an approved intermediate state.");
+  }
+  if (truthDebt?.decision === "block") {
+    reasons.push(truthDebt.reasons[0] ?? "Governance truth debt blocked compile.");
+  }
+  if (truthDebt?.decision === "downgrade") {
+    reasons.push(truthDebt.downgradeRecommendation ?? "Governance requires downgrade before compile.");
   }
 
   return reasons;

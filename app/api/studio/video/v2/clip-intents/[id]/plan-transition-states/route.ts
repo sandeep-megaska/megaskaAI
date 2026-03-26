@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { buildTransitionPlan, compileTransitionSegments } from "@/lib/video/v2/intermediateStateEngine";
+import { buildGarmentConstitution } from "@/lib/video/v2/governance/garmentConstitution";
+import { assessTruthDebt } from "@/lib/video/v2/governance/truthDebt";
 
 type ClipIntentRow = {
   id: string;
+  sku_code: string | null;
   motion_prompt: string;
 };
 
@@ -32,7 +35,7 @@ export async function POST(_: NextRequest, context: { params: Promise<{ id: stri
     const supabase = getSupabaseAdminClient();
     const { data: intent, error: intentError } = await supabase
       .from("clip_intents")
-      .select("id,motion_prompt")
+      .select("id,sku_code,motion_prompt")
       .eq("id", clipIntentId)
       .maybeSingle<ClipIntentRow>();
 
@@ -74,10 +77,42 @@ export async function POST(_: NextRequest, context: { params: Promise<{ id: stri
       allowDirectFrontBack: true,
     });
 
+    const garmentConstitution = buildGarmentConstitution({
+      skuCode: intent.sku_code?.trim() || `clip-intent-${clipIntentId}`,
+      motionPrompt: intent.motion_prompt,
+      items: items.map((item) => ({
+        role: item.role,
+        generation_id: item.generation_id,
+        source_kind: item.source_kind,
+        confidence_score: item.confidence_score,
+      })),
+    });
+
+    const truthDebt = assessTruthDebt({
+      startState: transitionPlan.planned_sequence[0] ?? "front",
+      endState: transitionPlan.planned_sequence[transitionPlan.planned_sequence.length - 1] ?? null,
+      garmentRiskTier: garmentConstitution.riskTier,
+      silhouetteClass: garmentConstitution.silhouetteClass,
+      coverageClass: garmentConstitution.coverageClass,
+      motionComplexity: fidelityPlan.riskSummary.motionComplexity,
+      cameraComplexity: fidelityPlan.recommendedMode === "frames_to_video" ? "simple" : "cinematic",
+      availableAnchors: items.map((item) => ({
+        role: item.role,
+        sourceKind: item.source_kind,
+        isVerified: item.source_kind === "sku_verified_truth" || item.source_kind === "manual_verified_override",
+      })),
+      hasTransitionTruth: transitionPlan.strategy === "segmented",
+      backRevealRequested: transitionPlan.target_direction !== "other",
+      silhouetteRisk: fidelityPlan.riskSummary.garmentRisk,
+      printContinuityRisk: fidelityPlan.riskSummary.viewDependency,
+    });
+
     return json(200, {
       success: true,
       data: {
         ...transitionPlan,
+        garment_constitution: garmentConstitution,
+        truth_debt: truthDebt,
         compiled_segments: compileTransitionSegments(transitionPlan),
       },
     });
