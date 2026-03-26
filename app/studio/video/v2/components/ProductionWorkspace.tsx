@@ -46,6 +46,12 @@ export default function ProductionWorkspace(props: {
     props.latestRun?.output_validation && typeof props.latestRun.output_validation === "object"
       ? (props.latestRun.output_validation as Record<string, unknown>)
       : null;
+  const runtimeFidelity =
+    props.latestRun?.request_payload_snapshot?.runtime_fidelity
+    && typeof props.latestRun.request_payload_snapshot.runtime_fidelity === "object"
+    && !Array.isArray(props.latestRun.request_payload_snapshot.runtime_fidelity)
+      ? (props.latestRun.request_payload_snapshot.runtime_fidelity as Record<string, unknown>)
+      : null;
   const hasInvalidOutput = outputValidation?.valid === false;
   const canShowVideo = Boolean(
     props.latestRun
@@ -115,6 +121,15 @@ export default function ProductionWorkspace(props: {
             <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
             <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt(resolvedPrompt, 80)}</p>
+            {runtimeFidelity ? (
+              <div className="rounded border border-cyan-500/30 bg-cyan-950/20 p-2 text-xs text-cyan-100">
+                <p>Exact End State: {runtimeFidelity.exact_end_state_required ? "Enabled" : "Disabled"}</p>
+                <p>Start Frame: {String(runtimeFidelity.start_frame_role ?? "n/a")}</p>
+                <p>End Frame: {String(runtimeFidelity.end_frame_role ?? "n/a")}</p>
+                <p>Mode Lock: {String(runtimeFidelity.mode_lock ?? "none")}</p>
+                <p>Fidelity Prompt Hardening: {runtimeFidelity.prompt_hardening_enabled ? "enabled" : "disabled"}</p>
+              </div>
+            ) : null}
             {props.latestRun.failure_message ? <p className="text-xs text-rose-300">{props.latestRun.failure_message}</p> : null}
             {canShowVideo ? (
               <div className="space-y-2">
