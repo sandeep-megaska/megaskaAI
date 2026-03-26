@@ -24,7 +24,10 @@ export type SimpleRunResult = {
   runId: string;
   status: string;
   outputUrl: string | null;
+  outputThumbnailUrl: string | null;
+  outputGenerationId: string | null;
   outcome: "pass" | "retry" | "reject" | "manual_review" | "pending";
+  acceptedForSequence: boolean;
 };
 
 type FixMissingAnglesStep =
@@ -258,16 +261,27 @@ export async function generateSimpleVideo(input: { clipIntentId: string; startSt
 }
 
 export async function loadRunResult(runId: string): Promise<SimpleRunResult> {
-  const runs = await fetchJson<Array<{ id: string; status: string; output_asset_url?: string | null; validation?: { decision?: "pass" | "retry" | "reject" | "manual_review" } | null }>>("/api/studio/video/v2/runs", { cache: "no-store" });
+  const runs = await fetchJson<Array<{
+    id: string;
+    status: string;
+    output_generation_id?: string | null;
+    output_asset_url?: string | null;
+    output_thumbnail_url?: string | null;
+    accepted_for_sequence?: boolean;
+    validation?: { decision?: "pass" | "retry" | "reject" | "manual_review" } | null;
+  }>>("/api/studio/video/v2/runs", { cache: "no-store" });
   const run = runs.find((entry) => entry.id === runId);
   if (!run) {
-    return { runId, status: "queued", outputUrl: null, outcome: "pending" };
+    return { runId, status: "queued", outputUrl: null, outputThumbnailUrl: null, outputGenerationId: null, outcome: "pending", acceptedForSequence: false };
   }
   return {
     runId,
     status: run.status,
     outputUrl: run.output_asset_url ?? null,
+    outputThumbnailUrl: run.output_thumbnail_url ?? null,
+    outputGenerationId: run.output_generation_id ?? null,
     outcome: run.validation?.decision ?? "pending",
+    acceptedForSequence: Boolean(run.accepted_for_sequence),
   };
 }
 
