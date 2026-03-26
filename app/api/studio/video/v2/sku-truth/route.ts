@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
-import { listSkuTruthEntries, registerSkuTruthEntry } from "@/lib/video/v2/skuTruth/registry";
+import { listSkuTruthEntries, registerSkuTruthEntry, summarizeSkuTruthCoverage } from "@/lib/video/v2/skuTruth/registry";
 import { applySkuTruthForClipIntent } from "@/lib/video/v2/skuTruth/apply";
 
 function json(status: number, body: Record<string, unknown>) {
@@ -14,7 +14,11 @@ export async function GET(request: NextRequest) {
 
     const supabase = getSupabaseAdminClient();
     const data = await listSkuTruthEntries(supabase, skuCode);
-    return json(200, { success: true, data });
+    return json(200, {
+      success: true,
+      data,
+      coverage: summarizeSkuTruthCoverage(data),
+    });
   } catch (error) {
     return json(400, { success: false, error: error instanceof Error ? error.message : "Unexpected server error." });
   }

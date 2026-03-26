@@ -8,6 +8,9 @@ import { Sparkles, Trash2, X } from "lucide-react";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import { SKU_TRUTH_ROLES, type SkuTruthRole } from "@/lib/video/v2/skuTruth/types";
+import { buildImageProjectSkuTruthPayload } from "@/lib/video/v2/skuTruth/bridge";
+import { suggestRoleFromMetadata } from "@/lib/video/v2/skuTruth/ui";
 import {
   clearStagedImageReferences,
   clearStagedVideoAnchors,
@@ -32,6 +35,13 @@ type GenerationItem = {
   asset_url?: string;
   url?: string;
   overlay_json?: Record<string, unknown> | null;
+};
+type SkuTruthDialogState = {
+  item: GenerationItem;
+  skuCode: string;
+  role: string;
+  sourceKind: "sku_verified_truth" | "manual_verified_override";
+  suggestedRole: string | null;
 };
 
 type StudioResultItem = {
@@ -95,6 +105,8 @@ function HomeContent() {
   const [selectedReferenceImages, setSelectedReferenceImages] = useState<StagedImageAsset[]>([]);
   const [selectedAnchorImages, setSelectedAnchorImages] = useState<StagedImageAsset[]>([]);
   const [sentToVideoImages, setSentToVideoImages] = useState<StagedImageAsset[]>([]);
+  const [skuTruthDialog, setSkuTruthDialog] = useState<SkuTruthDialogState | null>(null);
+  const [isSavingSkuTruth, setIsSavingSkuTruth] = useState(false);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -327,6 +339,66 @@ function HomeContent() {
     const mapped = mapGenerationToStagedAsset(item);
     if (!mapped) return;
     setSentToVideoImages(sendAssetToVideoProject(mapped));
+  }
+
+  function suggestSkuRole(item: GenerationItem): string | null {
+    const overlay = item.overlay_json ?? {};
+    const studioMetaRole = typeof overlay["role"] === "string" ? overlay["role"] : null;
+    const label = typeof overlay["label"] === "string" ? overlay["label"] : null;
+    const tags = Array.isArray(overlay["tags"]) ? overlay["tags"].filter((tag): tag is string => typeof tag === "string") : null;
+    return suggestRoleFromMetadata({
+      role: studioMetaRole,
+      sourceKind: typeof overlay["source_kind"] === "string" ? overlay["source_kind"] : null,
+      prompt: item.prompt,
+      label,
+      tags,
+    });
+  }
+
+  function openSkuTruthDialog(item: GenerationItem) {
+    const suggestedRole = suggestSkuRole(item);
+    setSkuTruthDialog({
+      item,
+      skuCode: "",
+      role: suggestedRole ?? "",
+      sourceKind: "sku_verified_truth",
+      suggestedRole,
+    });
+  }
+
+  async function handleSaveAsSkuTruth() {
+    if (!skuTruthDialog) return;
+    const generationId = skuTruthDialog.item.id?.trim();
+    const skuCode = skuTruthDialog.skuCode.trim().toUpperCase();
+    if (!generationId) return setError("Selected image is missing generation ID.");
+    if (!skuCode) return setError("Enter SKU code before saving.");
+    if (!skuTruthDialog.role.trim()) return setError("Select a role before saving.");
+
+    try {
+      setError(null);
+      setIsSavingSkuTruth(true);
+      const res = await fetch("/api/studio/video/v2/sku-truth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildImageProjectSkuTruthPayload({
+          skuCode,
+          role: skuTruthDialog.role,
+          generationId,
+          truthType: skuTruthDialog.sourceKind,
+        })),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to save SKU truth.");
+
+      setHandoffNotice(
+        `Saved ${skuTruthDialog.sourceKind === "manual_verified_override" ? "manual override" : "verified truth"} for SKU ${skuCode} role ${skuTruthDialog.role}.`,
+      );
+      setSkuTruthDialog(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Failed to save SKU truth.");
+    } finally {
+      setIsSavingSkuTruth(false);
+    }
   }
 
   function normalizeApiError(status: number, fallback: string) {
@@ -732,6 +804,9 @@ function HomeContent() {
                       <button type="button" disabled={!src} onClick={() => handleSendToVideo(item)} className="rounded-md border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200 disabled:opacity-40">
                         Send to Video Project
                       </button>
+                      <button type="button" onClick={() => openSkuTruthDialog(item)} className="rounded-md border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200">
+                        Save as SKU Truth
+                      </button>
                       <button
                         type="button"
                         disabled={isDeletingId === item.id}
@@ -799,6 +874,50 @@ function HomeContent() {
             <div className="border-t border-white/10 px-4 py-3">
               <button type="button" onClick={() => setPromptDialogItem(null)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {skuTruthDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Save as SKU Truth" onClick={() => setSkuTruthDialog(null)}>
+          <div className="w-full max-w-lg rounded-xl border border-white/10 bg-zinc-900 p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-base font-semibold text-zinc-100">Save as SKU Truth</h3>
+            <p className="mt-1 text-xs text-zinc-400">Use this selected image as approved truth for a SKU role.</p>
+            <div className="mt-3 grid gap-3">
+              <input
+                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                placeholder="SKU code (example: MGSW05)"
+                value={skuTruthDialog.skuCode}
+                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, skuCode: event.target.value.toUpperCase() } : current)}
+              />
+              <select
+                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                value={skuTruthDialog.role}
+                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, role: event.target.value as SkuTruthRole } : current)}
+              >
+                <option value="">-- select role --</option>
+                {SKU_TRUTH_ROLES.map((role) => (
+                  <option key={role} value={role}>{role}</option>
+                ))}
+              </select>
+              {skuTruthDialog.suggestedRole ? <p className="text-xs text-emerald-300">Suggested role: {skuTruthDialog.suggestedRole}</p> : <p className="text-xs text-zinc-500">No safe role suggestion found. Please choose manually.</p>}
+              <select
+                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                value={skuTruthDialog.sourceKind}
+                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, sourceKind: event.target.value as "sku_verified_truth" | "manual_verified_override" } : current)}
+              >
+                <option value="sku_verified_truth">Verified SKU Truth</option>
+                <option value="manual_verified_override">Manual Override</option>
+              </select>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button type="button" onClick={handleSaveAsSkuTruth} disabled={isSavingSkuTruth} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">
+                {isSavingSkuTruth ? "Saving..." : "Save"}
+              </button>
+              <button type="button" onClick={() => setSkuTruthDialog(null)} className="rounded border border-zinc-700 px-3 py-2 text-sm text-zinc-200">
+                Cancel
               </button>
             </div>
           </div>

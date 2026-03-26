@@ -11,6 +11,14 @@ export type WorkingPackCandidateItem = {
   } | null;
 };
 
+export type RoleSuggestionMetadata = {
+  role?: string | null;
+  sourceKind?: string | null;
+  prompt?: string | null;
+  label?: string | null;
+  tags?: string[] | null;
+};
+
 export type SkuTruthCandidateImage = {
   generationId: string;
   imageUrl: string | null;
@@ -43,10 +51,32 @@ function safeRoleFromText(value: string | null | undefined): string | null {
   return found?.role ?? null;
 }
 
+export function suggestRoleFromMetadata(metadata: RoleSuggestionMetadata): string | null {
+  const directRole = safeRoleFromText(metadata.role);
+  if (directRole) return directRole;
+
+  const sourceHint = safeRoleFromText(metadata.sourceKind);
+  if (sourceHint) return sourceHint;
+
+  const labelHint = safeRoleFromText(metadata.label);
+  if (labelHint) return labelHint;
+
+  const promptHint = safeRoleFromText(metadata.prompt);
+  if (promptHint) return promptHint;
+
+  for (const tag of metadata.tags ?? []) {
+    const tagHint = safeRoleFromText(tag);
+    if (tagHint) return tagHint;
+  }
+
+  return null;
+}
+
 export function suggestRoleForCandidate(item: Pick<SkuTruthCandidateImage, "sourceRole" | "sourceKind">): string | null {
-  const roleHint = safeRoleFromText(item.sourceRole);
-  if (roleHint) return roleHint;
-  return safeRoleFromText(item.sourceKind);
+  return suggestRoleFromMetadata({
+    role: item.sourceRole,
+    sourceKind: item.sourceKind,
+  });
 }
 
 export function buildSkuTruthCandidates(items: WorkingPackCandidateItem[]): SkuTruthCandidateImage[] {
