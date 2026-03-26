@@ -2,7 +2,7 @@
 
 import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
-import { excerpt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
+import { excerpt, resolveRunPrompt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
 
 type PlanApiResponse = {
   id?: string;
@@ -41,6 +41,7 @@ export default function ProductionWorkspace(props: {
   selectedSequenceId: string;
 }) {
   const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun);
+  const resolvedPrompt = resolveRunPrompt(props.latestRun);
   const outputValidation =
     props.latestRun?.output_validation && typeof props.latestRun.output_validation === "object"
       ? (props.latestRun.output_validation as Record<string, unknown>)
@@ -113,7 +114,7 @@ export default function ProductionWorkspace(props: {
             <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
             <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
-            <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt((props.latestRun.request_payload_snapshot?.director_prompt as string | undefined) ?? "", 80)}</p>
+            <p className="text-zinc-400">Run {shortId(props.latestRun.id)} · {excerpt(resolvedPrompt, 80)}</p>
             {props.latestRun.failure_message ? <p className="text-xs text-rose-300">{props.latestRun.failure_message}</p> : null}
             {canShowVideo ? (
               <div className="space-y-2">

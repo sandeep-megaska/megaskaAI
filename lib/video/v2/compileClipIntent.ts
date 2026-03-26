@@ -3,6 +3,7 @@ import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildClipIntentPrompt } from "@/lib/video/v2/buildClipIntentPrompt";
 import { persistCreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/persistence";
 import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
+import { buildCompileTraceabilitySnapshot } from "@/lib/video/v2/compileTraceability";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
@@ -87,6 +88,7 @@ function resolveCompileMode(baseMode: V2Mode, recommendedMode: V2Mode, warnings:
   }
   return recommendedMode === "frames_to_video" ? "frames_to_video" : baseMode;
 }
+
 
 export async function compileClipIntent(input: { clipIntentId: string; force?: boolean }): Promise<CompileResult> {
   const supabase = getSupabaseAdminClient();
@@ -219,20 +221,25 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
 
   if (anchorItemsError) throw new Error(anchorItemsError.message);
 
-  const traceabilitySnapshot = {
-    clip_intent_id: intent.id,
-    working_pack_id: pack.id,
-    source_profile_id: intent.source_profile_id,
-    compiled_anchor_pack_id: anchorPack.id,
-    generation_origin: "slice_c_compiled",
-    working_pack_readiness_score: Number(pack.readiness_score ?? 0),
-    creative_fidelity_plan: {
+  const traceabilitySnapshot = buildCompileTraceabilitySnapshot({
+    clipIntentId: intent.id,
+    workingPackId: pack.id,
+    sourceProfileId: intent.source_profile_id,
+    compiledAnchorPackId: anchorPack.id,
+    workingPackReadinessScore: Number(pack.readiness_score ?? 0),
+    directorPrompt: prompt.directorPrompt,
+    fallbackPrompt: prompt.fallbackPrompt,
+    modeSelected,
+    providerSelected: "veo-3.1",
+    modelSelected: "veo-3.1",
+    anchorCount: compileItems.length,
+    fidelityPlan: {
       decision: fidelityPlan.decision,
       reasons: fidelityPlan.reasons,
       warnings: fidelityPlan.warnings,
-      recommended_mode: fidelityPlan.recommendedMode,
+      recommendedMode: fidelityPlan.recommendedMode,
     },
-  };
+  });
 
   const { data: generationPlan, error: generationPlanError } = await supabase
     .from("video_generation_plans")
