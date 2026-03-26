@@ -10,7 +10,7 @@ export async function GET() {
     const supabase = getSupabaseAdminClient();
     const { data, error } = await supabase
       .from("working_packs")
-      .select("*,working_pack_items(*),pack_lineage(*)")
+      .select("*,working_pack_items(*,generation:generations(id,asset_url,url,thumbnail_url)),pack_lineage(*)")
       .order("created_at", { ascending: false })
       .limit(50);
 

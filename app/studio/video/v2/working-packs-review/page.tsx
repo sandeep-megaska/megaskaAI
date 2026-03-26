@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { buildSkuTruthCandidates, type SkuTruthCandidateImage } from "@/lib/video/v2/skuTruth/ui";
 
 type ClipIntent = {
   id: string;
@@ -20,7 +21,19 @@ type WorkingPack = {
   status: string;
   readiness_score: number;
   warning_messages: string[];
-  working_pack_items?: Array<{ id: string; role: string; source_kind: string; generation_id: string | null; confidence_score: number }>;
+  working_pack_items?: Array<{
+    id: string;
+    role: string;
+    source_kind: string;
+    generation_id: string | null;
+    confidence_score: number;
+    generation?: {
+      id?: string | null;
+      asset_url?: string | null;
+      url?: string | null;
+      thumbnail_url?: string | null;
+    } | null;
+  }>;
   pack_lineage?: Array<{ id: string; lineage_type: string; source_generation_id: string | null; derived_generation_id: string | null }>;
 };
 
@@ -132,8 +145,10 @@ export default function WorkingPackReviewPage() {
   const [assistedRunningStep, setAssistedRunningStep] = useState<string | null>(null);
   const [skuCode, setSkuCode] = useState("");
   const [skuTruthEntries, setSkuTruthEntries] = useState<SkuTruthEntry[]>([]);
-  const [overrideRole, setOverrideRole] = useState("back");
-  const [overrideGenerationId, setOverrideGenerationId] = useState("");
+  const [overrideRole, setOverrideRole] = useState("");
+  const [selectedCandidateGenerationId, setSelectedCandidateGenerationId] = useState("");
+  const [selectedRoleSuggested, setSelectedRoleSuggested] = useState<string | null>(null);
+  const [didManuallySetRole, setDidManuallySetRole] = useState(false);
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -187,6 +202,23 @@ export default function WorkingPackReviewPage() {
     () => packs.find((pack) => pack.clip_intent_id === selectedIntentId) ?? null,
     [packs, selectedIntentId],
   );
+  const skuTruthCandidates = useMemo(
+    () => buildSkuTruthCandidates(activePack?.working_pack_items ?? []),
+    [activePack],
+  );
+  const selectedCandidate = useMemo(
+    () => skuTruthCandidates.find((candidate) => candidate.generationId === selectedCandidateGenerationId) ?? null,
+    [selectedCandidateGenerationId, skuTruthCandidates],
+  );
+  const groupedSkuTruthEntries = useMemo(() => {
+    const grouped = new Map<string, SkuTruthEntry[]>();
+    for (const entry of skuTruthEntries) {
+      const bucket = grouped.get(entry.role) ?? [];
+      bucket.push(entry);
+      grouped.set(entry.role, bucket);
+    }
+    return Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [skuTruthEntries]);
 
   const compileBlockedReasons = useMemo(() => {
     const reasons: string[] = [];
@@ -202,6 +234,13 @@ export default function WorkingPackReviewPage() {
     if (!roles.has("front")) reasons.push("Required role missing: front.");
     return reasons;
   }, [activePack]);
+
+  useEffect(() => {
+    setSelectedCandidateGenerationId("");
+    setSelectedRoleSuggested(null);
+    setDidManuallySetRole(false);
+    setOverrideRole("");
+  }, [selectedIntentId]);
 
 
   async function loadSkuTruth(nextSkuCode?: string) {
@@ -230,9 +269,21 @@ export default function WorkingPackReviewPage() {
     await Promise.all([loadSkuTruth(), loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
   }
 
-  async function registerManualOverride() {
+  function handleSelectCandidate(candidate: SkuTruthCandidateImage) {
+    setSelectedCandidateGenerationId(candidate.generationId);
+    setSelectedRoleSuggested(candidate.suggestedRole);
+    setDidManuallySetRole(false);
+    if (candidate.suggestedRole) {
+      setOverrideRole(candidate.suggestedRole);
+      return;
+    }
+    setOverrideRole("");
+  }
+
+  async function registerSkuTruth(sourceKind: "sku_verified_truth" | "manual_verified_override") {
     if (!skuCode.trim()) return setError("Enter SKU / dress code first.");
-    if (!overrideGenerationId.trim()) return setError("Enter generation id for manual override.");
+    if (!selectedCandidateGenerationId.trim()) return setError("Select an image from candidates.");
+    if (!overrideRole.trim()) return setError("Select a role before registering.");
 
     setError(null);
     const res = await fetch("/api/studio/video/v2/sku-truth", {
@@ -241,17 +292,16 @@ export default function WorkingPackReviewPage() {
       body: JSON.stringify({
         sku_code: skuCode.trim(),
         role: overrideRole,
-        generation_id: overrideGenerationId.trim(),
-        source_kind: "manual_verified_override",
+        generation_id: selectedCandidateGenerationId.trim(),
+        source_kind: sourceKind,
         clip_intent_id: selectedIntentId || undefined,
         apply_now: Boolean(selectedIntentId),
       }),
     });
     const payload = (await res.json()) as { error?: string };
-    if (!res.ok) return setError(payload.error ?? "Failed to register override.");
+    if (!res.ok) return setError(payload.error ?? "Failed to register SKU truth.");
 
-    setOverrideGenerationId("");
-    setNote(`Manual override registered for ${overrideRole}.`);
+    setNote(`${sourceKind === "manual_verified_override" ? "Manual override" : "Verified SKU truth"} registered for ${overrideRole}.`);
     await Promise.all([loadSkuTruth(), loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
   }
 
@@ -575,36 +625,90 @@ export default function WorkingPackReviewPage() {
 
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
-          <h2 className="font-medium">SKU Truth Registry + Override</h2>
+          <h2 className="font-medium">SKU Truth Registry + Visual Assignment</h2>
+          <p className="text-xs text-zinc-400">Select the correct image visually, assign a role, then register as verified truth or manual override.</p>
           <div className="grid gap-2 md:grid-cols-3">
-            <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="SKU / dress code" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
+            <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="SKU code (example: MGSW05)" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
             <button type="button" onClick={() => loadSkuTruth().catch((e) => setError(e instanceof Error ? e.message : "Failed to load SKU truth."))} className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800">Load SKU Truth</button>
             <button type="button" onClick={applySkuTruth} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Apply to Working Pack</button>
           </div>
 
-          <div className="grid gap-2 md:grid-cols-4">
-            <select className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={overrideRole} onChange={(event) => setOverrideRole(event.target.value)}>
+          <div className="grid gap-2 md:grid-cols-4 items-start">
+            <select
+              className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+              value={overrideRole}
+              onChange={(event) => {
+                setOverrideRole(event.target.value);
+                setDidManuallySetRole(true);
+              }}
+            >
+              <option value="">-- select role --</option>
               {["front", "back", "left_profile", "right_profile", "three_quarter_left", "three_quarter_right", "detail", "fit_anchor", "context"].map((role) => (
                 <option key={role} value={role}>{role}</option>
               ))}
             </select>
-            <input className="md:col-span-2 rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="Generation ID for manual override" value={overrideGenerationId} onChange={(event) => setOverrideGenerationId(event.target.value)} />
-            <button type="button" onClick={registerManualOverride} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950">Register Manual Override</button>
+            <div className="md:col-span-2 rounded border border-zinc-700 bg-zinc-950/60 p-2 text-xs text-zinc-300">
+              {selectedCandidate ? (
+                <div className="flex items-start gap-3">
+                  {selectedCandidate.thumbnailUrl ? <img src={selectedCandidate.thumbnailUrl} alt={`Selected candidate ${selectedCandidate.generationId}`} className="h-16 w-16 rounded object-cover" /> : <div className="h-16 w-16 rounded bg-zinc-800" />}
+                  <div>
+                    <p className="text-zinc-100">Selected generation: {selectedCandidate.generationId.slice(0, 16)}</p>
+                    <p className="text-zinc-400">Source: {provenanceLabel(selectedCandidate.sourceKind)}</p>
+                    {selectedRoleSuggested ? <p className="text-emerald-300">Suggested role: {selectedRoleSuggested}{didManuallySetRole ? " (manually overridden)" : ""}</p> : <p className="text-zinc-500">No safe role suggestion. Please choose role manually.</p>}
+                  </div>
+                </div>
+              ) : <p className="text-zinc-500">No image selected yet. Pick a candidate image below.</p>}
+            </div>
+            <div className="flex flex-col gap-2">
+              <button type="button" onClick={() => registerSkuTruth("sku_verified_truth")} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950">Register as Verified Truth</button>
+              <button type="button" onClick={() => registerSkuTruth("manual_verified_override")} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950">Register Manual Override</button>
+            </div>
           </div>
 
-          {skuTruthEntries.length ? (
+          {groupedSkuTruthEntries.length ? (
             <div className="rounded border border-zinc-700/70 bg-zinc-950/40 p-3 text-xs text-zinc-300">
               <p className="mb-2 text-zinc-100">Available verified truth roles for {skuCode || "SKU"}:</p>
-              <div className="grid gap-2 md:grid-cols-2">
-                {skuTruthEntries.map((entry) => (
-                  <div key={entry.id} className="rounded border border-zinc-800 bg-zinc-950 p-2">
-                    <p>{entry.role} · {provenanceLabel(entry.source_kind)}</p>
-                    <p className="text-zinc-400">gen {entry.generation_id.slice(0, 8)}{entry.label ? ` · ${entry.label}` : ""}</p>
+              <div className="space-y-2">
+                {groupedSkuTruthEntries.map(([role, entries]) => (
+                  <div key={role} className="rounded border border-zinc-800 bg-zinc-950 p-2">
+                    <p className="mb-1 font-medium text-zinc-100">{role}</p>
+                    <div className="space-y-1">
+                      {entries.map((entry) => (
+                        <div key={entry.id} className="rounded border border-zinc-800/80 bg-zinc-900/60 p-2">
+                          <p>{provenanceLabel(entry.source_kind)}</p>
+                          <p className="text-zinc-400">gen {entry.generation_id.slice(0, 8)}{entry.label ? ` · ${entry.label}` : ""}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           ) : <p className="text-xs text-zinc-500">No verified truth registered for this SKU yet.</p>}
+
+          <div className="rounded border border-zinc-700/70 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+            <p className="mb-2 text-zinc-100">Candidate images from the current working pack context</p>
+            {skuTruthCandidates.length ? (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                {skuTruthCandidates.map((candidate) => {
+                  const selected = selectedCandidateGenerationId === candidate.generationId;
+                  return (
+                    <button
+                      key={candidate.generationId}
+                      type="button"
+                      onClick={() => handleSelectCandidate(candidate)}
+                      className={`rounded border p-2 text-left ${selected ? "border-cyan-400 bg-cyan-950/30" : "border-zinc-800 bg-zinc-950 hover:border-zinc-600"}`}
+                    >
+                      {candidate.thumbnailUrl ? <img src={candidate.thumbnailUrl} alt={`Candidate ${candidate.generationId}`} className="mb-2 h-28 w-full rounded object-cover" /> : <div className="mb-2 h-28 w-full rounded bg-zinc-800" />}
+                      <p className="truncate text-zinc-100">gen {candidate.generationId}</p>
+                      <p className="text-zinc-400">{provenanceLabel(candidate.sourceKind)}</p>
+                      {candidate.suggestedRole ? <p className="text-emerald-300">Hint: {candidate.suggestedRole}</p> : <p className="text-zinc-500">No role hint</p>}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : <p className="text-zinc-500">No candidate images available in this working pack context yet.</p>}
+          </div>
         </section>
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
