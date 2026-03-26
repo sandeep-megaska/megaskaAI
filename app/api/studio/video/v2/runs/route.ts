@@ -5,9 +5,10 @@ import { getVideoCapabilityByBackendId } from "@/lib/video/providerCapabilities"
 import { isStudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { buildRecoveryRecommendation } from "@/lib/video/v2/recovery";
-import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolvePrimaryFrameUrl } from "@/lib/video/v2/runs";
+import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunStatus, resolveRuntimeFrameUrls } from "@/lib/video/v2/runs";
 import { buildCanonicalRunSnapshot, normalizePrompt, resolvePersistedRunPrompt } from "@/lib/video/v2/promptPropagation";
 import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
+import { validateRuntimeFidelity } from "@/lib/video/v2/fidelityRuntime";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -136,6 +137,12 @@ function isRunEligibleForSuccessActions(run: { status: VideoRunStatus; validatio
   if (run.status !== "succeeded" && run.status !== "validated") return false;
   if (!run.validation) return true;
   return run.validation.decision === "pass" || run.validation.decision === "manual_review";
+}
+
+function parseRuntimeFidelity(snapshot: Record<string, unknown>) {
+  const raw = snapshot.runtime_fidelity;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
 }
 
 export async function GET() {
@@ -523,6 +530,18 @@ export async function POST(request: Request) {
       modelSelected: providerInfo.modelSelected,
       anchorCount: Array.isArray(pack.anchor_pack_items) ? pack.anchor_pack_items.length : undefined,
     });
+    const runtimeFidelity = parseRuntimeFidelity(requestPayloadSnapshot);
+    const exactEndStateRequired = Boolean(runtimeFidelity?.exact_end_state_required);
+    const startFrameGenerationId =
+      typeof runtimeFidelity?.start_frame_generation_id === "string" ? runtimeFidelity.start_frame_generation_id : null;
+    const endFrameGenerationId =
+      typeof runtimeFidelity?.end_frame_generation_id === "string" ? runtimeFidelity.end_frame_generation_id : null;
+    validateRuntimeFidelity({
+      exactEndStateRequired,
+      modeSelected: runRequest.mode_selected,
+      startFrameGenerationId,
+      endFrameGenerationId,
+    });
 
     const initialMeta: Record<string, unknown> = {
       selected_pack_id: runRequest.selected_pack_id,
@@ -566,7 +585,14 @@ export async function POST(request: Request) {
       typeof (requestPayloadSnapshot as Record<string, unknown>).source_output_asset_url === "string"
         ? ((requestPayloadSnapshot as Record<string, unknown>).source_output_asset_url as string)
         : null;
-    const primaryFrameUrl = runRequest.action_type === "extend" ? extensionSourceVideoUrl : resolvePrimaryFrameUrl(pack as AnchorPack);
+    const runtimeFrames = resolveRuntimeFrameUrls({
+      pack: pack as AnchorPack,
+      startFrameGenerationId,
+      endFrameGenerationId,
+      startFrameRole: typeof runtimeFidelity?.start_frame_role === "string" ? runtimeFidelity.start_frame_role : null,
+      endFrameRole: typeof runtimeFidelity?.end_frame_role === "string" ? runtimeFidelity.end_frame_role : null,
+    });
+    const primaryFrameUrl = runRequest.action_type === "extend" ? extensionSourceVideoUrl : runtimeFrames.startFrameUrl;
     if (!primaryFrameUrl) {
       const nextMeta = {
         ...initialMeta,
@@ -594,6 +620,7 @@ export async function POST(request: Request) {
         prompt: canonicalDirectorPrompt,
         durationSeconds: requestedDuration,
         firstFrameUrl: primaryFrameUrl,
+        lastFrameUrl: runtimeFrames.endFrameUrl,
         aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
         requestedFidelityPriority: "maximum-fidelity",
         inputMode: "anchor-based",
@@ -622,6 +649,7 @@ export async function POST(request: Request) {
           prompt: simplifyPromptForSafeRetry(canonicalDirectorPrompt),
           durationSeconds: saferDuration,
           firstFrameUrl: primaryFrameUrl,
+          lastFrameUrl: runtimeFrames.endFrameUrl,
           aspectRatio: isStudioAspectRatio(selectedAspectRatio) ? selectedAspectRatio : "9:16",
           requestedFidelityPriority: "balanced",
           inputMode: "anchor-based",

@@ -4,6 +4,14 @@ import { buildClipIntentPrompt } from "@/lib/video/v2/buildClipIntentPrompt";
 import { persistCreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/persistence";
 import { planCreativeFidelity } from "@/lib/video/v2/creativeFidelity/planner";
 import { buildCompileTraceabilitySnapshot } from "@/lib/video/v2/compileTraceability";
+import {
+  detectExactEndStateRequired,
+  getVerifiedAnchorIds,
+  hardenPromptForExactState,
+  resolveRuntimeMode,
+  selectRuntimeFrames,
+  validateRuntimeFidelity,
+} from "@/lib/video/v2/fidelityRuntime";
 import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
@@ -174,12 +182,35 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   });
 
   const modeSelected = resolveCompileMode(readiness.recommendedMode as V2Mode, fidelityPlan.recommendedMode, warnings);
-  const prompt = buildClipIntentPrompt({
+  const exactEndStateRequired = detectExactEndStateRequired(intent.motion_prompt);
+  const frameSelection = selectRuntimeFrames({
+    motionPrompt: intent.motion_prompt,
+    items,
+    exactEndStateRequired,
+  });
+  const runtimeModeSelected = resolveRuntimeMode({
+    requestedMode: modeSelected,
+    exactEndStateRequired,
+    startFrameGenerationId: frameSelection.startFrameGenerationId,
+    endFrameGenerationId: frameSelection.endFrameGenerationId,
+  });
+  validateRuntimeFidelity({
+    exactEndStateRequired,
+    modeSelected: runtimeModeSelected,
+    startFrameGenerationId: frameSelection.startFrameGenerationId,
+    endFrameGenerationId: frameSelection.endFrameGenerationId,
+  });
+
+  const promptBase = buildClipIntentPrompt({
     clip_goal: intent.clip_goal,
     scene_policy: intent.scene_policy,
     motion_template: intent.motion_template,
     fidelity_priority: intent.fidelity_priority,
     motion_prompt: intent.motion_prompt,
+  });
+  const hardenedDirectorPrompt = hardenPromptForExactState({
+    directorPrompt: promptBase.directorPrompt,
+    exactEndStateRequired,
   });
 
   const motionComplexity = classifyMotionComplexity(intent.motion_prompt);
@@ -227,9 +258,9 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     sourceProfileId: intent.source_profile_id,
     compiledAnchorPackId: anchorPack.id,
     workingPackReadinessScore: Number(pack.readiness_score ?? 0),
-    directorPrompt: prompt.directorPrompt,
-    fallbackPrompt: prompt.fallbackPrompt,
-    modeSelected,
+    directorPrompt: hardenedDirectorPrompt,
+    fallbackPrompt: promptBase.fallbackPrompt,
+    modeSelected: runtimeModeSelected,
     providerSelected: "veo-3.1",
     modelSelected: "veo-3.1",
     anchorCount: compileItems.length,
@@ -245,7 +276,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     .from("video_generation_plans")
     .insert({
       motion_request: intent.motion_prompt,
-      mode_selected: modeSelected,
+      mode_selected: runtimeModeSelected,
       why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)} and creative fidelity decision ${fidelityPlan.decision}.`,
       recommended_pack_ids: [anchorPack.id],
       required_reference_roles: REQUIRED_ROLES,
@@ -253,8 +284,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       aspect_ratio: intent.aspect_ratio || "9:16",
       motion_complexity: motionComplexity,
       anchor_risk_level: anchorRisk,
-      director_prompt: prompt.directorPrompt,
-      fallback_prompt: prompt.fallbackPrompt,
+      director_prompt: hardenedDirectorPrompt,
+      fallback_prompt: promptBase.fallbackPrompt,
       negative_constraints: [
         "Do not alter facial geometry.",
         "Do not change garment fit or print alignment.",
@@ -273,14 +304,26 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   const runRequest: ExecuteVideoRunRequest = {
     generation_plan_id: generationPlan.id,
     selected_pack_id: anchorPack.id,
-    mode_selected: modeSelected,
+    mode_selected: runtimeModeSelected,
     provider_selected: "veo-3.1",
     model_selected: "veo-3.1",
-    director_prompt: prompt.directorPrompt,
-    fallback_prompt: prompt.fallbackPrompt,
+    director_prompt: hardenedDirectorPrompt,
+    fallback_prompt: promptBase.fallbackPrompt,
     aspect_ratio: intent.aspect_ratio || "9:16",
     duration_seconds: Number(intent.duration_seconds ?? 8),
-    request_payload_snapshot: traceabilitySnapshot,
+    request_payload_snapshot: {
+      ...traceabilitySnapshot,
+      runtime_fidelity: {
+        exact_end_state_required: exactEndStateRequired,
+        start_frame_generation_id: frameSelection.startFrameGenerationId,
+        end_frame_generation_id: frameSelection.endFrameGenerationId,
+        start_frame_role: frameSelection.startRole,
+        end_frame_role: frameSelection.endRole,
+        mode_lock: exactEndStateRequired ? "frames_to_video" : null,
+        prompt_hardening_enabled: exactEndStateRequired,
+        prioritized_verified_anchor_generation_ids: getVerifiedAnchorIds(items),
+      },
+    },
   };
 
   const { error: intentUpdateError } = await supabase
