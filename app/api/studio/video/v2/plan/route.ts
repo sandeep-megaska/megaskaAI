@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { buildDirectorPlan } from "@/lib/video/v2/planner";
+import { getPhase1TemplateById } from "@/lib/video/v2/templateMode";
 import type { AnchorPack, AnchorPackItemRole, AnchorPackType, V2Mode } from "@/lib/video/v2/types";
 
 function json(status: number, body: Record<string, unknown>) {
@@ -21,9 +22,15 @@ export async function POST(request: Request) {
       aggregate_stability_score?: number;
       available_roles?: AnchorPackItemRole[];
       desired_mode?: V2Mode;
+      production_mode?: "phase1_template" | "experimental_freeform";
+      phase1_template_id?: string | null;
     };
 
     if (!body.motion_request?.trim()) return json(400, { success: false, error: "motion_request is required." });
+    const template = body.production_mode === "phase1_template" ? getPhase1TemplateById(body.phase1_template_id) : null;
+    if (body.production_mode === "phase1_template" && !template) {
+      return json(400, { success: false, error: "A valid Phase-1 template is required in production mode." });
+    }
 
     const supabase = getSupabaseAdminClient();
     const { data: packs, error: packsError } = await supabase
@@ -43,12 +50,20 @@ export async function POST(request: Request) {
       priorValidatedClipExists: Boolean(body.prior_validated_clip_exists),
       preferredProviders: body.preferred_providers,
       desiredMode: body.desired_mode,
+      productionMode: body.production_mode ?? "experimental_freeform",
+      phase1TemplateId: body.phase1_template_id ?? null,
       selectedPackId: body.selected_pack_id,
       selectedPackType: body.selected_pack_type,
       aggregateStabilityScore: body.aggregate_stability_score,
       availableRoles: body.available_roles,
       packs: (packs ?? []) as AnchorPack[],
     });
+    if (template?.requires_exact_end_state && plan.mode_selected !== "frames_to_video") {
+      return json(400, { success: false, error: `Template '${template.label}' must run in frames_to_video mode.` });
+    }
+    if (template && plan.missing_requirements.some((reason) => reason.startsWith("Missing template role:"))) {
+      return json(400, { success: false, error: `Template '${template.label}' is not ready. ${plan.missing_requirements.join(" ")}` });
+    }
 
     const { data, error } = await supabase
       .from("video_generation_plans")

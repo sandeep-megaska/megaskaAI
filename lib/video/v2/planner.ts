@@ -1,5 +1,6 @@
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import { routeVideoMode } from "@/lib/video/v2/modeRouter";
+import { buildTemplatePromptScaffold, getPhase1TemplateById } from "@/lib/video/v2/templateMode";
 import {
   type AnchorPackItemRole,
   type AnchorRiskLevel,
@@ -37,12 +38,17 @@ function deriveRequiredRoles(mode: DirectorPlanContract["mode_selected"]): Ancho
 }
 
 function buildDirectorPrompt(input: DirectorPlannerInput, mode: DirectorPlanContract["mode_selected"]) {
+  const template = getPhase1TemplateById(input.phase1TemplateId);
   return [
     `Motion request: ${input.motionRequest.trim()}`,
     `Mode: ${mode}`,
+    template ? `Template mode: ${template.label}` : null,
+    template ? `Template scaffold:\n${buildTemplatePromptScaffold(template, input.motionRequest)}` : null,
     "Priority: preserve model identity and garment fidelity over novelty.",
     "Use anchor-guided transitions with small controlled motion and stable framing.",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function normalizeDesiredMode(mode?: string): V2Mode | undefined {
@@ -51,6 +57,7 @@ function normalizeDesiredMode(mode?: string): V2Mode | undefined {
 }
 
 export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanContract {
+  const template = input.productionMode === "phase1_template" ? getPhase1TemplateById(input.phase1TemplateId) : null;
   const motionComplexity = classifyMotionComplexity(input.motionRequest);
   const selectedPack = input.selectedPackId ? input.packs.find((pack) => pack.id === input.selectedPackId) : undefined;
   const activePack = selectedPack ?? input.packs[0];
@@ -85,7 +92,8 @@ export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanCont
   const desiredMode = normalizeDesiredMode(input.desiredMode);
   const desiredSuitability = readiness?.modeSuitability.find((entry) => entry.mode === desiredMode);
 
-  const modeSelected = desiredMode && desiredSuitability && desiredSuitability.level !== "insufficient" ? desiredMode : routed.modeSelected;
+  const routedMode = desiredMode && desiredSuitability && desiredSuitability.level !== "insufficient" ? desiredMode : routed.modeSelected;
+  const modeSelected = template?.mode_preference ?? routedMode;
   const whyModeSelected =
     desiredMode && desiredSuitability
       ? desiredSuitability.level === "insufficient"
@@ -94,7 +102,7 @@ export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanCont
       : routed.whyModeSelected;
 
   const anchorRisk = deriveAnchorRisk(stabilityScore, motionComplexity);
-  const requiredRoles = deriveRequiredRoles(modeSelected);
+  const requiredRoles = template?.required_roles ?? deriveRequiredRoles(modeSelected);
   const recommendedPackIds = activePack ? [activePack.id] : input.packs.slice(0, 3).map((pack) => pack.id);
 
   const missingRequirements = readiness
@@ -102,6 +110,7 @@ export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanCont
         .filter((modeEntry) => modeEntry.mode === modeSelected)
         .flatMap((modeEntry) => modeEntry.reasons)
     : [];
+  const templateRoleGaps = template ? template.required_roles.filter((role) => !availableRoles.includes(role)) : [];
 
   return {
     mode_selected: modeSelected,
@@ -118,6 +127,8 @@ export function buildDirectorPlan(input: DirectorPlannerInput): DirectorPlanCont
     provider_order: input.preferredProviders?.length ? input.preferredProviders : ["veo-3.1", "veo-3.1-fast", "veo-2"],
     mode_suitability: readiness?.modeSuitability ?? [],
     pack_risk: readiness?.riskLevel ?? anchorRisk,
-    missing_requirements: missingRequirements,
+    missing_requirements: template ? [...missingRequirements, ...templateRoleGaps.map((role) => `Missing template role: ${role}.`)] : missingRequirements,
+    production_mode: template ? "phase1_template" : "experimental_freeform",
+    phase1_template_id: template?.template_id ?? null,
   };
 }

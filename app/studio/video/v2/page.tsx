@@ -7,6 +7,7 @@ import AutoProductionModal from "@/app/studio/video/v2/AutoProductionModal";
 import ProductionContextPanel from "@/app/studio/video/v2/components/ProductionContextPanel";
 import ProductionIntelligencePanel from "@/app/studio/video/v2/components/ProductionIntelligencePanel";
 import ProductionWorkspace from "@/app/studio/video/v2/components/ProductionWorkspace";
+import { buildTemplatePromptScaffold, getPhase1TemplateById, getTemplateReadiness, type Phase1TemplateId } from "@/lib/video/v2/templateMode";
 import { excerpt, getAssetUrl, shortId } from "@/app/studio/video/v2/components/helpers";
 import { buildPackReadinessReport } from "@/lib/video/v2/anchorPacks";
 import {
@@ -124,6 +125,8 @@ export default function VideoV2Page() {
   const [newItemGenerationId, setNewItemGenerationId] = useState("");
   const [newItemRole, setNewItemRole] = useState<(typeof ANCHOR_ITEM_ROLES)[number]>("front");
   const [motionRequest, setMotionRequest] = useState("Subtle breathing with micro shoulder shift while preserving garment fit.");
+  const [productionMode, setProductionMode] = useState<"phase1_template" | "experimental_freeform">("phase1_template");
+  const [phase1TemplateId, setPhase1TemplateId] = useState<Phase1TemplateId>("front_still_luxury");
   const [planResponse, setPlanResponse] = useState<DirectorPlanContract | null>(null);
   const [planRecord, setPlanRecord] = useState<PlanApiResponse | null>(null);
   const [runHistory, setRunHistory] = useState<VideoRunHistoryRecord[]>([]);
@@ -172,8 +175,28 @@ export default function VideoV2Page() {
   }, []);
   useEffect(() => { loadSequenceTimeline(selectedSequenceId).catch((e) => setError(e instanceof Error ? e.message : "Failed to load sequence timeline.")); }, [selectedSequenceId]);
 
+  useEffect(() => {
+    if (productionMode !== "phase1_template") return;
+    const template = getPhase1TemplateById(phase1TemplateId);
+    if (!template) return;
+    setDesiredMode(template.mode_preference);
+    setExactEndStateRequired(template.requires_exact_end_state);
+    setMotionRequest((current) => {
+      const trimmed = current.trim();
+      const sceneFlavor = trimmed && !trimmed.startsWith("Template:") ? trimmed : undefined;
+      return buildTemplatePromptScaffold(template, sceneFlavor);
+    });
+  }, [productionMode, phase1TemplateId]);
+
   const selectedPack = packs.find((pack) => pack.id === selectedPackId) ?? null;
   const selectedPackRoles = Array.from(new Set((selectedPack?.anchor_pack_items ?? []).map((item) => item.role as AnchorPackItemRole)));
+  const selectedTemplate = getPhase1TemplateById(phase1TemplateId);
+  const templateReadiness = selectedTemplate ? getTemplateReadiness(selectedTemplate, selectedPackRoles) : null;
+  const templateReadinessSummary = productionMode === "phase1_template"
+    ? templateReadiness?.ready
+      ? "Readiness: template truth requirements are satisfied for the selected pack."
+      : `Readiness: missing ${templateReadiness?.missingRoles.join(", ") || "required roles"}.`
+    : "Readiness: not enforced in experimental mode.";
   const selectedPackReadiness = selectedPack
     ? buildPackReadinessReport({
         packType: selectedPack.pack_type,
@@ -226,7 +249,7 @@ export default function VideoV2Page() {
       setError(blockedPlanReason ?? "Complete required anchors before generating a plan.");
       return;
     }
-    const res = await fetch("/api/studio/video/v2/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ selected_pack_id: selectedPack?.id, selected_pack_type: selectedPack?.pack_type, aggregate_stability_score: selectedPack?.aggregate_stability_score, available_roles: selectedPackRoles, motion_request: motionRequest, exact_end_state_required: exactEndStateRequired, aspect_ratio: aspectRatio || "9:16", desired_mode: desiredMode || undefined }) });
+    const res = await fetch("/api/studio/video/v2/plan", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ selected_pack_id: selectedPack?.id, selected_pack_type: selectedPack?.pack_type, aggregate_stability_score: selectedPack?.aggregate_stability_score, available_roles: selectedPackRoles, motion_request: motionRequest, exact_end_state_required: exactEndStateRequired, aspect_ratio: aspectRatio || "9:16", desired_mode: desiredMode || undefined, production_mode: productionMode, phase1_template_id: productionMode === "phase1_template" ? phase1TemplateId : null }) });
     const payload = (await res.json()) as { error?: string; plan?: DirectorPlanContract; data?: PlanApiResponse };
     if (!res.ok) return setError(payload.error ?? "Planning failed.");
     setPlanResponse(payload.plan ?? null);
@@ -238,7 +261,7 @@ export default function VideoV2Page() {
     setExecutingRun(true);
     setError(null);
     const providerSelected = planResponse.provider_order?.[0] ?? "veo-3.1";
-    const requestPayloadSnapshot = { selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8 } satisfies Record<string, unknown>;
+    const requestPayloadSnapshot = { selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, template_mode: productionMode === "phase1_template" ? { production_mode: "phase1_template", template_id: phase1TemplateId } : { production_mode: "experimental_freeform" } } satisfies Record<string, unknown>;
     const body: ExecuteVideoRunRequest = { generation_plan_id: planRecord.id, selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, request_payload_snapshot: requestPayloadSnapshot, action_type: pendingBranchMeta ? "branch" : undefined, lineage_meta: pendingBranchMeta ?? undefined };
     const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const payload = (await res.json()) as { error?: string };
@@ -305,6 +328,11 @@ export default function VideoV2Page() {
               setActiveTab={setWorkspaceTab}
               motionRequest={motionRequest}
               setMotionRequest={setMotionRequest}
+              productionMode={productionMode}
+              setProductionMode={setProductionMode}
+              phase1TemplateId={phase1TemplateId}
+              setPhase1TemplateId={setPhase1TemplateId}
+              templateReadinessSummary={templateReadinessSummary}
               exactEndStateRequired={exactEndStateRequired}
               setExactEndStateRequired={setExactEndStateRequired}
               aspectRatio={aspectRatio}

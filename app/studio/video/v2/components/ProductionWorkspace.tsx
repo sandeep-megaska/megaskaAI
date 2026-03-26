@@ -3,6 +3,7 @@
 import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { excerpt, resolveRunPrompt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
+import { PHASE1_TEMPLATES, type Phase1TemplateId } from "@/lib/video/v2/templateMode";
 
 type PlanApiResponse = {
   id?: string;
@@ -13,6 +14,11 @@ export default function ProductionWorkspace(props: {
   setActiveTab: (tab: "manual" | "auto") => void;
   motionRequest: string;
   setMotionRequest: (value: string) => void;
+  productionMode: "phase1_template" | "experimental_freeform";
+  setProductionMode: (mode: "phase1_template" | "experimental_freeform") => void;
+  phase1TemplateId: Phase1TemplateId;
+  setPhase1TemplateId: (templateId: Phase1TemplateId) => void;
+  templateReadinessSummary: string;
   exactEndStateRequired: boolean;
   setExactEndStateRequired: (value: boolean) => void;
   aspectRatio: string;
@@ -40,6 +46,7 @@ export default function ProductionWorkspace(props: {
   onAddToSequence: (run: VideoRunHistoryRecord) => Promise<void>;
   selectedSequenceId: string;
 }) {
+  const selectedTemplate = PHASE1_TEMPLATES.find((template) => template.template_id === props.phase1TemplateId) ?? PHASE1_TEMPLATES[0];
   const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun);
   const resolvedPrompt = resolveRunPrompt(props.latestRun);
   const outputValidation =
@@ -76,6 +83,35 @@ export default function ProductionWorkspace(props: {
 
         {props.activeTab === "manual" ? (
           <div className="mt-4 space-y-3">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs uppercase tracking-wide text-cyan-300">Mode</span>
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] ${props.productionMode === "phase1_template" ? "border-cyan-400/50 text-cyan-200" : "border-zinc-600 text-zinc-300"}`}>
+                  {props.productionMode === "phase1_template" ? "Production Mode" : "Experimental Mode"}
+                </span>
+              </div>
+              <div className="mt-2 inline-flex rounded border border-zinc-700 bg-zinc-900/70 p-1 text-xs">
+                <button type="button" onClick={() => props.setProductionMode("phase1_template")} className={`rounded px-2 py-1 ${props.productionMode === "phase1_template" ? "bg-cyan-500 text-zinc-950" : "text-zinc-300"}`}>Phase-1 Template</button>
+                <button type="button" onClick={() => props.setProductionMode("experimental_freeform")} className={`rounded px-2 py-1 ${props.productionMode === "experimental_freeform" ? "bg-zinc-700 text-zinc-100" : "text-zinc-400"}`}>Experimental</button>
+              </div>
+              {props.productionMode === "phase1_template" ? (
+                <div className="mt-3 space-y-2">
+                  <select value={props.phase1TemplateId} onChange={(event) => props.setPhase1TemplateId(event.target.value as Phase1TemplateId)} className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm">
+                    {PHASE1_TEMPLATES.map((template) => <option key={template.template_id} value={template.template_id}>{template.label}</option>)}
+                  </select>
+                  <div className="rounded border border-cyan-500/30 bg-cyan-950/20 p-2 text-xs text-cyan-100">
+                    <p className="font-medium">{selectedTemplate.label}</p>
+                    <p>{selectedTemplate.description}</p>
+                    <p>Motion: {selectedTemplate.motion_profile} · Camera: {selectedTemplate.camera_profile}</p>
+                    <p>Required mode: {selectedTemplate.mode_preference} · Exact end state: {selectedTemplate.requires_exact_end_state ? "yes" : "no"}</p>
+                    <p>Required truth roles: {selectedTemplate.required_roles.join(", ")}</p>
+                    <p>{props.templateReadinessSummary}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-400">Experimental mode keeps free-form controls and may be less reliable for strict product fidelity.</p>
+              )}
+            </div>
             <textarea className="min-h-24 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.motionRequest} onChange={(e) => props.setMotionRequest(e.target.value)} />
             <div className="grid gap-3 md:grid-cols-2">
               <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={props.aspectRatio} onChange={(e) => props.setAspectRatio(e.target.value)} />
