@@ -136,10 +136,7 @@ export async function generateSimpleVideo(input: {
     ...modeOverrides,
   };
 
-  const orchestration = await orchestrateV2ClipIntent(input.clipIntentId, plannerOverrides);
-  if (!orchestration.compileReady) {
-    throw new Error(orchestration.reasons?.[0] ?? orchestration.summary ?? "Clip is not ready to compile yet.");
-  }
+  await orchestrateV2ClipIntent(input.clipIntentId, plannerOverrides);
 
   await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
     method: "POST",
@@ -153,7 +150,7 @@ export async function generateSimpleVideo(input: {
     body: JSON.stringify({ planner_overrides: plannerOverrides }),
   });
 
-  return generated;
+  return { run_id: generated.run_id };
 }
 
 export async function loadRunResult(runId: string): Promise<SimpleRunResult> {
