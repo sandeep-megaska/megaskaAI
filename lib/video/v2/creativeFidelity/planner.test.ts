@@ -83,6 +83,20 @@ function baseItems() {
   });
   assert.equal(surrealInsufficient.decision, "block");
 
+
+  const verifiedBackPlan = planCreativeFidelity({
+    clipIntentId: "clip-8",
+    workingPackId: "pack-1",
+    motionPrompt: "model turns and shows the back design",
+    items: [
+      { role: "front", generation_id: "gen-front", source_kind: "captured" },
+      { role: "fit_anchor", generation_id: "gen-fit", source_kind: "captured" },
+      { role: "back", generation_id: "gen-back", source_kind: "sku_verified_truth" },
+    ],
+  });
+  assert.ok(!verifiedBackPlan.missingRoles.includes("back"));
+  assert.ok(!verifiedBackPlan.criticalMissingRoles.includes("back"));
+
   const waterEscalation = planCreativeFidelity({
     clipIntentId: "clip-7",
     workingPackId: "pack-1",

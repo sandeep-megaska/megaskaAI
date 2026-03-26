@@ -108,6 +108,19 @@ void (async () => {
   assert.deepEqual(partialReuse.roles_reused, ["back"]);
   assert.deepEqual(partialReuse.roles_unresolved, ["detail"]);
 
+
+  const verifiedPriority = await reusePackAnchorsForTest(buildContext(), ["back"], {
+    findCandidates: async () => [
+      candidate({ generation_id: "gen-expanded", source_kind: "expanded_generated", confidence_score: 0.96, quality_score: 0.96, item_id: "expanded" }),
+      candidate({ generation_id: "gen-verified", source_kind: "manual_verified_override", confidence_score: 1, quality_score: 1, item_id: "verified" }),
+    ],
+    persistReuse: async ({ candidate: picked }) => {
+      assert.equal(picked.provenance, "manual_verified_override");
+      return { working_pack_item_id: "persisted-back" };
+    },
+  });
+  assert.equal(verifiedPriority.decisions[0]?.chosen_candidate?.provenance, "manual_verified_override");
+
   const fallbackNoCandidates = await reusePackAnchorsForTest(buildContext(), undefined, {
     findCandidates: async () => [],
     persistReuse: async () => ({ working_pack_item_id: "never" }),

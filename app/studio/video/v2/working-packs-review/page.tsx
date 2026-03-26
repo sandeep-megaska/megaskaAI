@@ -9,6 +9,7 @@ type ClipIntent = {
   source_profile_id: string;
   status: string;
   created_at: string;
+  sku_code?: string | null;
   compiled_anchor_pack_id?: string | null;
   compiled_run_request?: Record<string, unknown> | null;
   last_compiled_at?: string | null;
@@ -50,6 +51,17 @@ type ReuseResult = {
   reasons: string[];
 };
 
+type SkuTruthEntry = {
+  id: string;
+  sku_code: string;
+  role: string;
+  generation_id: string;
+  source_kind: string;
+  is_verified: boolean;
+  label: string | null;
+  notes: string | null;
+};
+
 type OrchestrationStep = {
   id: string;
   type: "planner_review" | "search_existing_truth" | "expand_missing_anchors" | "recheck_fidelity" | "ready_to_compile" | "compile" | "generate";
@@ -89,6 +101,16 @@ type OrchestrationPlanResponse = {
   generateReady: boolean;
 };
 
+function provenanceLabel(sourceKind: string) {
+  if (sourceKind === "sku_verified_truth") return "Verified SKU Truth";
+  if (sourceKind === "manual_verified_override") return "Manual Override";
+  if (sourceKind === "expanded_generated") return "Generated";
+  if (sourceKind === "reused" || sourceKind === "reused_existing") return "Reused";
+  if (sourceKind === "synthesized" || sourceKind === "synthesized_support") return "Synthesized";
+  if (sourceKind === "user_uploaded") return "User Uploaded";
+  return sourceKind;
+}
+
 export default function WorkingPackReviewPage() {
   const [intents, setIntents] = useState<ClipIntent[]>([]);
   const [selectedIntentId, setSelectedIntentId] = useState("");
@@ -108,6 +130,10 @@ export default function WorkingPackReviewPage() {
   const [assistedState, setAssistedState] = useState<AssistedExecutionResult | null>(null);
   const [assistedError, setAssistedError] = useState<string | null>(null);
   const [assistedRunningStep, setAssistedRunningStep] = useState<string | null>(null);
+  const [skuCode, setSkuCode] = useState("");
+  const [skuTruthEntries, setSkuTruthEntries] = useState<SkuTruthEntry[]>([]);
+  const [overrideRole, setOverrideRole] = useState("back");
+  const [overrideGenerationId, setOverrideGenerationId] = useState("");
 
   async function loadIntents() {
     const res = await fetch("/api/studio/video/v2/clip-intents", { cache: "no-store" });
@@ -144,6 +170,16 @@ export default function WorkingPackReviewPage() {
     refreshOrchestrationPlan().catch((orchestrationError) => {
       setError(orchestrationError instanceof Error ? orchestrationError.message : "Failed to refresh orchestration plan.");
     });
+    const selectedIntent = intents.find((intent) => intent.id === selectedIntentId);
+    const nextSku = String((selectedIntent as { sku_code?: string | null } | undefined)?.sku_code ?? "");
+    setSkuCode(nextSku);
+    if (nextSku) {
+      loadSkuTruth(nextSku).catch((skuError) => {
+        setError(skuError instanceof Error ? skuError.message : "Failed to load SKU truth.");
+      });
+    } else {
+      setSkuTruthEntries([]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIntentId]);
 
@@ -166,6 +202,58 @@ export default function WorkingPackReviewPage() {
     if (!roles.has("front")) reasons.push("Required role missing: front.");
     return reasons;
   }, [activePack]);
+
+
+  async function loadSkuTruth(nextSkuCode?: string) {
+    const target = (nextSkuCode ?? skuCode).trim();
+    if (!target) return setSkuTruthEntries([]);
+    const res = await fetch(`/api/studio/video/v2/sku-truth?sku_code=${encodeURIComponent(target)}`, { cache: "no-store" });
+    const payload = (await res.json()) as { data?: SkuTruthEntry[]; error?: string };
+    if (!res.ok) throw new Error(payload.error ?? "Failed to load SKU truth.");
+    setSkuTruthEntries(payload.data ?? []);
+  }
+
+  async function applySkuTruth() {
+    if (!selectedIntentId) return setError("Select a clip intent first.");
+    if (!skuCode.trim()) return setError("Enter SKU / dress code first.");
+
+    setError(null);
+    const res = await fetch(`/api/studio/video/v2/clip-intents/${selectedIntentId}/apply-sku-truth`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sku_code: skuCode.trim() }),
+    });
+    const payload = (await res.json()) as { data?: { attached_roles?: Array<{ role: string; action: string }> }; error?: string };
+    if (!res.ok) return setError(payload.error ?? "Failed to apply SKU truth.");
+
+    setNote(`Applied SKU truth. Roles: ${payload.data?.attached_roles?.map((entry) => `${entry.role} (${entry.action})`).join(", ") || "none"}.`);
+    await Promise.all([loadSkuTruth(), loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
+  }
+
+  async function registerManualOverride() {
+    if (!skuCode.trim()) return setError("Enter SKU / dress code first.");
+    if (!overrideGenerationId.trim()) return setError("Enter generation id for manual override.");
+
+    setError(null);
+    const res = await fetch("/api/studio/video/v2/sku-truth", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sku_code: skuCode.trim(),
+        role: overrideRole,
+        generation_id: overrideGenerationId.trim(),
+        source_kind: "manual_verified_override",
+        clip_intent_id: selectedIntentId || undefined,
+        apply_now: Boolean(selectedIntentId),
+      }),
+    });
+    const payload = (await res.json()) as { error?: string };
+    if (!res.ok) return setError(payload.error ?? "Failed to register override.");
+
+    setOverrideGenerationId("");
+    setNote(`Manual override registered for ${overrideRole}.`);
+    await Promise.all([loadSkuTruth(), loadPacks(), refreshFidelityPlan(), refreshOrchestrationPlan()]);
+  }
 
   async function autoBuild() {
     if (!selectedIntentId) return setError("Select a clip intent first.");
@@ -485,6 +573,40 @@ export default function WorkingPackReviewPage() {
           ) : null}
         </section>
 
+
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
+          <h2 className="font-medium">SKU Truth Registry + Override</h2>
+          <div className="grid gap-2 md:grid-cols-3">
+            <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="SKU / dress code" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
+            <button type="button" onClick={() => loadSkuTruth().catch((e) => setError(e instanceof Error ? e.message : "Failed to load SKU truth."))} className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800">Load SKU Truth</button>
+            <button type="button" onClick={applySkuTruth} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Apply to Working Pack</button>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4">
+            <select className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" value={overrideRole} onChange={(event) => setOverrideRole(event.target.value)}>
+              {["front", "back", "left_profile", "right_profile", "three_quarter_left", "three_quarter_right", "detail", "fit_anchor", "context"].map((role) => (
+                <option key={role} value={role}>{role}</option>
+              ))}
+            </select>
+            <input className="md:col-span-2 rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="Generation ID for manual override" value={overrideGenerationId} onChange={(event) => setOverrideGenerationId(event.target.value)} />
+            <button type="button" onClick={registerManualOverride} className="rounded bg-violet-400 px-3 py-2 text-sm font-medium text-zinc-950">Register Manual Override</button>
+          </div>
+
+          {skuTruthEntries.length ? (
+            <div className="rounded border border-zinc-700/70 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+              <p className="mb-2 text-zinc-100">Available verified truth roles for {skuCode || "SKU"}:</p>
+              <div className="grid gap-2 md:grid-cols-2">
+                {skuTruthEntries.map((entry) => (
+                  <div key={entry.id} className="rounded border border-zinc-800 bg-zinc-950 p-2">
+                    <p>{entry.role} · {provenanceLabel(entry.source_kind)}</p>
+                    <p className="text-zinc-400">gen {entry.generation_id.slice(0, 8)}{entry.label ? ` · ${entry.label}` : ""}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : <p className="text-xs text-zinc-500">No verified truth registered for this SKU yet.</p>}
+        </section>
+
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
           <h2 className="font-medium">Compiled state</h2>
           <p className="mt-2 text-sm text-zinc-300">Compiled anchor pack: {compiledState?.compiled_anchor_pack_id?.slice(0, 8) ?? intents.find((intent) => intent.id === selectedIntentId)?.compiled_anchor_pack_id?.slice(0, 8) ?? "none"}</p>
@@ -503,7 +625,7 @@ export default function WorkingPackReviewPage() {
                 <div className="mt-2 grid gap-2 md:grid-cols-2">
                   {(pack.working_pack_items ?? []).map((item) => (
                     <div key={item.id} className="rounded border border-zinc-800 bg-zinc-950 p-2 text-xs">
-                      <p>{item.role} · {item.source_kind} · conf {Number(item.confidence_score ?? 0).toFixed(2)}</p>
+                      <p>{item.role} · {provenanceLabel(item.source_kind)} · conf {Number(item.confidence_score ?? 0).toFixed(2)}</p>
                       <p className="text-zinc-400">gen {item.generation_id ? item.generation_id.slice(0, 8) : "synthesized"}</p>
                     </div>
                   ))}
