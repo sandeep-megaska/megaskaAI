@@ -11,6 +11,8 @@ import { resolveRuntimeFrameUrls } from "@/lib/video/v2/runs";
 void (() => {
   const exact = detectExactEndStateRequired("Model turns to back and shows the back design clearly.");
   assert.equal(exact, true);
+  assert.equal(detectExactEndStateRequired("show back design close-up"), true);
+  assert.equal(detectExactEndStateRequired("front-to-back reveal with exact product fidelity"), true);
 
   const frames = selectRuntimeFrames({
     motionPrompt: "front to back reveal",
@@ -23,6 +25,8 @@ void (() => {
   });
   assert.equal(frames.startFrameGenerationId, "front-verified");
   assert.equal(frames.endFrameGenerationId, "back-verified");
+  assert.equal(frames.usedVerifiedFrontBackPair, true);
+  assert.equal(frames.exactEndStateReason, "verified_front_back_truth_pair");
 
   assert.equal(
     resolveRuntimeMode({
@@ -43,6 +47,17 @@ void (() => {
         endFrameGenerationId: null,
       }),
     /require verified start\/end frame anchors/i,
+  );
+
+  assert.throws(
+    () =>
+      validateRuntimeFidelity({
+        exactEndStateRequired: true,
+        modeSelected: "frames_to_video",
+        startFrameGenerationId: "front-verified",
+        endFrameGenerationId: null,
+      }),
+    /verified start\/end frame anchors are required/i,
   );
 
   const hardened = hardenPromptForExactState({ directorPrompt: "Clip goal: reveal back", exactEndStateRequired: true });
