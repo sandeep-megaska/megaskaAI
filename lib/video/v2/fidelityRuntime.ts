@@ -78,6 +78,31 @@ export function detectExactEndStateRequired(motionPrompt: string) {
 
 export function selectRuntimeFrames(input: { motionPrompt: string; items: RuntimeAnchorItem[]; exactEndStateRequired: boolean }): RuntimeFrameSelection {
   const withGeneration = input.items.filter((item) => Boolean(item.generation_id));
+  const explicitStart = pickBestForRole(withGeneration, "start_frame");
+  const explicitEnd = pickBestForRole(withGeneration, "end_frame");
+
+  if (explicitStart && explicitEnd) {
+    return {
+      startFrameGenerationId: explicitStart.generation_id ?? null,
+      endFrameGenerationId: explicitEnd.generation_id ?? null,
+      startRole: explicitStart.role ?? "start_frame",
+      endRole: explicitEnd.role ?? "end_frame",
+      usedVerifiedFrontBackPair: false,
+      exactEndStateReason: "explicit_start_end_frames",
+    };
+  }
+
+  if (explicitStart && !input.exactEndStateRequired) {
+    return {
+      startFrameGenerationId: explicitStart.generation_id ?? null,
+      endFrameGenerationId: null,
+      startRole: explicitStart.role ?? "start_frame",
+      endRole: null,
+      usedVerifiedFrontBackPair: false,
+      exactEndStateReason: null,
+    };
+  }
+
   const verifiedFront = pickBestVerifiedForRole(withGeneration, "front");
   const verifiedBack = pickBestVerifiedForRole(withGeneration, "back");
 
@@ -92,10 +117,10 @@ export function selectRuntimeFrames(input: { motionPrompt: string; items: Runtim
     };
   }
 
-  const start = verifiedFront ?? pickBestForRole(withGeneration, "front") ?? pickBestForRole(withGeneration, "fit_anchor");
+  const start = explicitStart ?? verifiedFront ?? pickBestForRole(withGeneration, "front") ?? pickBestForRole(withGeneration, "fit_anchor");
 
   const endRole = detectEndRole(input.motionPrompt);
-  const end = endRole ? pickBestForRole(withGeneration, endRole) : null;
+  const end = explicitEnd ?? (endRole ? pickBestForRole(withGeneration, endRole) : null);
 
   if (!input.exactEndStateRequired) {
     return {
@@ -112,9 +137,9 @@ export function selectRuntimeFrames(input: { motionPrompt: string; items: Runtim
     startFrameGenerationId: start?.generation_id ?? null,
     endFrameGenerationId: end?.generation_id ?? null,
     startRole: start?.role ?? null,
-    endRole,
+    endRole: endRole ?? (explicitEnd ? "end_frame" : null),
     usedVerifiedFrontBackPair: false,
-    exactEndStateReason: endRole ? "prompt_end_role_match" : "prompt_end_role_missing",
+    exactEndStateReason: endRole || explicitEnd ? "prompt_end_role_match" : "prompt_end_role_missing",
   };
 }
 
