@@ -62,3 +62,22 @@ export function findRecentFailedConfigMatch<T extends {
     return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= lookbackHours * 60 * 60 * 1000;
   }) ?? null;
 }
+
+
+export function findRecentPhase2HardFailConfigMatch<T extends {
+  created_at?: string | null;
+  run_meta?: Record<string, unknown> | null;
+}>(runs: T[], signature: string, lookbackHours = 72) {
+  const now = Date.now();
+  return runs.find((run) => {
+    const runMeta = run.run_meta ?? {};
+    const runSignature = runMeta.config_signature;
+    if (runSignature !== signature) return false;
+    const phase2Evaluation = runMeta.phase2_evaluation;
+    if (!phase2Evaluation || typeof phase2Evaluation !== "object" || Array.isArray(phase2Evaluation)) return false;
+    if ((phase2Evaluation as Record<string, unknown>).verdict !== "hard_fail") return false;
+    if (!run.created_at) return true;
+    const ageMs = now - new Date(run.created_at).getTime();
+    return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= lookbackHours * 60 * 60 * 1000;
+  }) ?? null;
+}

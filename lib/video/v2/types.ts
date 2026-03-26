@@ -1,5 +1,7 @@
 // Megaska AI Studio V2: shared contracts for anchor packs, mode routing, and director planning.
 
+import type { Phase2EvaluationRecord, Phase2TemplateHealthSummary } from "@/lib/video/v2/phase2Evaluation";
+
 export const ANCHOR_PACK_TYPES = ["identity", "garment", "scene", "hybrid"] as const;
 export type AnchorPackType = (typeof ANCHOR_PACK_TYPES)[number];
 
@@ -245,6 +247,8 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   continuation_allowed?: boolean;
   continuation_block_reason?: string | null;
   recovery_recommendation?: RecoveryRecommendation | null;
+  phase2_evaluation?: Phase2EvaluationRecord | null;
+  phase2_template_health?: Phase2TemplateHealthSummary | null;
 };
 
 export const VIDEO_SEQUENCE_STATUSES = ["draft", "ready", "rendering", "exported", "failed"] as const;
