@@ -140,14 +140,50 @@ export function hardenPromptForExactState(input: { directorPrompt: string; exact
   return `${input.directorPrompt}\n${hardening.join("\n")}`;
 }
 
+export function buildRuntimeFidelityMetadata(input: {
+  exactEndStateRequired: boolean;
+  startFrameGenerationId: string | null;
+  endFrameGenerationId: string | null;
+}) {
+  return {
+    exact_end_state_required: input.exactEndStateRequired,
+    start_frame_assigned: Boolean(input.startFrameGenerationId),
+    end_frame_assigned: Boolean(input.endFrameGenerationId),
+    prompt_hardening_enabled: input.exactEndStateRequired,
+    mode_lock: input.exactEndStateRequired ? "frames_to_video" : null,
+  } as const;
+}
+
 export function validateRuntimeFidelity(input: { exactEndStateRequired: boolean; modeSelected: V2Mode; startFrameGenerationId: string | null; endFrameGenerationId: string | null }) {
   if (!input.exactEndStateRequired) return;
   if (input.modeSelected !== "frames_to_video") {
     throw new Error("Exact end-state runs must execute in frames_to_video mode.");
   }
+  if (!input.endFrameGenerationId) {
+    throw new Error("Exact end-state runs are blocked: end_frame is required.");
+  }
   if (!input.startFrameGenerationId || !input.endFrameGenerationId) {
     throw new Error("Exact end-state runs are blocked: verified start/end frame anchors are required.");
   }
+}
+
+export function validateRuntimeExecution(input: {
+  exactEndStateRequired: boolean;
+  modeSelected: V2Mode;
+  startFrameGenerationId: string | null;
+  endFrameGenerationId: string | null;
+  canonicalDirectorPrompt: string | null;
+}) {
+  const normalizedPrompt = typeof input.canonicalDirectorPrompt === "string" ? input.canonicalDirectorPrompt.trim() : "";
+  if (!normalizedPrompt) {
+    throw new Error("Cannot execute video run: compiled prompt is missing.");
+  }
+  validateRuntimeFidelity({
+    exactEndStateRequired: input.exactEndStateRequired,
+    modeSelected: input.modeSelected,
+    startFrameGenerationId: input.startFrameGenerationId,
+    endFrameGenerationId: input.endFrameGenerationId,
+  });
 }
 
 export function getVerifiedAnchorIds(items: RuntimeAnchorItem[]) {

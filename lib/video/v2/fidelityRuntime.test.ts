@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {
+  buildRuntimeFidelityMetadata,
   detectExactEndStateRequired,
   hardenPromptForExactState,
   resolveRuntimeMode,
   selectRuntimeFrames,
+  validateRuntimeExecution,
   validateRuntimeFidelity,
 } from "@/lib/video/v2/fidelityRuntime";
 import { resolveRuntimeFrameUrls } from "@/lib/video/v2/runs";
@@ -62,6 +64,7 @@ void (() => {
 
   const hardened = hardenPromptForExactState({ directorPrompt: "Clip goal: reveal back", exactEndStateRequired: true });
   assert.match(hardened, /Runtime fidelity enforcement/i);
+  assert.match(hardened, /Do not alter the back design, strap placement, cut, silhouette, or garment geometry/i);
   const plain = hardenPromptForExactState({ directorPrompt: "Clip goal: subtle sway", exactEndStateRequired: false });
   assert.equal(plain, "Clip goal: subtle sway");
 
@@ -81,6 +84,27 @@ void (() => {
       }),
     /must execute in frames_to_video/i,
   );
+  assert.throws(
+    () =>
+      validateRuntimeFidelity({
+        exactEndStateRequired: true,
+        modeSelected: "frames_to_video",
+        startFrameGenerationId: "front-verified",
+        endFrameGenerationId: null,
+      }),
+    /end_frame is required/i,
+  );
+  assert.throws(
+    () =>
+      validateRuntimeExecution({
+        exactEndStateRequired: true,
+        modeSelected: "frames_to_video",
+        startFrameGenerationId: "front-verified",
+        endFrameGenerationId: "back-verified",
+        canonicalDirectorPrompt: " ",
+      }),
+    /compiled prompt is missing/i,
+  );
 
   const nonExact = selectRuntimeFrames({
     motionPrompt: "subtle breathing portrait",
@@ -89,6 +113,26 @@ void (() => {
   });
   assert.equal(nonExact.startFrameGenerationId, "front");
   assert.equal(nonExact.endFrameGenerationId, null);
+  const exactMetadata = buildRuntimeFidelityMetadata({
+    exactEndStateRequired: true,
+    startFrameGenerationId: "front-verified",
+    endFrameGenerationId: "back-verified",
+  });
+  assert.deepEqual(exactMetadata, {
+    exact_end_state_required: true,
+    start_frame_assigned: true,
+    end_frame_assigned: true,
+    prompt_hardening_enabled: true,
+    mode_lock: "frames_to_video",
+  });
+  const looseMetadata = buildRuntimeFidelityMetadata({
+    exactEndStateRequired: false,
+    startFrameGenerationId: "front",
+    endFrameGenerationId: null,
+  });
+  assert.equal(looseMetadata.prompt_hardening_enabled, false);
+  assert.equal(looseMetadata.end_frame_assigned, false);
+  assert.equal(looseMetadata.mode_lock, null);
 
   const urls = resolveRuntimeFrameUrls({
     pack: {
