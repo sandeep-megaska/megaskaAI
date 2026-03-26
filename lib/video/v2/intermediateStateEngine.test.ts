@@ -20,76 +20,77 @@ function item(partial: Partial<{
 }
 
 void (() => {
-  const onlyFrontBackHighRisk = buildTransitionPlan({
-    clipIntentId: "clip-1",
-    motionPrompt: "modest frock front to back reveal showing exact back design",
-    garmentRisk: "high",
-    allowDirectFrontBack: false,
-    items: [
-      item({ id: "a", role: "front", generation_id: "front-1" }),
-      item({ id: "b", role: "back", generation_id: "back-1" }),
-    ],
-  });
-  assert.equal(onlyFrontBackHighRisk.strategy, "blocked_missing_intermediate");
-  assert.equal(onlyFrontBackHighRisk.intermediate_state_required, true);
-
-  const segmented = buildTransitionPlan({
-    clipIntentId: "clip-2",
-    motionPrompt: "front to back reveal",
-    garmentRisk: "medium",
-    allowDirectFrontBack: true,
-    items: [
-      item({ id: "a", role: "front", generation_id: "front-1" }),
-      item({ id: "b", role: "three_quarter_left", generation_id: "mid-1", source_kind: "reused_existing" }),
-      item({ id: "c", role: "back", generation_id: "back-1" }),
-    ],
-  });
-  assert.equal(segmented.strategy, "segmented");
-  assert.equal(segmented.segments.length, 2);
-  assert.deepEqual(
-    segmented.segments.map((segment) => `${segment.from_label}->${segment.to_label}`),
-    ["front->three_quarter_left", "three_quarter_left->back"],
-  );
-
-  const compiledSegments = compileTransitionSegments(segmented);
-  assert.equal(compiledSegments.length, 2);
-  assert.equal(compiledSegments[0].start_frame_generation_id, "front-1");
-  assert.equal(compiledSegments[0].end_frame_generation_id, "mid-1");
-  assert.equal(compiledSegments[1].start_frame_generation_id, "mid-1");
-  assert.equal(compiledSegments[1].end_frame_generation_id, "back-1");
-
-  const missingIntermediate = buildTransitionPlan({
-    clipIntentId: "clip-3",
-    motionPrompt: "slow turn to back design",
-    garmentRisk: "high",
-    allowDirectFrontBack: false,
-    items: [
-      item({ id: "a", role: "front", generation_id: "front-1" }),
-      item({ id: "c", role: "back", generation_id: "back-1" }),
-    ],
-  });
-  assert.equal(missingIntermediate.strategy, "blocked_missing_intermediate");
-  assert.ok(missingIntermediate.recommendations[0]?.includes("Image Project"));
-
-  const riskSensitive = buildTransitionPlan({
-    clipIntentId: "clip-4",
-    motionPrompt: "simple front to back reveal modest layered frock",
+  const tier1Direct = buildTransitionPlan({
+    clipIntentId: "clip-tier1",
+    motionPrompt: "subtle pivot front to three quarter",
     garmentRisk: "low",
     allowDirectFrontBack: true,
+    requestedStart: "front",
+    requestedEnd: "three_quarter_left",
+    motionComplexity: "low",
     items: [
       item({ id: "a", role: "front", generation_id: "front-1" }),
-      item({ id: "c", role: "back", generation_id: "back-1" }),
+      item({ id: "b", role: "three_quarter_left", generation_id: "q-1" }),
+      item({ id: "fit", role: "fit_anchor", generation_id: "fit-1" }),
     ],
   });
-  assert.equal(riskSensitive.direct_transition_discouraged, true);
+  assert.equal(tier1Direct.strategy, "direct");
 
-  const simpleFrontOnly = buildTransitionPlan({
-    clipIntentId: "clip-5",
-    motionPrompt: "subtle breathing portrait, maintain front pose",
+  const tier3Segmented = buildTransitionPlan({
+    clipIntentId: "clip-tier3",
+    motionPrompt: "modest layered frock front to back reveal",
+    garmentRisk: "high",
+    allowDirectFrontBack: false,
+    requestedStart: "front",
+    requestedEnd: "back",
+    motionComplexity: "medium",
+    requestedDurationSeconds: 8,
+    items: [
+      item({ id: "a", role: "front", generation_id: "front-1" }),
+      item({ id: "b", role: "three_quarter_left", generation_id: "q-1" }),
+      item({ id: "c", role: "mid_turn_left", generation_id: "mid-1" }),
+      item({ id: "d", role: "back", generation_id: "back-1" }),
+      item({ id: "fit", role: "fit_anchor", generation_id: "fit-1" }),
+    ],
+  });
+  assert.equal(tier3Segmented.strategy, "segmented");
+  assert.ok(tier3Segmented.segments.length >= 2);
+
+  const blockedMissingBack = buildTransitionPlan({
+    clipIntentId: "clip-block",
+    motionPrompt: "modest frock front to back reveal",
+    garmentRisk: "high",
+    allowDirectFrontBack: false,
+    requestedStart: "front",
+    requestedEnd: "back",
+    motionComplexity: "medium",
+    items: [
+      item({ id: "a", role: "front", generation_id: "front-1" }),
+      item({ id: "b", role: "three_quarter_left", generation_id: "q-1" }),
+      item({ id: "fit", role: "fit_anchor", generation_id: "fit-1" }),
+    ],
+  });
+  assert.equal(blockedMissingBack.strategy, "blocked_missing_intermediate");
+  assert.ok(blockedMissingBack.compiled_video_plan.blocked_reasons.some((reason) => reason.includes("back")));
+
+  const forcedEightSeconds = buildTransitionPlan({
+    clipIntentId: "clip-duration",
+    motionPrompt: "validation pass with exact start/end frames",
     garmentRisk: "low",
     allowDirectFrontBack: true,
-    items: [item({ id: "a", role: "front", generation_id: "front-1" })],
+    requestedStart: "start_frame",
+    requestedEnd: "end_frame",
+    startEndFrameMode: true,
+    validationMode: true,
+    requestedDurationSeconds: 4,
+    items: [
+      item({ id: "s", role: "start_frame", generation_id: "start-1" }),
+      item({ id: "e", role: "end_frame", generation_id: "end-1" }),
+    ],
   });
-  assert.equal(simpleFrontOnly.strategy, "not_applicable");
-  assert.equal(simpleFrontOnly.segments.length, 0);
+  assert.equal(forcedEightSeconds.compiled_video_plan.total_duration_seconds, 8);
+
+  const compiledSegments = compileTransitionSegments(tier3Segmented);
+  assert.ok(compiledSegments[0].director_prompt.includes("no silhouette collapse"));
+  assert.ok(compiledSegments[0].director_prompt.includes("no bikini conversion"));
 })();
