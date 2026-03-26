@@ -57,6 +57,8 @@ export default function SimpleVideoStudioPage() {
   const [outcome, setOutcome] = useState<string>("pending");
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [fixingAngles, setFixingAngles] = useState(false);
+  const [fixStatus, setFixStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -110,10 +112,37 @@ export default function SimpleVideoStudioPage() {
   async function onFixMissingAngles() {
     setError(null);
     setNote(null);
-    const intentId = await ensureIntent();
-    await fixMissingAngles({ clipIntentId: intentId, skuCode, roles: readiness?.missingRoles ?? [] });
-    await refreshReadiness();
-    setNote("Missing angles were auto-fixed and rechecked.");
+    setFixingAngles(true);
+    try {
+      const intentId = await ensureIntent();
+      await fixMissingAngles({
+        clipIntentId: intentId,
+        skuCode,
+        roles: readiness?.missingRoles ?? [],
+        startState,
+        endState,
+        durationSeconds,
+        validationMode,
+        motionComplexity,
+      }, (step) => setFixStatus(step));
+
+      const next = await loadReadiness({ clipIntentId: intentId, startState, endState, durationSeconds, validationMode, motionComplexity });
+      setReadiness(next);
+
+      const unresolvedPriorityRoles = ["three_quarter_left", "three_quarter_right", "fit_anchor", "fit_profile", "fit", "detail"]
+        .filter((role) => next.missingRoles.includes(role));
+
+      if (unresolvedPriorityRoles.length > 0) {
+        setNote(`Some angles still need manual help: ${unresolvedPriorityRoles.join(", ")}. You can continue and use advanced review if needed.`);
+      } else {
+        setNote("Angles are ready. You can generate video now.");
+      }
+    } catch (fixError) {
+      setError(fixError instanceof Error ? fixError.message : "Could not fix angles automatically. You can keep editing and try advanced review.");
+    } finally {
+      setFixingAngles(false);
+      setFixStatus(null);
+    }
   }
 
   async function onGenerateVideo() {
@@ -232,9 +261,10 @@ export default function SimpleVideoStudioPage() {
                 })}
               </div>
               <div className="mt-4 flex gap-2">
-                <button type="button" onClick={onFixMissingAngles} className="rounded-lg bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Fix Automatically</button>
+                <button type="button" onClick={onFixMissingAngles} disabled={fixingAngles} className="rounded-lg bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-60">{fixingAngles ? "Fixing…" : "Fix Automatically"}</button>
                 <Link href="/studio/video/v2/working-packs-review" className="rounded-lg border border-zinc-700 px-3 py-2 text-sm">Manage Truth Registry</Link>
               </div>
+              {fixStatus ? <p className="mt-3 text-xs text-cyan-200">{fixStatus}</p> : null}
             </article>
           </div>
 
@@ -307,9 +337,9 @@ export default function SimpleVideoStudioPage() {
 
             <div className="mt-6 flex gap-3">
               {needsFix ? (
-                <button type="button" onClick={onFixMissingAngles} className="rounded-lg bg-cyan-400 px-4 py-2 font-medium text-zinc-950">Fix Missing Angles</button>
+                <button type="button" onClick={onFixMissingAngles} disabled={fixingAngles} className="rounded-lg bg-cyan-400 px-4 py-2 font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-60">{fixingAngles ? "Fixing…" : "Fix Automatically"}</button>
               ) : (
-                <button type="button" onClick={onGenerateVideo} className="rounded-lg bg-violet-400 px-4 py-2 font-medium text-zinc-950">Generate Video</button>
+                <button type="button" onClick={onGenerateVideo} disabled={fixingAngles} className="rounded-lg bg-violet-400 px-4 py-2 font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-60">Generate Video</button>
               )}
             </div>
           </article>
