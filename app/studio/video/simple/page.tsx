@@ -36,6 +36,7 @@ export default function SimpleVideoStudioPage() {
   const [outputAsset, setOutputAsset] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const isGenerating = generationStatus === "planning" || generationStatus === "processing";
 
   useEffect(() => {
     if (!supabase) return;
@@ -86,7 +87,7 @@ export default function SimpleVideoStudioPage() {
     setError(null);
     setNote(null);
     setOutputAsset(null);
-    setGenerationStatus("processing");
+    setGenerationStatus("planning");
 
     try {
       const intent = await createSimpleClipIntent({
@@ -106,6 +107,7 @@ export default function SimpleVideoStudioPage() {
       });
 
       setActiveRunId(generated.run_id);
+      setGenerationStatus("processing");
 
       for (let attempts = 0; attempts < 24; attempts += 1) {
         const run = await loadRunResult(generated.run_id);
@@ -115,7 +117,7 @@ export default function SimpleVideoStudioPage() {
           setNote("Clip completed.");
           return;
         }
-        if (run.status === "failed") {
+        if (["failed", "canceled", "cancelled"].includes(run.status)) {
           setGenerationStatus("failed");
           throw new Error(run.failureMessage ?? "Video generation failed.");
         }
@@ -124,7 +126,7 @@ export default function SimpleVideoStudioPage() {
 
       setNote("Generation started. Output will appear shortly in run history.");
     } catch (generationError) {
-      setGenerationStatus("idle");
+      setGenerationStatus("failed");
       setError(generationError instanceof Error ? generationError.message : "Failed to generate video.");
     }
   }
@@ -224,7 +226,9 @@ export default function SimpleVideoStudioPage() {
                 </label>
               </div>
               <input className="mt-4 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="Optional SKU / garment code" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
-              <button type="button" onClick={onGenerateVideo} className="mt-5 rounded-lg bg-violet-400 px-4 py-2 font-medium text-zinc-950">Generate clip</button>
+              <button type="button" onClick={onGenerateVideo} disabled={isGenerating} className="mt-5 rounded-lg bg-violet-400 px-4 py-2 font-medium text-zinc-950 disabled:opacity-50">
+                {isGenerating ? "Generating..." : "Generate Clip"}
+              </button>
             </article>
           </div>
         </section>
@@ -237,7 +241,7 @@ export default function SimpleVideoStudioPage() {
             </div>
           ) : null}
 
-          {generationStatus === "processing" ? (
+          {isGenerating ? (
             <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
               <p className="text-sm font-medium text-cyan-100">Generating clip...</p>
               <div className="mt-3 grid gap-2 text-xs">
