@@ -1,6 +1,6 @@
 import { resolveRunVideoUrl } from "@/app/studio/video/v2/components/helpers";
 import type { VideoRunHistoryRecord } from "@/lib/video/v2/types";
-import { runV2ClipGenerationFlow, type V2PlannerOverrides } from "@/lib/video/v2/generationFlowClient";
+import { orchestrateV2ClipIntent, type V2PlannerOverrides } from "@/lib/video/v2/generationFlowClient";
 
 export type SimpleMode = "strict" | "balanced" | "creative";
 
@@ -128,15 +128,29 @@ export async function generateSimpleVideo(input: {
         ? { validationMode: false, motionComplexity: "high" }
         : { validationMode: false, motionComplexity: "medium" };
 
-  const { generated } = await runV2ClipGenerationFlow({
-    clipIntentId: input.clipIntentId,
-    plannerOverrides: {
-      requestedStart: "start_frame",
-      requestedEnd: input.hasEndFrame ? "end_frame" : "start_frame",
-      requestedDurationSeconds: input.durationSeconds,
-      startEndFrameMode: input.hasEndFrame,
-      ...modeOverrides,
-    },
+  const plannerOverrides: V2PlannerOverrides = {
+    requestedStart: "start_frame",
+    requestedEnd: input.hasEndFrame ? "end_frame" : "start_frame",
+    requestedDurationSeconds: input.durationSeconds,
+    startEndFrameMode: input.hasEndFrame,
+    ...modeOverrides,
+  };
+
+  const orchestration = await orchestrateV2ClipIntent(input.clipIntentId, plannerOverrides);
+  if (!orchestration.compileReady) {
+    throw new Error(orchestration.reasons?.[0] ?? orchestration.summary ?? "Clip is not ready to compile yet.");
+  }
+
+  await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/compile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ planner_overrides: plannerOverrides }),
+  });
+
+  const generated = await fetchJson<{ run_id: string; status: string }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ planner_overrides: plannerOverrides }),
   });
 
   return generated;
