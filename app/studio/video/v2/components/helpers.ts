@@ -44,10 +44,23 @@ function walkForVideoUrl(node: unknown, depth = 0): string | null {
   return null;
 }
 
-export function resolveRunVideoUrl(run?: { output_asset_url?: string | null; request_payload_snapshot?: Record<string, unknown> | null; run_meta?: Record<string, unknown> | null } | null) {
+export function resolveRunVideoUrl(
+  run?: { output_asset_url?: string | null; request_payload_snapshot?: Record<string, unknown> | null; run_meta?: Record<string, unknown> | null; run_mode?: string | null; preview_asset_url?: string | null; full_output_asset_url?: string | null } | null,
+  options?: { preferValidationPreview?: boolean },
+) {
   if (!run) return null;
+  if (options?.preferValidationPreview && run.run_mode === "validation") {
+    const validationPreview = pickFirstUrl([
+      run.preview_asset_url,
+      run.run_meta?.preview_asset_url,
+      run.request_payload_snapshot?.preview_asset_url,
+    ]);
+    if (validationPreview) return validationPreview;
+  }
   const direct = pickFirstUrl([run.output_asset_url]);
   if (direct) return direct;
+  const fullOutput = pickFirstUrl([run.full_output_asset_url, run.run_meta?.full_output_asset_url]);
+  if (fullOutput) return fullOutput;
   const snapshot = walkForVideoUrl(run.request_payload_snapshot);
   if (snapshot) return snapshot;
   return walkForVideoUrl(run.run_meta);

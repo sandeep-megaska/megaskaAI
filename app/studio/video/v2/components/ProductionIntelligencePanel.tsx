@@ -44,6 +44,7 @@ export default function ProductionIntelligencePanel(props: {
               <p className={`font-medium uppercase ${statusTone(run.status)}`}>{run.status}</p>
               <p className="text-zinc-300">{shortId(run.id)} · {new Date(run.created_at).toLocaleTimeString()}</p>
               <p className="text-zinc-500">{run.provider_used ?? "n/a"} / {run.provider_model ?? "n/a"}</p>
+              <p className="text-zinc-500">{run.run_mode === "production" ? "Production output" : "Validation preview"}</p>
             </button>
           ))}
         </div>

@@ -22,8 +22,10 @@ import {
   type SequenceTimelineView,
   type VideoSequence,
   type VideoRunHistoryRecord,
+  type VideoRunMode,
   type V2Mode,
 } from "@/lib/video/v2/types";
+import { buildRunConfigSignature, findRecentFailedConfigMatch } from "@/lib/video/v2/runMode";
 
 type GalleryImage = { id: string; prompt: string; asset_url?: string | null; url?: string | null };
 type ValidationResult = {
@@ -126,6 +128,7 @@ export default function VideoV2Page() {
   const [newItemRole, setNewItemRole] = useState<(typeof ANCHOR_ITEM_ROLES)[number]>("front");
   const [motionRequest, setMotionRequest] = useState("Subtle breathing with micro shoulder shift while preserving garment fit.");
   const [productionMode, setProductionMode] = useState<"phase1_template" | "experimental_freeform">("phase1_template");
+  const [runMode, setRunMode] = useState<VideoRunMode>("validation");
   const [phase1TemplateId, setPhase1TemplateId] = useState<Phase1TemplateId>("front_still_luxury");
   const [planResponse, setPlanResponse] = useState<DirectorPlanContract | null>(null);
   const [planRecord, setPlanRecord] = useState<PlanApiResponse | null>(null);
@@ -216,6 +219,34 @@ export default function VideoV2Page() {
           ? selectedPackReadiness.warnings[0]
         : null;
   const hasRunnablePlan = Boolean(planRecord?.id && planResponse && selectedPack?.id);
+  const currentConfigSignature = useMemo(() => {
+    if (!planResponse || !selectedPack) return null;
+    const providerSelected = planResponse.provider_order?.[0] ?? "veo-3.1";
+    return buildRunConfigSignature({
+      selectedPackId: selectedPack.id,
+      modeSelected: planResponse.mode_selected,
+      providerSelected,
+      modelSelected: providerSelected,
+      aspectRatio: planResponse.aspect_ratio ?? aspectRatio,
+      runMode,
+      directorPrompt: planResponse.director_prompt,
+      productionMode,
+      phase1TemplateId: productionMode === "phase1_template" ? phase1TemplateId : null,
+    });
+  }, [planResponse, selectedPack, aspectRatio, runMode, productionMode, phase1TemplateId]);
+  const recentFailedMatch = useMemo(
+    () => (currentConfigSignature ? findRecentFailedConfigMatch(runHistory, currentConfigSignature, 24) : null),
+    [runHistory, currentConfigSignature],
+  );
+  const validationRunsToday = useMemo(() => {
+    const today = new Date();
+    const startUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    return runHistory.filter((run) => {
+      if (run.run_mode !== "validation") return false;
+      const ts = new Date(run.created_at).getTime();
+      return Number.isFinite(ts) && ts >= startUtc;
+    }).length;
+  }, [runHistory]);
   const [dismissedResultRunIds, setDismissedResultRunIds] = useState<string[]>([]);
   const latestRunForSelectedPack = runHistory.find((run) => run.selected_pack_id === selectedPackId && !dismissedResultRunIds.includes(run.id)) ?? null;
   const fallbackVisibleRun = latestRunForSelectedPack ?? runHistory.find((run) => !dismissedResultRunIds.includes(run.id)) ?? null;
@@ -245,6 +276,10 @@ export default function VideoV2Page() {
   async function removeSequenceItem(itemId: string) { if (!selectedSequenceId) return; const res = await fetch(`/api/studio/video/v2/sequences/${selectedSequenceId}/items/${itemId}`, { method: "DELETE" }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to remove sequence item."); await Promise.all([loadSequences(), loadSequenceTimeline(selectedSequenceId)]); }
 
   async function onGeneratePlan() {
+    if (runMode === "validation" && productionMode !== "phase1_template") {
+      setError("Validation mode requires Phase-1 Template mode to reduce risky spend.");
+      return;
+    }
     if (!packReadyForPlan) {
       setError(blockedPlanReason ?? "Complete required anchors before generating a plan.");
       return;
@@ -258,11 +293,15 @@ export default function VideoV2Page() {
 
   async function onRunPlan() {
     if (!hasRunnablePlan || !planRecord?.id || !selectedPack?.id || !planResponse) return;
+    if (runMode === "validation" && productionMode !== "phase1_template") {
+      setError("Validation mode requires Phase-1 Template mode.");
+      return;
+    }
     setExecutingRun(true);
     setError(null);
     const providerSelected = planResponse.provider_order?.[0] ?? "veo-3.1";
-    const requestPayloadSnapshot = { selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, template_mode: productionMode === "phase1_template" ? { production_mode: "phase1_template", template_id: phase1TemplateId } : { production_mode: "experimental_freeform" } } satisfies Record<string, unknown>;
-    const body: ExecuteVideoRunRequest = { generation_plan_id: planRecord.id, selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, request_payload_snapshot: requestPayloadSnapshot, action_type: pendingBranchMeta ? "branch" : undefined, lineage_meta: pendingBranchMeta ?? undefined };
+    const requestPayloadSnapshot = { selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, run_mode: runMode, template_mode: productionMode === "phase1_template" ? { production_mode: "phase1_template", template_id: phase1TemplateId } : { production_mode: "experimental_freeform" } } satisfies Record<string, unknown>;
+    const body: ExecuteVideoRunRequest = { generation_plan_id: planRecord.id, selected_pack_id: selectedPack.id, mode_selected: planResponse.mode_selected, provider_selected: providerSelected, model_selected: providerSelected, director_prompt: planResponse.director_prompt, fallback_prompt: planResponse.fallback_prompt, aspect_ratio: planResponse.aspect_ratio ?? aspectRatio, duration_seconds: planResponse.duration_seconds ?? 8, request_payload_snapshot: requestPayloadSnapshot, run_mode: runMode, action_type: pendingBranchMeta ? "branch" : undefined, lineage_meta: pendingBranchMeta ?? undefined };
     const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const payload = (await res.json()) as { error?: string };
     if (!res.ok) { setExecutingRun(false); return setError(payload.error ?? "Run creation failed."); }
@@ -330,6 +369,10 @@ export default function VideoV2Page() {
               setMotionRequest={setMotionRequest}
               productionMode={productionMode}
               setProductionMode={setProductionMode}
+              runMode={runMode}
+              setRunMode={setRunMode}
+              recentFailedMatch={recentFailedMatch}
+              validationRunsToday={validationRunsToday}
               phase1TemplateId={phase1TemplateId}
               setPhase1TemplateId={setPhase1TemplateId}
               templateReadinessSummary={templateReadinessSummary}
