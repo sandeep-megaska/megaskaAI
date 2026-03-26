@@ -27,12 +27,21 @@ export default function SimpleVideoStudioPage() {
   const [pickerSlot, setPickerSlot] = useState<FrameSlot>("start");
   const [prompt, setPrompt] = useState("Smooth, premium garment motion with soft studio light and controlled camera drift.");
   const [durationSeconds, setDurationSeconds] = useState<4 | 6 | 8>(4);
+<<<<<<< codex/convert-simple-page-to-frame-based-generator
   const [aspectRatio, setAspectRatio] = useState<"9:16" | "16:9" | "1:1">("9:16");
   const [mode, setMode] = useState<SimpleMode>("balanced");
   const [resolution, setResolution] = useState<"auto">("auto");
   const [skuCode, setSkuCode] = useState("");
 
   const [generationStatus, setGenerationStatus] = useState<"idle" | "processing" | "completed">("idle");
+=======
+  const [validationMode, setValidationMode] = useState(true);
+  const [motionComplexity, setMotionComplexity] = useState<"low" | "medium" | "high">("low");
+  const [cameraMode, setCameraMode] = useState<"locked" | "slight">("locked");
+  const [readiness, setReadiness] = useState<SimpleReadiness | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<"idle" | "planning" | "processing" | "completed" | "failed">("idle");
+  const [outputAsset, setOutputAsset] = useState<string | null>(null);
+>>>>>>> main
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [outputAsset, setOutputAsset] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +124,10 @@ export default function SimpleVideoStudioPage() {
           setGenerationStatus("completed");
           setNote("Clip completed.");
           return;
+        }
+        if (run.status === "failed") {
+          setGenerationStatus("failed");
+          throw new Error(run.failureMessage ?? "Video generation failed.");
         }
         await new Promise((resolve) => setTimeout(resolve, 2500));
       }
@@ -242,6 +255,13 @@ export default function SimpleVideoStudioPage() {
                   <div key={step} className="rounded-lg border border-cyan-400/60 bg-cyan-500/10 px-3 py-2 text-cyan-100">{step}</div>
                 ))}
               </div>
+            </div>
+          ) : null}
+
+          {generationStatus === "failed" ? (
+            <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+              <p className="text-sm font-medium text-rose-200">Generation failed</p>
+              <p className="mt-1 text-xs text-rose-300">This follows the same run status path as Studio V2. You can retry safely.</p>
             </div>
           ) : null}
 
