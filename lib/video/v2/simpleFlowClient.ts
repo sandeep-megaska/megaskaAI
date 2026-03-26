@@ -1,3 +1,6 @@
+import { resolveRunVideoUrl } from "@/app/studio/video/v2/components/helpers";
+import type { VideoRunHistoryRecord } from "@/lib/video/v2/types";
+
 export type SimpleMotionType = "front_pose" | "slight_turn" | "turn_to_back" | "detail_reveal";
 export type SimpleViewState = "front" | "three_quarter_left" | "three_quarter_right" | "back" | "detail";
 
@@ -28,6 +31,7 @@ export type SimpleRunResult = {
   outputGenerationId: string | null;
   outcome: "pass" | "retry" | "reject" | "manual_review" | "pending";
   acceptedForSequence: boolean;
+  failureMessage: string | null;
 };
 
 type FixMissingAnglesStep =
@@ -269,22 +273,32 @@ export async function loadRunResult(runId: string): Promise<SimpleRunResult> {
     status: string;
     output_generation_id?: string | null;
     output_asset_url?: string | null;
+    full_output_asset_url?: string | null;
+    preview_asset_url?: string | null;
+    run_mode?: string | null;
+    run_meta?: Record<string, unknown> | null;
+    request_payload_snapshot?: Record<string, unknown> | null;
     output_thumbnail_url?: string | null;
     accepted_for_sequence?: boolean;
+    failure_message?: string | null;
     validation?: { decision?: "pass" | "retry" | "reject" | "manual_review" } | null;
   }>>("/api/studio/video/v2/runs", { cache: "no-store" });
   const run = runs.find((entry) => entry.id === runId);
   if (!run) {
-    return { runId, status: "queued", outputUrl: null, outputThumbnailUrl: null, outputGenerationId: null, outcome: "pending", acceptedForSequence: false };
+    return { runId, status: "queued", outputUrl: null, outputThumbnailUrl: null, outputGenerationId: null, outcome: "pending", acceptedForSequence: false, failureMessage: null };
   }
+
+  const outputUrl = resolveRunVideoUrl(run as VideoRunHistoryRecord, { preferValidationPreview: true });
+
   return {
     runId,
     status: run.status,
-    outputUrl: run.output_asset_url ?? null,
+    outputUrl,
     outputThumbnailUrl: run.output_thumbnail_url ?? null,
     outputGenerationId: run.output_generation_id ?? null,
     outcome: run.validation?.decision ?? "pending",
     acceptedForSequence: Boolean(run.accepted_for_sequence),
+    failureMessage: run.failure_message ?? null,
   };
 }
 
