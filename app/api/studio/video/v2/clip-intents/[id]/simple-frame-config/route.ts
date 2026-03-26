@@ -5,7 +5,7 @@ function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
 
-type WorkingPackRow = { id: string };
+type WorkingPackRow = { id: string; pack_meta?: Record<string, unknown> | null };
 type WorkingPackItemRow = { id: string; role: string };
 
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -41,14 +41,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
     const { data: packs, error: packsError } = await supabase
       .from("working_packs")
-      .select("id")
+      .select("id,pack_meta")
       .eq("clip_intent_id", clipIntentId)
       .order("created_at", { ascending: false })
       .limit(1)
       .returns<WorkingPackRow[]>();
 
     if (packsError) return json(500, { success: false, error: packsError.message });
-    const workingPackId = packs?.[0]?.id;
+    const workingPack = packs?.[0];
+    const workingPackId = workingPack?.id;
     if (!workingPackId) return json(404, { success: false, error: "Working pack not found for clip intent." });
 
     const { data: items, error: itemsError } = await supabase
@@ -102,6 +103,27 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
         if (error) return json(500, { success: false, error: error.message });
       }
     }
+
+    const nextPackMeta = {
+      ...((workingPack?.pack_meta && typeof workingPack.pack_meta === "object" && !Array.isArray(workingPack.pack_meta))
+        ? workingPack.pack_meta
+        : {}),
+      simple_frame_config: {
+        enabled: true,
+        configured_at: new Date().toISOString(),
+        start_generation_id: body.start_generation_id.trim(),
+        end_generation_id: body.end_generation_id?.trim() || null,
+        duration_seconds: body.duration_seconds ?? null,
+        aspect_ratio: body.aspect_ratio ?? null,
+      },
+    };
+
+    const { error: packMetaError } = await supabase
+      .from("working_packs")
+      .update({ pack_meta: nextPackMeta })
+      .eq("id", workingPackId);
+
+    if (packMetaError) return json(500, { success: false, error: packMetaError.message });
 
     return json(200, { success: true, data: { clipIntentId, workingPackId } });
   } catch (error) {
