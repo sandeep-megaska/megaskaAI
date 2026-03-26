@@ -27,21 +27,11 @@ export default function SimpleVideoStudioPage() {
   const [pickerSlot, setPickerSlot] = useState<FrameSlot>("start");
   const [prompt, setPrompt] = useState("Smooth, premium garment motion with soft studio light and controlled camera drift.");
   const [durationSeconds, setDurationSeconds] = useState<4 | 6 | 8>(4);
-<<<<<<< codex/convert-simple-page-to-frame-based-generator
   const [aspectRatio, setAspectRatio] = useState<"9:16" | "16:9" | "1:1">("9:16");
   const [mode, setMode] = useState<SimpleMode>("balanced");
   const [resolution, setResolution] = useState<"auto">("auto");
   const [skuCode, setSkuCode] = useState("");
-
-  const [generationStatus, setGenerationStatus] = useState<"idle" | "processing" | "completed">("idle");
-=======
-  const [validationMode, setValidationMode] = useState(true);
-  const [motionComplexity, setMotionComplexity] = useState<"low" | "medium" | "high">("low");
-  const [cameraMode, setCameraMode] = useState<"locked" | "slight">("locked");
-  const [readiness, setReadiness] = useState<SimpleReadiness | null>(null);
   const [generationStatus, setGenerationStatus] = useState<"idle" | "planning" | "processing" | "completed" | "failed">("idle");
-  const [outputAsset, setOutputAsset] = useState<string | null>(null);
->>>>>>> main
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [outputAsset, setOutputAsset] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
