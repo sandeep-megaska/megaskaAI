@@ -28,7 +28,7 @@ const ROLE_LABELS: Array<{ key: string; label: string; aliases: string[] }> = [
 
 const MOTION_OPTIONS: Array<{ id: SimpleMotionType; label: string; start: SimpleViewState; end: SimpleViewState; description: string }> = [
   { id: "front_pose", label: "Front Pose", start: "front", end: "front", description: "Safe hero pose with micro movement." },
-  { id: "slight_turn", label: "Slight Turn", start: "front", end: "three_quarter_left", description: "Small angle change for depth." },
+  { id: "slight_turn", label: "Slight Turn", start: "front", end: "three_quarter_right", description: "Small angle change for depth." },
   { id: "turn_to_back", label: "Turn to Back", start: "front", end: "back", description: "Guided turn with fidelity protection." },
   { id: "detail_reveal", label: "Detail Reveal", start: "front", end: "detail", description: "Controlled fabric detail emphasis." },
 ];
@@ -43,9 +43,9 @@ export default function SimpleVideoStudioPage() {
   const [selectedSourceImage, setSelectedSourceImage] = useState<GalleryImage | null>(null);
   const [skuCode, setSkuCode] = useState("");
   const [clipIntentId, setClipIntentId] = useState("");
-  const [motionType, setMotionType] = useState<SimpleMotionType>("front_pose");
+  const [motionType, setMotionType] = useState<SimpleMotionType>("slight_turn");
   const [startState, setStartState] = useState<SimpleViewState>("front");
-  const [endState, setEndState] = useState<SimpleViewState>("front");
+  const [endState, setEndState] = useState<SimpleViewState>("three_quarter_right");
   const [durationSeconds, setDurationSeconds] = useState<4 | 6 | 8>(4);
   const [validationMode, setValidationMode] = useState(true);
   const [motionComplexity, setMotionComplexity] = useState<"low" | "medium" | "high">("low");
@@ -212,12 +212,13 @@ export default function SimpleVideoStudioPage() {
                   <option value="">Change Image</option>
                   {images.map((image) => <option key={image.id} value={image.id}>{image.id.slice(0, 8)}</option>)}
                 </select>
-                <Link href="/try-on" className="rounded-lg border border-zinc-700 px-3 py-2 text-center text-sm hover:bg-zinc-800">Open Image Project</Link>
+                <Link href="/" className="rounded-lg border border-zinc-700 px-3 py-2 text-center text-sm hover:bg-zinc-800">Open Image Project</Link>
               </div>
             </article>
 
             <article className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-5">
               <h2 className="text-sm font-semibold text-zinc-300">Truth Readiness</h2>
+              <p className="mt-2 text-xs text-zinc-400">We check whether required angles are available before generation so your first run is safer.</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 {ROLE_LABELS.map((role) => {
                   const present = readiness
@@ -266,7 +267,7 @@ export default function SimpleVideoStudioPage() {
                 </select>
               </label>
               <label className="flex items-center gap-2 pt-6 text-sm">
-                <input type="checkbox" checked={validationMode} onChange={(event) => setValidationMode(event.target.checked)} /> Validation mode
+                <input type="checkbox" checked={validationMode} onChange={(event) => setValidationMode(event.target.checked)} /> Validation mode (recommended)
               </label>
             </div>
 
@@ -282,7 +283,8 @@ export default function SimpleVideoStudioPage() {
                 </select>
               </label>
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                Garment risk: {readiness?.garmentRisk ?? "unknown"}
+                <p>Garment risk: {readiness?.garmentRisk ?? "Risk not assessed yet"}</p>
+                {!readiness?.garmentRisk ? <p className="mt-1 text-[11px] text-amber-100/90">Risk will be checked during planning.</p> : null}
               </div>
             </div>
 
@@ -292,9 +294,9 @@ export default function SimpleVideoStudioPage() {
                 <button type="button" onClick={refreshReadiness} className="text-xs text-cyan-300 underline">Refresh plan</button>
               </div>
               <ul className="mt-3 space-y-1 text-sm text-zinc-300">
-                {(readiness?.statusLines ?? ["Checking truth coverage", "Choosing safest path", "Preparing validation clip"]).map((line) => <li key={line}>• {line}</li>)}
+                {(readiness?.statusLines ?? ["We’ll check angles, choose the safest path, and prepare a short validation clip."]).map((line) => <li key={line}>• {line}</li>)}
               </ul>
-              {missingTruth.length > 0 ? <p className="mt-3 text-sm text-rose-300">Missing roles: {missingTruth.join(", ")}</p> : null}
+              {missingTruth.length > 0 ? <p className="mt-3 text-sm text-rose-300">We need a few more angles before safe generation. Missing: {missingTruth.join(", ")}</p> : null}
               <div className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
                 <p>Strategy: <span className="text-zinc-200">{readiness?.strategy ?? "pending"}</span></p>
                 <p>Path: <span className="text-zinc-200">{readiness?.pathSummary ?? "-"}</span></p>
