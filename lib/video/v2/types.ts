@@ -214,6 +214,7 @@ export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
   selected_pack_id?: string | null;
   selected_pack_name?: string | null;
   request_payload_snapshot?: Record<string, unknown> | null;
+  prompt_used?: string | null;
   output_asset_url?: string | null;
   output_thumbnail_url?: string | null;
   output_generation_status?: string | null;
