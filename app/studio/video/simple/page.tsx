@@ -61,6 +61,7 @@ export default function SimpleVideoStudioPage() {
   const [promotingTruth, setPromotingTruth] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [fixingAngles, setFixingAngles] = useState(false);
   const [fixStatus, setFixStatus] = useState<string | null>(null);
 
@@ -107,6 +108,7 @@ export default function SimpleVideoStudioPage() {
   async function refreshReadiness() {
     setError(null);
     setNote(null);
+    setWarning(null);
     const intentId = await ensureIntent();
     const next = await loadReadiness({ clipIntentId: intentId, startState, endState, durationSeconds, validationMode, motionComplexity });
     setReadiness(next);
@@ -116,6 +118,7 @@ export default function SimpleVideoStudioPage() {
   async function onFixMissingAngles() {
     setError(null);
     setNote(null);
+    setWarning(null);
     setFixingAngles(true);
     try {
       const intentId = await ensureIntent();
@@ -152,19 +155,32 @@ export default function SimpleVideoStudioPage() {
   async function onGenerateVideo() {
     setError(null);
     setNote(null);
+    setWarning(null);
     setGenerationStatus("planning");
     try {
       const intentId = await ensureIntent();
       const latestReadiness = await loadReadiness({ clipIntentId: intentId, startState, endState, durationSeconds, validationMode, motionComplexity });
       setReadiness(latestReadiness);
+      console.info("[SimpleVideo] readiness decision", {
+        decision: latestReadiness.decision,
+        reasons: latestReadiness.reasons,
+        warnings: latestReadiness.warnings,
+        missingRoles: latestReadiness.missingRoles,
+      });
       if (latestReadiness.decision === "block") {
+        console.info("[SimpleVideo] generation continues", { continue: false, reason: "readiness_block" });
         throw new Error(latestReadiness.blockedReasons[0] ?? latestReadiness.reasons[0] ?? "This shot is currently blocked.");
       }
-      if (latestReadiness.missingRoles.length > 0) {
-        setGenerationStatus("idle");
-        return;
-      }
 
+      if (latestReadiness.decision === "warn") {
+        setWarning(latestReadiness.warnings[0] ?? latestReadiness.reasons[0] ?? "Generation allowed with caution.");
+      }
+      console.info("[SimpleVideo] generation continues", {
+        continue: true,
+        decision: latestReadiness.decision,
+      });
+
+      setNote("Generating...");
       setGenerationStatus("processing");
       const generated = await generateSimpleVideo({ clipIntentId: intentId, startState, endState, durationSeconds, validationMode, motionComplexity });
       setActiveRunId(generated.run_id);
@@ -224,6 +240,7 @@ export default function SimpleVideoStudioPage() {
     setPromotingTruth(true);
     setError(null);
     setNote(null);
+    setWarning(null);
     try {
       const extracted = await fetch("/api/studio/video/extract-frame", {
         method: "POST",
@@ -430,7 +447,7 @@ export default function SimpleVideoStudioPage() {
 
           {generationStatus === "planning" || generationStatus === "processing" ? (
             <div className="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
-              <p className="text-sm font-medium text-cyan-100">Generation in progress</p>
+              <p className="text-sm font-medium text-cyan-100">Generating...</p>
               <div className="mt-3 grid gap-2 text-xs">
                 {[
                   { label: "Checking truth", active: true },
@@ -467,6 +484,7 @@ export default function SimpleVideoStudioPage() {
           ) : null}
 
           {error ? <p className="mt-4 text-sm text-rose-300">{error}</p> : null}
+          {warning ? <p className="mt-4 text-sm text-amber-300">{warning}</p> : null}
           {note ? <p className="mt-4 text-sm text-emerald-300">{note}</p> : null}
         </section>
       </div>
