@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { SkuTruthProvenance, SkuTruthRegistryEntry } from "@/lib/video/v2/skuTruth/types";
+import { SKU_TRUTH_ROLES, type SkuTruthProvenance, type SkuTruthRegistryEntry } from "@/lib/video/v2/skuTruth/types";
 
 type RegistryRow = {
   id: string;
@@ -60,4 +60,12 @@ export async function registerSkuTruthEntry(
 
   if (error || !data) throw new Error(error?.message ?? "Unable to register SKU truth entry.");
   return data;
+}
+
+export function summarizeSkuTruthCoverage(entries: Pick<SkuTruthRegistryEntry, "role">[]) {
+  const present = new Set(entries.map((entry) => entry.role));
+  return SKU_TRUTH_ROLES.map((role) => ({
+    role,
+    present: present.has(role),
+  }));
 }

@@ -74,6 +74,7 @@ type SkuTruthEntry = {
   label: string | null;
   notes: string | null;
 };
+type SkuTruthCoverage = { role: string; present: boolean };
 
 type OrchestrationStep = {
   id: string;
@@ -145,6 +146,7 @@ export default function WorkingPackReviewPage() {
   const [assistedRunningStep, setAssistedRunningStep] = useState<string | null>(null);
   const [skuCode, setSkuCode] = useState("");
   const [skuTruthEntries, setSkuTruthEntries] = useState<SkuTruthEntry[]>([]);
+  const [skuTruthCoverage, setSkuTruthCoverage] = useState<SkuTruthCoverage[]>([]);
   const [overrideRole, setOverrideRole] = useState("");
   const [selectedCandidateGenerationId, setSelectedCandidateGenerationId] = useState("");
   const [selectedRoleSuggested, setSelectedRoleSuggested] = useState<string | null>(null);
@@ -194,6 +196,7 @@ export default function WorkingPackReviewPage() {
       });
     } else {
       setSkuTruthEntries([]);
+      setSkuTruthCoverage([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIntentId]);
@@ -245,11 +248,16 @@ export default function WorkingPackReviewPage() {
 
   async function loadSkuTruth(nextSkuCode?: string) {
     const target = (nextSkuCode ?? skuCode).trim();
-    if (!target) return setSkuTruthEntries([]);
+    if (!target) {
+      setSkuTruthEntries([]);
+      setSkuTruthCoverage([]);
+      return;
+    }
     const res = await fetch(`/api/studio/video/v2/sku-truth?sku_code=${encodeURIComponent(target)}`, { cache: "no-store" });
-    const payload = (await res.json()) as { data?: SkuTruthEntry[]; error?: string };
+    const payload = (await res.json()) as { data?: SkuTruthEntry[]; coverage?: SkuTruthCoverage[]; error?: string };
     if (!res.ok) throw new Error(payload.error ?? "Failed to load SKU truth.");
     setSkuTruthEntries(payload.data ?? []);
+    setSkuTruthCoverage(payload.coverage ?? []);
   }
 
   async function applySkuTruth() {
@@ -629,9 +637,23 @@ export default function WorkingPackReviewPage() {
           <p className="text-xs text-zinc-400">Select the correct image visually, assign a role, then register as verified truth or manual override.</p>
           <div className="grid gap-2 md:grid-cols-3">
             <input className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" placeholder="SKU code (example: MGSW05)" value={skuCode} onChange={(event) => setSkuCode(event.target.value.toUpperCase())} />
-            <button type="button" onClick={() => loadSkuTruth().catch((e) => setError(e instanceof Error ? e.message : "Failed to load SKU truth."))} className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800">Load SKU Truth</button>
-            <button type="button" onClick={applySkuTruth} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Apply to Working Pack</button>
+            <button type="button" onClick={() => loadSkuTruth().catch((e) => setError(e instanceof Error ? e.message : "Failed to load SKU truth."))} className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800">Load SKU Truth Set</button>
+            <button type="button" onClick={applySkuTruth} className="rounded bg-cyan-400 px-3 py-2 text-sm font-medium text-zinc-950">Apply Truth Set to Working Pack</button>
           </div>
+
+          {skuTruthCoverage.length ? (
+            <div className="rounded border border-zinc-700/70 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+              <p className="mb-2 text-zinc-100">Truth coverage for {skuCode || "SKU"}</p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {skuTruthCoverage.map((entry) => (
+                  <div key={entry.role} className="flex items-center justify-between rounded border border-zinc-800 bg-zinc-950 p-2">
+                    <span>{entry.role}</span>
+                    <span className={entry.present ? "text-emerald-300" : "text-zinc-500"}>{entry.present ? "present" : "missing"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="grid gap-2 md:grid-cols-4 items-start">
             <select
