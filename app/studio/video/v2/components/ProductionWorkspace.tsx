@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord, type VideoRunMode } from "@/lib/video/v2/types";
+import { isPhase2TemplateId, type Phase2TemplateHealthSummary } from "@/lib/video/v2/phase2Evaluation";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { excerpt, resolveRunPrompt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
 import { PHASE1_TEMPLATES, type Phase1TemplateId } from "@/lib/video/v2/templateMode";
@@ -19,10 +21,12 @@ export default function ProductionWorkspace(props: {
   runMode: VideoRunMode;
   setRunMode: (mode: VideoRunMode) => void;
   recentFailedMatch: VideoRunHistoryRecord | null;
+  recentPhase2HardFailMatch: VideoRunHistoryRecord | null;
   validationRunsToday: number;
   phase1TemplateId: Phase1TemplateId;
   setPhase1TemplateId: (templateId: Phase1TemplateId) => void;
   templateReadinessSummary: string;
+  phase2TemplateHealth: Phase2TemplateHealthSummary | null;
   exactEndStateRequired: boolean;
   setExactEndStateRequired: (value: boolean) => void;
   aspectRatio: string;
@@ -44,6 +48,13 @@ export default function ProductionWorkspace(props: {
   selectedPackName: string | null;
   onClearCurrentResult: () => void;
   onRecoveryAction: (run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") => Promise<void>;
+  onSavePhase2Evaluation: (run: VideoRunHistoryRecord, evaluation: {
+    garment_truth_ok: boolean;
+    identity_stable: boolean;
+    motion_within_template: boolean;
+    commercially_usable: boolean;
+    reviewer_notes: string;
+  }) => Promise<void>;
   onAcceptClip: (run: VideoRunHistoryRecord) => Promise<void>;
   onExtendClip: (run: VideoRunHistoryRecord) => void;
   onBranchRun: (run: VideoRunHistoryRecord) => Promise<void>;
@@ -70,6 +81,27 @@ export default function ProductionWorkspace(props: {
     && !hasInvalidOutput
     && (props.latestRun.status === "succeeded" || props.latestRun.status === "validated" || props.latestRun.status === "completed"),
   );
+  const [evaluationState, setEvaluationState] = useState({
+    garment_truth_ok: true,
+    identity_stable: true,
+    motion_within_template: true,
+    commercially_usable: true,
+    reviewer_notes: "",
+    verdict_selected: "pass" as "pass" | "soft_fail" | "hard_fail",
+  });
+  const isPhase2Run = Boolean(
+    props.latestRun
+    && props.latestRun.request_payload_snapshot?.template_mode
+    && typeof props.latestRun.request_payload_snapshot.template_mode === "object"
+    && !Array.isArray(props.latestRun.request_payload_snapshot.template_mode)
+    && isPhase2TemplateId((props.latestRun.request_payload_snapshot.template_mode as Record<string, unknown>).template_id as string),
+  );
+  const evaluationVerdict =
+    !evaluationState.garment_truth_ok || !evaluationState.identity_stable || !evaluationState.motion_within_template
+      ? "hard_fail"
+      : evaluationState.commercially_usable
+        ? "pass"
+        : "soft_fail";
 
   return (
     <section className="space-y-4">
@@ -107,6 +139,7 @@ export default function ProductionWorkspace(props: {
                 <p className="mt-2 text-xs text-zinc-400">{props.runMode === "validation" ? "Validation Mode uses short preview review to reduce wasted spend." : "Production Mode is for final approved runs and full-output review."}</p>
                 {props.runMode === "validation" && props.validationRunsToday >= 6 ? <p className="mt-1 text-xs text-amber-300">Validation spend guardrail: {props.validationRunsToday} validation runs today.</p> : null}
                 {props.recentFailedMatch ? <p className="mt-1 text-xs text-amber-300">This config matches a recent failed run ({shortId(props.recentFailedMatch.id)}). Review before rerun.</p> : null}
+                {props.recentPhase2HardFailMatch ? <p className="mt-1 text-xs text-rose-300">Recent Phase-2 hard fail on same template/config ({shortId(props.recentPhase2HardFailMatch.id)}). Retry only one change.</p> : null}
               </div>
               {props.productionMode === "phase1_template" ? (
                 <div className="mt-3 space-y-2">
@@ -120,6 +153,13 @@ export default function ProductionWorkspace(props: {
                     <p>Required mode: {selectedTemplate.mode_preference} · Exact end state: {selectedTemplate.requires_exact_end_state ? "yes" : "no"}</p>
                     <p>Required truth roles: {selectedTemplate.required_roles.join(", ")}</p>
                     <p>{props.templateReadinessSummary}</p>
+                    {props.phase2TemplateHealth ? (
+                      <div className="mt-2 rounded border border-zinc-700/80 bg-zinc-950/40 p-2 text-[11px]">
+                        <p>Phase-2 health · pass {props.phase2TemplateHealth.passes} / soft {props.phase2TemplateHealth.soft_fails} / hard {props.phase2TemplateHealth.hard_fails}</p>
+                        {props.phase2TemplateHealth.should_approve_template ? <p className="text-emerald-300">Guidance: approve template for this SKU/context.</p> : null}
+                        {props.phase2TemplateHealth.should_pause_template ? <p className="text-rose-300">Guidance: pause template (2+ hard fails).</p> : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -207,6 +247,40 @@ export default function ProductionWorkspace(props: {
                     );
                   })()}
                 </div>
+                {isPhase2Run ? (
+                  <div className="rounded border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs text-cyan-100">
+                    <p className="font-medium">Phase-2 Evaluation</p>
+                    <p className="mb-2">Verdict preview: <span className="font-semibold">{evaluationVerdict}</span></p>
+                    <select
+                      value={evaluationState.verdict_selected}
+                      onChange={(e) => {
+                        const verdict = e.target.value as "pass" | "soft_fail" | "hard_fail";
+                        setEvaluationState((prev) => ({
+                          ...prev,
+                          verdict_selected: verdict,
+                          garment_truth_ok: verdict === "hard_fail" ? false : true,
+                          identity_stable: verdict === "hard_fail" ? false : true,
+                          motion_within_template: verdict === "hard_fail" ? false : true,
+                          commercially_usable: verdict === "pass",
+                        }));
+                      }}
+                      className="mb-2 rounded border border-cyan-700/40 bg-zinc-950 px-2 py-1 text-xs"
+                    >
+                      <option value="pass">pass</option>
+                      <option value="soft_fail">soft_fail</option>
+                      <option value="hard_fail">hard_fail</option>
+                    </select>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={evaluationState.garment_truth_ok} onChange={(e) => setEvaluationState((prev) => ({ ...prev, garment_truth_ok: e.target.checked }))} /> garment truth OK</label>
+                      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={evaluationState.identity_stable} onChange={(e) => setEvaluationState((prev) => ({ ...prev, identity_stable: e.target.checked }))} /> identity stable</label>
+                      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={evaluationState.motion_within_template} onChange={(e) => setEvaluationState((prev) => ({ ...prev, motion_within_template: e.target.checked }))} /> motion within template</label>
+                      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={evaluationState.commercially_usable} onChange={(e) => setEvaluationState((prev) => ({ ...prev, commercially_usable: e.target.checked }))} /> commercially usable</label>
+                    </div>
+                    <textarea value={evaluationState.reviewer_notes} onChange={(e) => setEvaluationState((prev) => ({ ...prev, reviewer_notes: e.target.value }))} placeholder="Short reviewer note (optional)" className="mt-2 min-h-16 w-full rounded border border-cyan-700/40 bg-zinc-950 px-2 py-1 text-xs text-zinc-100" />
+                    <p className="mt-2 text-cyan-200">Retry guidance: {props.latestRun.phase2_evaluation?.retry_recommendation ?? "retry_one_change"}</p>
+                    <button type="button" onClick={() => props.onSavePhase2Evaluation(props.latestRun as VideoRunHistoryRecord, evaluationState)} className="mt-2 rounded border border-cyan-400/50 px-2 py-1 text-xs">Save Phase-2 evaluation</button>
+                  </div>
+                ) : null}
               </div>
             ) : hasInvalidOutput ? (
               <div className="rounded-xl border border-rose-500/40 bg-rose-950/20 p-3 text-sm text-rose-200">

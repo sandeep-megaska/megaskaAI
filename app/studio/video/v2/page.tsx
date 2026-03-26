@@ -25,7 +25,8 @@ import {
   type VideoRunMode,
   type V2Mode,
 } from "@/lib/video/v2/types";
-import { buildRunConfigSignature, findRecentFailedConfigMatch } from "@/lib/video/v2/runMode";
+import { buildRunConfigSignature, findRecentFailedConfigMatch, findRecentPhase2HardFailConfigMatch } from "@/lib/video/v2/runMode";
+import { isPhase2TemplateId, summarizePhase2TemplateHealth } from "@/lib/video/v2/phase2Evaluation";
 
 type GalleryImage = { id: string; prompt: string; asset_url?: string | null; url?: string | null };
 type ValidationResult = {
@@ -238,6 +239,17 @@ export default function VideoV2Page() {
     () => (currentConfigSignature ? findRecentFailedConfigMatch(runHistory, currentConfigSignature, 24) : null),
     [runHistory, currentConfigSignature],
   );
+  const recentPhase2HardFailMatch = useMemo(
+    () => (currentConfigSignature ? findRecentPhase2HardFailConfigMatch(runHistory, currentConfigSignature, 72) : null),
+    [runHistory, currentConfigSignature],
+  );
+  const phase2TemplateHealth = useMemo(() => {
+    if (productionMode !== "phase1_template" || !isPhase2TemplateId(phase1TemplateId)) return null;
+    const records = runHistory
+      .map((run) => run.phase2_evaluation)
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry && entry.template_id === phase1TemplateId));
+    return summarizePhase2TemplateHealth(records);
+  }, [runHistory, productionMode, phase1TemplateId]);
   const validationRunsToday = useMemo(() => {
     const today = new Date();
     const startUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
@@ -266,6 +278,38 @@ export default function VideoV2Page() {
   }, [selectedRunId, fallbackVisibleRun?.id, runHistory, dismissedResultRunIds]);
 
   async function runRecoveryAction(run: VideoRunHistoryRecord, action: "same_plan" | "fallback_provider" | "safer_mode") { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_run_id: run.id, retry_strategy: action, retry_reason: `Operator-triggered ${actionLabel(action).toLowerCase()}.` }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Recovery retry failed."); await Promise.all([loadRuns(), loadValidationResults()]); } catch (e) { setError(e instanceof Error ? e.message : "Recovery retry failed."); } }
+  async function savePhase2Evaluation(run: VideoRunHistoryRecord, evaluation: {
+    garment_truth_ok: boolean;
+    identity_stable: boolean;
+    motion_within_template: boolean;
+    commercially_usable: boolean;
+    reviewer_notes: string;
+  }) {
+    try {
+      setError(null);
+      const templateId =
+        typeof run.request_payload_snapshot?.template_mode === "object"
+        && run.request_payload_snapshot?.template_mode
+        && !Array.isArray(run.request_payload_snapshot.template_mode)
+        && typeof (run.request_payload_snapshot.template_mode as Record<string, unknown>).template_id === "string"
+          ? ((run.request_payload_snapshot.template_mode as Record<string, unknown>).template_id as string)
+          : phase1TemplateId;
+      const res = await fetch("/api/studio/video/v2/runs", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          action_type: "phase2_evaluate",
+          evaluation: { ...evaluation, template_id: templateId },
+        }),
+      });
+      const payload = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(payload.error ?? "Failed to save Phase-2 evaluation.");
+      await loadRuns();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save Phase-2 evaluation.");
+    }
+  }
   async function acceptClip(run: VideoRunHistoryRecord) { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ run_id: run.id, action_type: "accept", accepted_for_sequence: true }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to accept clip."); await loadRuns(); } catch (e) { setError(e instanceof Error ? e.message : "Failed to accept clip."); } }
   async function createNextShot(run: VideoRunHistoryRecord) { try { setError(null); const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_run_id: run.id, action_type: "branch" }) }); const payload = (await res.json()) as { error?: string; data?: { planner_prefill?: { selected_pack_id?: string | null; suggested_motion_request?: string | null; suggested_mode?: V2Mode; aspect_ratio?: string }; lineage_meta?: { branched_from_run_id?: string; branch_type?: "next_shot" } } }; if (!res.ok) throw new Error(payload.error ?? "Failed to prefill next shot."); if (payload.data?.planner_prefill?.selected_pack_id) setSelectedPackId(payload.data.planner_prefill.selected_pack_id); if (payload.data?.planner_prefill?.suggested_motion_request) setMotionRequest(String(payload.data.planner_prefill.suggested_motion_request)); if (payload.data?.planner_prefill?.suggested_mode) setDesiredMode(payload.data.planner_prefill.suggested_mode); if (payload.data?.planner_prefill?.aspect_ratio) setAspectRatio(String(payload.data.planner_prefill.aspect_ratio)); if (payload.data?.lineage_meta?.branched_from_run_id) setPendingBranchMeta({ branched_from_run_id: payload.data.lineage_meta.branched_from_run_id, branch_type: "next_shot" }); } catch (e) { setError(e instanceof Error ? e.message : "Failed to prefill next shot."); } }
   async function runExtension() { if (!extendSourceRun) return; try { setError(null); setExtendingRun(true); const res = await fetch("/api/studio/video/v2/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_run_id: extendSourceRun.id, action_type: "extend", continuation_prompt: continuationPrompt.trim(), duration_seconds: continuationDuration, new_seed: continuationSeed.trim() ? Number(continuationSeed) : undefined }) }); const payload = (await res.json()) as { error?: string }; if (!res.ok) throw new Error(payload.error ?? "Failed to extend clip."); setExtendSourceRun(null); setContinuationPrompt(""); setContinuationSeed(""); await Promise.all([loadRuns(), loadValidationResults()]); } catch (e) { setError(e instanceof Error ? e.message : "Failed to extend clip."); } finally { setExtendingRun(false); } }
@@ -372,10 +416,12 @@ export default function VideoV2Page() {
               runMode={runMode}
               setRunMode={setRunMode}
               recentFailedMatch={recentFailedMatch}
+              recentPhase2HardFailMatch={recentPhase2HardFailMatch}
               validationRunsToday={validationRunsToday}
               phase1TemplateId={phase1TemplateId}
               setPhase1TemplateId={setPhase1TemplateId}
               templateReadinessSummary={templateReadinessSummary}
+              phase2TemplateHealth={phase2TemplateHealth}
               exactEndStateRequired={exactEndStateRequired}
               setExactEndStateRequired={setExactEndStateRequired}
               aspectRatio={aspectRatio}
@@ -401,6 +447,7 @@ export default function VideoV2Page() {
                 setSelectedRunId((prev) => (prev === latestVisibleRun.id ? null : prev));
               }}
               onRecoveryAction={runRecoveryAction}
+              onSavePhase2Evaluation={savePhase2Evaluation}
               onAcceptClip={acceptClip}
               onExtendClip={(run) => {
                 setExtendSourceRun(run);

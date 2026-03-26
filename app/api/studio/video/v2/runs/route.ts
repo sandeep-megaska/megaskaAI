@@ -11,6 +11,7 @@ import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/va
 import { validateRuntimeExecution } from "@/lib/video/v2/fidelityRuntime";
 import { buildRunConfigSignature, normalizeRunMode } from "@/lib/video/v2/runMode";
 import { createValidationPreviewClip } from "@/lib/video/v2/validationPreview";
+import { buildPhase2EvaluationRecord, isPhase2TemplateId, parsePhase2Evaluation, summarizePhase2TemplateHealth } from "@/lib/video/v2/phase2Evaluation";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -344,6 +345,12 @@ export async function GET() {
         fallbackProvider: fallback,
         fallbackModel: fallback,
       });
+      const phase2Evaluation = parsePhase2Evaluation(runMeta.phase2_evaluation);
+      row.phase2_evaluation = phase2Evaluation;
+      row.phase2_template_health =
+        runMeta.phase2_template_health && typeof runMeta.phase2_template_health === "object" && !Array.isArray(runMeta.phase2_template_health)
+          ? (runMeta.phase2_template_health as VideoRunHistoryRecord["phase2_template_health"])
+          : null;
       return row;
     });
 
@@ -571,6 +578,10 @@ export async function POST(request: Request) {
       return json(400, { success: false, error: error instanceof Error ? error.message : "Run validation failed." });
     }
 
+    const phase2TemplateId = typeof templateMode?.template_id === "string" && isPhase2TemplateId(templateMode.template_id)
+      ? templateMode.template_id
+      : null;
+
     const initialMeta: Record<string, unknown> = {
       selected_pack_id: runRequest.selected_pack_id,
       prompt_used: canonicalDirectorPrompt,
@@ -592,6 +603,9 @@ export async function POST(request: Request) {
       original_mode_selected: runRequest.source_run_id ? plan.mode_selected : null,
       retry_mode_selected: runRequest.source_run_id ? runRequest.mode_selected : null,
       run_mode: runMode,
+      phase2_template_run: Boolean(phase2TemplateId),
+      phase2_template_id: phase2TemplateId,
+      phase2_evaluation_mode: phase2TemplateId ? "phase2" : null,
       config_signature: buildRunConfigSignature({
         selectedPackId: runRequest.selected_pack_id,
         modeSelected: runRequest.mode_selected,
@@ -926,8 +940,16 @@ export async function PATCH(request: Request) {
       status?: VideoRunStatus;
       output_generation_id?: string | null;
       run_meta?: Record<string, unknown>;
-      action_type?: "accept";
+      action_type?: "accept" | "phase2_evaluate";
       accepted_for_sequence?: boolean;
+      evaluation?: {
+        template_id?: string;
+        garment_truth_ok?: boolean;
+        identity_stable?: boolean;
+        motion_within_template?: boolean;
+        commercially_usable?: boolean;
+        reviewer_notes?: string | null;
+      };
     };
 
     if (!body.run_id?.trim()) return json(400, { success: false, error: "run_id is required." });
@@ -954,6 +976,74 @@ export async function PATCH(request: Request) {
       if (error) return json(400, { success: false, error: error.message });
       return json(200, { success: true, data: { ...data, status: normalizeRunStatus(data.status) } });
     }
+    if (body.action_type === "phase2_evaluate") {
+      const { data: existingRun, error: existingError } = await supabase
+        .from("video_generation_runs")
+        .select("id,created_at,run_meta")
+        .eq("id", body.run_id)
+        .single();
+      if (existingError || !existingRun) return json(404, { success: false, error: existingError?.message ?? "Run not found." });
+      const existingMeta = parseRunMeta(existingRun.run_meta);
+      const snapshot =
+        existingMeta.request_payload_snapshot && typeof existingMeta.request_payload_snapshot === "object" && !Array.isArray(existingMeta.request_payload_snapshot)
+          ? (existingMeta.request_payload_snapshot as Record<string, unknown>)
+          : {};
+      const templateMode = parseTemplateMode(snapshot);
+      const templateId =
+        typeof body.evaluation?.template_id === "string" && body.evaluation.template_id.trim()
+          ? body.evaluation.template_id
+          : typeof templateMode?.template_id === "string"
+            ? templateMode.template_id
+            : typeof existingMeta.phase2_template_id === "string"
+              ? existingMeta.phase2_template_id
+              : null;
+      if (!isPhase2TemplateId(templateId)) {
+        return json(400, { success: false, error: "Phase-2 evaluation is only supported for controlled templates." });
+      }
+
+      const { data: siblingRuns } = await supabase
+        .from("video_generation_runs")
+        .select("id,run_meta")
+        .order("created_at", { ascending: false })
+        .limit(120);
+
+      const priorEvaluations = (siblingRuns ?? [])
+        .filter((run) => run.id !== body.run_id)
+        .map((run) => parseRunMeta(run.run_meta).phase2_evaluation)
+        .map((entry) => parsePhase2Evaluation(entry))
+        .filter((entry): entry is NonNullable<ReturnType<typeof parsePhase2Evaluation>> => Boolean(entry && entry.template_id === templateId));
+      const health = summarizePhase2TemplateHealth(priorEvaluations);
+      const nextEvaluation = buildPhase2EvaluationRecord({
+        template_id: templateId,
+        garment_truth_ok: Boolean(body.evaluation?.garment_truth_ok),
+        identity_stable: Boolean(body.evaluation?.identity_stable),
+        motion_within_template: Boolean(body.evaluation?.motion_within_template),
+        commercially_usable: Boolean(body.evaluation?.commercially_usable),
+        reviewer_notes: body.evaluation?.reviewer_notes,
+        health,
+      });
+      const nextHealth = summarizePhase2TemplateHealth([...priorEvaluations, nextEvaluation]);
+      const nextMeta = {
+        ...existingMeta,
+        phase2_template_run: true,
+        phase2_template_id: templateId,
+        phase2_evaluation_mode: "phase2",
+        phase2_evaluation: {
+          ...nextEvaluation,
+          retry_recommendation: nextEvaluation.retry_recommendation,
+        },
+        phase2_template_health: nextHealth,
+      };
+      const { data, error } = await supabase
+        .from("video_generation_runs")
+        .update({ run_meta: nextMeta })
+        .eq("id", body.run_id)
+        .select("*")
+        .single();
+      if (error) return json(400, { success: false, error: error.message });
+      return json(200, { success: true, data: { ...data, status: normalizeRunStatus(data.status) } });
+    }
+
     if (!body.status) return json(400, { success: false, error: "status is required." });
 
     const { data, error } = await supabase
