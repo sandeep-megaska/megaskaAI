@@ -1,8 +1,7 @@
-<<<<<<< codex/convert-simple-page-to-frame-based-generator
-export type SimpleMode = "strict" | "balanced" | "creative";
-=======
 import { resolveRunVideoUrl } from "@/app/studio/video/v2/components/helpers";
 import type { VideoRunHistoryRecord } from "@/lib/video/v2/types";
+
+export type SimpleMode = "strict" | "balanced" | "creative";
 
 export type SimpleMotionType = "front_pose" | "slight_turn" | "turn_to_back" | "detail_reveal";
 export type SimpleViewState = "front" | "three_quarter_left" | "three_quarter_right" | "back" | "detail";
@@ -25,7 +24,6 @@ export type SimpleClipIntentContext = {
   clipIntentId: string;
   sourceProfileId: string;
 };
->>>>>>> main
 
 export type SimpleRunResult = {
   runId: string;
@@ -36,11 +34,6 @@ export type SimpleRunResult = {
   outcome: "pass" | "retry" | "reject" | "manual_review" | "pending";
   acceptedForSequence: boolean;
   failureMessage: string | null;
-};
-
-export type SimpleClipIntentContext = {
-  clipIntentId: string;
-  sourceProfileId: string;
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -196,6 +189,7 @@ export async function loadRunResult(runId: string): Promise<SimpleRunResult> {
     return { runId, status: "queued", outputUrl: null, outputThumbnailUrl: null, outputGenerationId: null, outcome: "pending", acceptedForSequence: false, failureMessage: null };
   }
 
+  const outputUrl = resolveRunVideoUrl(run as VideoRunHistoryRecord);
 
   return {
     runId,
