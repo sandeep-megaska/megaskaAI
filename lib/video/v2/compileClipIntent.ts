@@ -119,14 +119,90 @@ function hasSimpleFrameConfig(pack: WorkingPackRow): boolean {
   return Boolean(config.enabled);
 }
 
+type TransitionDirection = "front_to_back" | "back_to_front" | "other" | "unknown";
+type PromptDirectionConfidence = "strong" | "weak" | "none";
+
+function resolveSimpleFrameGenerationIds(pack: WorkingPackRow, compileItems: WorkingPackItemRow[]) {
+  const meta = asObject(pack.pack_meta);
+  const config = asObject(meta.simple_frame_config);
+  const configuredStart = typeof config.start_generation_id === "string" ? config.start_generation_id.trim() : "";
+  const configuredEnd = typeof config.end_generation_id === "string" ? config.end_generation_id.trim() : "";
+  const selectedStart = configuredStart || (compileItems.find((item) => item.role === "start_frame" && item.generation_id)?.generation_id ?? "");
+  const selectedEnd = configuredEnd || (compileItems.find((item) => item.role === "end_frame" && item.generation_id)?.generation_id ?? "");
+  return {
+    startGenerationId: selectedStart || null,
+    endGenerationId: selectedEnd || null,
+  };
+}
+
+function inferFrameTransitionDirection(pack: WorkingPackRow, compileItems: WorkingPackItemRow[]): TransitionDirection {
+  const { startGenerationId, endGenerationId } = resolveSimpleFrameGenerationIds(pack, compileItems);
+  if (!startGenerationId || !endGenerationId) return "unknown";
+
+  const rolesByGeneration = new Map<string, Set<string>>();
+  for (const item of compileItems) {
+    if (!item.generation_id) continue;
+    if (!rolesByGeneration.has(item.generation_id)) rolesByGeneration.set(item.generation_id, new Set());
+    rolesByGeneration.get(item.generation_id)?.add(String(item.role || "").toLowerCase());
+  }
+
+  const startRoles = rolesByGeneration.get(startGenerationId) ?? new Set<string>();
+  const endRoles = rolesByGeneration.get(endGenerationId) ?? new Set<string>();
+  const startIsFront = startRoles.has("front");
+  const startIsBack = startRoles.has("back");
+  const endIsFront = endRoles.has("front");
+  const endIsBack = endRoles.has("back");
+
+  if (startIsFront && endIsBack) return "front_to_back";
+  if (startIsBack && endIsFront) return "back_to_front";
+  if (startGenerationId !== endGenerationId) return "other";
+  return "unknown";
+}
+
+function parsePromptMotionDirection(prompt: string): { direction: TransitionDirection; confidence: PromptDirectionConfidence; evidence: string } {
+  const normalized = prompt.toLowerCase();
+
+  const strongFrontToBack = [
+    /\bfront\s*(?:to|->)\s*back\b/,
+    /\bfrom\s+front\s+to\s+back\b/,
+    /\bshow(?:s|ing)?\s+the\s+back\b/,
+    /\breveal(?:s|ing)?\s+the\s+back\b/,
+    /\bturn(?:s|ing)?\s+around\b/,
+    /\brear\s+view\b/,
+    /\bback\s+view\b/,
+  ].some((pattern) => pattern.test(normalized));
+  if (strongFrontToBack) return { direction: "front_to_back", confidence: "strong", evidence: "strong_front_to_back_phrase" };
+
+  const strongBackToFront = [
+    /\bback\s*(?:to|->)\s*front\b/,
+    /\bfrom\s+back\s+to\s+front\b/,
+    /\breturn(?:s|ing)?\s+to\s+front\b/,
+    /\bface(?:s|ing)?\s+the\s+camera\b/,
+  ].some((pattern) => pattern.test(normalized));
+  if (strongBackToFront) return { direction: "back_to_front", confidence: "strong", evidence: "strong_back_to_front_phrase" };
+
+  const ambiguousTurnBack = /\bturn(?:s|ing)?\s+back\b/.test(normalized);
+  if (ambiguousTurnBack) return { direction: "other", confidence: "weak", evidence: "ambiguous_turns_back_phrase" };
+
+  return { direction: "unknown", confidence: "none", evidence: "no_directional_motion_phrase_detected" };
+}
+
 function shouldApplySimpleFrameTruthDebtOverride(input: {
   plannerOverrides?: CompilePlannerOverrides;
   transitionPlan: ReturnType<typeof buildTransitionPlan>;
   truthDebtDecision: "allow" | "allow_with_warning" | "downgrade" | "block";
   motionComplexity: MotionComplexity;
+  motionPrompt: string;
   pack: WorkingPackRow;
   compileItems: WorkingPackItemRow[];
-}): { apply: boolean; reason: string } {
+}): {
+  apply: boolean;
+  reason: string;
+  frameDirection: TransitionDirection;
+  promptDirection: TransitionDirection;
+  promptDirectionConfidence: PromptDirectionConfidence;
+  frameDirectionOverrodePrompt: boolean;
+} {
   const requestedStart = input.plannerOverrides?.requestedStart;
   const requestedEnd = input.plannerOverrides?.requestedEnd;
   const duration = input.transitionPlan.compiled_video_plan.total_duration_seconds;
@@ -139,22 +215,38 @@ function shouldApplySimpleFrameTruthDebtOverride(input: {
   const shortDuration = duration === 4 || duration === 6 || duration === 8;
   const safeTransitionPlan = input.transitionPlan.strategy !== "blocked_missing_intermediate";
   const highRiskMotionRequested = input.motionComplexity === "high";
-  const obviousMotionMismatch = input.transitionPlan.target_direction === "other";
+  const frameDirection = inferFrameTransitionDirection(input.pack, input.compileItems);
+  const promptDirection = parsePromptMotionDirection(input.motionPrompt);
+  const promptStronglyContradictsFrame = frameDirection !== "unknown"
+    && promptDirection.confidence === "strong"
+    && promptDirection.direction !== "unknown"
+    && promptDirection.direction !== "other"
+    && promptDirection.direction !== frameDirection;
+  const frameDirectionOverrodePrompt = frameDirection !== "unknown"
+    && (promptDirection.confidence === "weak" || promptDirection.direction === "unknown" || promptDirection.direction === "other");
+  const obviousMotionMismatch = promptStronglyContradictsFrame;
 
-  if (!frameRequestEligible) return { apply: false, reason: "requested state path is not start_frame constrained." };
-  if (!simpleConfigExists) return { apply: false, reason: "simple-frame-config marker is missing." };
-  if (!hasStartFrame) return { apply: false, reason: "start_frame generation is missing." };
-  if (frameToFrame && !hasEndFrame) return { apply: false, reason: "end_frame generation is required for frame-to-frame compile." };
-  if (!shortDuration) return { apply: false, reason: `duration ${duration}s is outside supported simple-frame range (4/6/8).` };
-  if (!strictOrBalancedMode) return { apply: false, reason: "creative/high-motion mode cannot use frame-based truth override." };
-  if (highRiskMotionRequested) return { apply: false, reason: "extreme motion prompt detected; truth debt hard block is retained." };
-  if (obviousMotionMismatch) return { apply: false, reason: "requested motion does not align with supplied frame transition direction." };
-  if (!safeTransitionPlan) return { apply: false, reason: "transition planner indicates missing intermediate truth." };
+  if (!frameRequestEligible) return { apply: false, reason: "requested state path is not start_frame constrained.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (!simpleConfigExists) return { apply: false, reason: "simple-frame-config marker is missing.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (!hasStartFrame) return { apply: false, reason: "start_frame generation is missing.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (frameToFrame && !hasEndFrame) return { apply: false, reason: "end_frame generation is required for frame-to-frame compile.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (!shortDuration) return { apply: false, reason: `duration ${duration}s is outside supported simple-frame range (4/6/8).`, frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (!strictOrBalancedMode) return { apply: false, reason: "creative/high-motion mode cannot use frame-based truth override.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (highRiskMotionRequested) return { apply: false, reason: "extreme motion prompt detected; truth debt hard block is retained.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (obviousMotionMismatch) return { apply: false, reason: "requested motion strongly contradicts supplied frame transition direction.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
+  if (!safeTransitionPlan) return { apply: false, reason: "transition planner indicates missing intermediate truth.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
   if (input.truthDebtDecision === "allow" || input.truthDebtDecision === "allow_with_warning") {
-    return { apply: false, reason: "truth debt already allows compile without override." };
+    return { apply: false, reason: "truth debt already allows compile without override.", frameDirection, promptDirection: promptDirection.direction, promptDirectionConfidence: promptDirection.confidence, frameDirectionOverrodePrompt };
   }
 
-  return { apply: true, reason: "frame-constrained simple workflow supplied sufficient start/end truth for controlled compile." };
+  return {
+    apply: true,
+    reason: "frame-constrained simple workflow supplied sufficient start/end truth for controlled compile.",
+    frameDirection,
+    promptDirection: promptDirection.direction,
+    promptDirectionConfidence: promptDirection.confidence,
+    frameDirectionOverrodePrompt,
+  };
 }
 
 
@@ -348,6 +440,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     transitionPlan,
     truthDebtDecision: truthDebt.decision,
     motionComplexity,
+    motionPrompt: intent.motion_prompt,
     pack,
     compileItems,
   });
@@ -359,6 +452,11 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     reasons: truthDebt.reasons,
     overrideApplied: truthDebtOverride.apply,
     overrideReason: truthDebtOverride.reason,
+    inferredFrameTransitionDirection: truthDebtOverride.frameDirection,
+    parsedPromptMotionDirection: truthDebtOverride.promptDirection,
+    parsedPromptMotionDirectionConfidence: truthDebtOverride.promptDirectionConfidence,
+    frameDirectionOverrodePromptInterpretation: truthDebtOverride.frameDirectionOverrodePrompt,
+    finalTruthDebtDecision: truthDebtOverride.apply ? "override_allow" : truthDebt.decision,
   };
   console.info("[compile][truth-debt]", truthDebtDecisionDetail);
 
