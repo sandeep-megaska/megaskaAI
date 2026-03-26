@@ -49,6 +49,18 @@ type FidelityPlanResponse = {
   missing_roles: string[];
   critical_missing_roles: string[];
   reasons: string[];
+  transition_plan?: {
+    strategy: "not_applicable" | "direct" | "segmented" | "blocked_missing_intermediate";
+    coverage: "none" | "partial" | "complete";
+    direct_transition_allowed: boolean;
+    direct_transition_discouraged: boolean;
+    intermediate_state_required: boolean;
+    intermediate_state_recommended: boolean;
+    states: Array<{ state_label: string; source_kind: string; is_verified: boolean }>;
+    segments: Array<{ segment_id: string; from_label: string; to_label: string; status: "ready" | "blocked"; reason: string }>;
+    missing_state_labels: string[];
+    recommendations: string[];
+  };
 };
 
 type ExpansionResult = {
@@ -113,6 +125,7 @@ type OrchestrationPlanResponse = {
   steps: OrchestrationStep[];
   compileReady: boolean;
   generateReady: boolean;
+  transitionPlan?: FidelityPlanResponse["transition_plan"] | null;
 };
 
 function provenanceLabel(sourceKind: string) {
@@ -235,8 +248,11 @@ export default function WorkingPackReviewPage() {
     const roles = new Set((activePack.working_pack_items ?? []).map((item) => item.role));
     if (!roles.has("fit_anchor")) reasons.push("Required role missing: fit_anchor.");
     if (!roles.has("front")) reasons.push("Required role missing: front.");
+    if (fidelityState?.transition_plan?.strategy === "blocked_missing_intermediate") {
+      reasons.push(fidelityState.transition_plan.recommendations[0] ?? "Intermediate state is required before compile.");
+    }
     return reasons;
-  }, [activePack]);
+  }, [activePack, fidelityState]);
 
   useEffect(() => {
     setSelectedCandidateGenerationId("");
@@ -574,6 +590,25 @@ export default function WorkingPackReviewPage() {
               <p>Planner decision: <span className="font-medium text-zinc-100">{fidelityState.decision}</span></p>
               <p>Missing roles: {fidelityState.missing_roles.join(", ") || "none"}</p>
               {fidelityState.critical_missing_roles.length ? <p className="text-amber-300">Critical missing: {fidelityState.critical_missing_roles.join(", ")}</p> : null}
+              {fidelityState.transition_plan ? (
+                <div className="mt-2 rounded border border-zinc-700/70 bg-zinc-950/50 p-2 space-y-1">
+                  <p>Transition Plan: <span className="font-medium text-zinc-100">{fidelityState.transition_plan.strategy === "segmented" ? "Segmented" : fidelityState.transition_plan.strategy === "blocked_missing_intermediate" ? "Intermediate State Required" : "Direct / N/A"}</span></p>
+                  <p>State Coverage: <span className="text-zinc-100">{fidelityState.transition_plan.coverage}</span></p>
+                  <p>Direct Transition: <span className={fidelityState.transition_plan.direct_transition_discouraged ? "text-amber-300" : "text-emerald-300"}>{fidelityState.transition_plan.direct_transition_discouraged ? "Discouraged" : "Allowed"}</span></p>
+                  <p>Available States: {fidelityState.transition_plan.states.map((state) => state.state_label).join(" → ") || "none"}</p>
+                  {fidelityState.transition_plan.missing_state_labels.length ? <p className="text-amber-300">Missing Intermediate States: {fidelityState.transition_plan.missing_state_labels.join(", ")}</p> : null}
+                  {fidelityState.transition_plan.segments.length ? (
+                    <div>
+                      {fidelityState.transition_plan.segments.map((segment, index) => (
+                        <p key={segment.segment_id}>
+                          Segment {index + 1}: {segment.from_label} → {segment.to_label} · {segment.status === "ready" ? "Ready" : "Blocked"}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                  {fidelityState.transition_plan.recommendations.length ? <p className="text-cyan-200">Recommendation: {fidelityState.transition_plan.recommendations.join(" | ")}</p> : null}
+                </div>
+              ) : null}
             </div>
           ) : null}
           {expansionState ? (
@@ -595,6 +630,7 @@ export default function WorkingPackReviewPage() {
             <div className="rounded border border-lime-700/50 bg-lime-950/20 p-3 text-xs text-lime-100 space-y-2">
               <p className="text-sm font-medium">Slice G orchestration: <span className="uppercase">{orchestrationState.status}</span></p>
               <p>{orchestrationState.summary}</p>
+              {orchestrationState.transitionPlan ? <p>Transition Strategy: {orchestrationState.transitionPlan.strategy} · Coverage: {orchestrationState.transitionPlan.coverage}</p> : null}
               {orchestrationState.recommendations.length ? <p className="text-lime-200">Next: {orchestrationState.recommendations.join(" | ")}</p> : null}
               <div className="space-y-1">
                 {orchestrationState.steps.map((step) => (

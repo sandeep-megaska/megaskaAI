@@ -1,4 +1,5 @@
 import type { CreativeFidelityPlan } from "@/lib/video/v2/creativeFidelity/types";
+import type { TransitionPlan } from "@/lib/video/v2/intermediateStateEngine";
 
 export type OrchestrationStatus =
   | "ready"
@@ -69,6 +70,7 @@ export type OrchestrationPlan = {
   expansionSnapshot: ExpansionSnapshot | null;
   compileReady: boolean;
   generateReady: boolean;
+  transitionPlan?: TransitionPlan | null;
 };
 
 export type BuildOrchestrationInput = {
@@ -77,4 +79,5 @@ export type BuildOrchestrationInput = {
   compileSnapshot: ClipIntentCompileSnapshot;
   reuseSnapshot?: ReuseSnapshot | null;
   expansionSnapshot?: ExpansionSnapshot | null;
+  transitionPlan?: TransitionPlan | null;
 };
