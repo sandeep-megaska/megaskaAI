@@ -13,7 +13,8 @@ import {
   selectRuntimeFrames,
   validateRuntimeFidelity,
 } from "@/lib/video/v2/fidelityRuntime";
-import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type V2Mode } from "@/lib/video/v2/types";
+import { getPhase1TemplateById } from "@/lib/video/v2/templateMode";
+import { ANCHOR_ITEM_ROLES, type ExecuteVideoRunRequest, type MotionComplexity, type AnchorRiskLevel, type AnchorPackItemRole, type V2Mode } from "@/lib/video/v2/types";
 
 type ClipIntentRow = {
   id: string;
@@ -57,7 +58,8 @@ type CompileResult = {
   runRequest: ExecuteVideoRunRequest;
 };
 
-const REQUIRED_ROLES = ["fit_anchor", "front"] as const;
+const DEFAULT_REQUIRED_ROLES = ["fit_anchor", "front"] as const;
+const VERIFIED_SOURCE_KINDS = new Set(["sku_verified_truth", "manual_verified_override"]);
 
 function asObject(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -110,6 +112,8 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
 
   if (intentError) throw new Error(intentError.message);
   if (!intent) throw new Error("Clip intent not found.");
+  const selectedTemplate = getPhase1TemplateById(intent.motion_template);
+  const requiredRoles: AnchorPackItemRole[] = selectedTemplate?.required_roles ?? [...DEFAULT_REQUIRED_ROLES];
 
   const { data: packs, error: packsError } = await supabase
     .from("working_packs")
@@ -157,13 +161,22 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
   }
 
   const roleSet = new Set(items.map((item) => item.role));
-  for (const role of REQUIRED_ROLES) {
+  for (const role of requiredRoles) {
     if (!roleSet.has(role)) throw new Error(`Working pack is missing required role '${role}'.`);
   }
 
-  const missingGenerationRoles = REQUIRED_ROLES.filter((role) => !items.find((item) => item.role === role && item.generation_id));
+  const missingGenerationRoles = requiredRoles.filter((role) => !items.find((item) => item.role === role && item.generation_id));
   if (missingGenerationRoles.length) {
     throw new Error(`Required role generation is missing for: ${missingGenerationRoles.join(", ")}.`);
+  }
+  if (selectedTemplate?.verification_requirements.length) {
+    const unmetVerification = selectedTemplate.verification_requirements.filter((requirement) => {
+      const matching = items.filter((item) => item.role === requirement.role && item.generation_id);
+      return !matching.some((item) => VERIFIED_SOURCE_KINDS.has(String(item.source_kind ?? "").toLowerCase()));
+    });
+    if (unmetVerification.length) {
+      throw new Error(`Template '${selectedTemplate.label}' requires verified truth for: ${unmetVerification.map((item) => item.label).join(", ")}.`);
+    }
   }
 
   const compileItems = items.filter((item) => Boolean(item.generation_id));
@@ -182,8 +195,12 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     priorValidatedClipExists: false,
   });
 
-  const modeSelected = resolveCompileMode(readiness.recommendedMode as V2Mode, fidelityPlan.recommendedMode, warnings);
-  const exactEndStateRequired = detectExactEndStateRequired(intent.motion_prompt);
+  const plannerMode = resolveCompileMode(readiness.recommendedMode as V2Mode, fidelityPlan.recommendedMode, warnings);
+  const modeSelected = selectedTemplate?.mode_preference ?? plannerMode;
+  if (selectedTemplate?.requires_exact_end_state && modeSelected !== "frames_to_video") {
+    throw new Error(`Template '${selectedTemplate.label}' requires frames_to_video mode.`);
+  }
+  const exactEndStateRequired = selectedTemplate?.requires_exact_end_state ?? detectExactEndStateRequired(intent.motion_prompt);
   const frameSelection = selectRuntimeFrames({
     motionPrompt: intent.motion_prompt,
     items,
@@ -208,6 +225,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     motion_template: intent.motion_template,
     fidelity_priority: intent.fidelity_priority,
     motion_prompt: intent.motion_prompt,
+    template: selectedTemplate,
   });
   const hardenedDirectorPrompt = hardenPromptForExactState({
     directorPrompt: promptBase.directorPrompt,
@@ -280,7 +298,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
       mode_selected: runtimeModeSelected,
       why_mode_selected: `Compiled from working pack ${pack.id} with readiness ${Number(pack.readiness_score ?? 0).toFixed(2)} and creative fidelity decision ${fidelityPlan.decision}.`,
       recommended_pack_ids: [anchorPack.id],
-      required_reference_roles: REQUIRED_ROLES,
+      required_reference_roles: requiredRoles,
       duration_seconds: Number(intent.duration_seconds ?? 8),
       aspect_ratio: intent.aspect_ratio || "9:16",
       motion_complexity: motionComplexity,
@@ -314,6 +332,15 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
     duration_seconds: Number(intent.duration_seconds ?? 8),
     request_payload_snapshot: {
       ...traceabilitySnapshot,
+      template_mode: selectedTemplate
+        ? {
+            production_mode: "phase1_template",
+            template_id: selectedTemplate.template_id,
+            mode_preference: selectedTemplate.mode_preference,
+            required_roles: selectedTemplate.required_roles,
+            requires_exact_end_state: selectedTemplate.requires_exact_end_state,
+          }
+        : { production_mode: "experimental_freeform" },
       runtime_fidelity: {
         ...buildRuntimeFidelityMetadata({
           exactEndStateRequired,

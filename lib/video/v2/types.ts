@@ -116,6 +116,8 @@ export type DirectorPlanContract = {
   mode_suitability: ModeSuitability[];
   pack_risk: AnchorRiskLevel;
   missing_requirements: string[];
+  production_mode?: "phase1_template" | "experimental_freeform";
+  phase1_template_id?: string | null;
 };
 
 export type DirectorPlannerInput = {
@@ -130,6 +132,8 @@ export type DirectorPlannerInput = {
   aggregateStabilityScore?: number;
   availableRoles?: AnchorPackItemRole[];
   preferredProviders?: string[];
+  productionMode?: "phase1_template" | "experimental_freeform";
+  phase1TemplateId?: string | null;
   packs: AnchorPack[];
 };
 
