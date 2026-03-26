@@ -27,11 +27,31 @@ export type SimpleRunResult = {
   outcome: "pass" | "retry" | "reject" | "manual_review" | "pending";
 };
 
+type FixMissingAnglesStep =
+  | "Checking existing angles"
+  | "Reusing available truth"
+  | "Creating missing angles"
+  | "Refreshing SKU truth"
+  | "Updating clip readiness";
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const payload = (await res.json()) as { data?: T; error?: string };
   if (!res.ok) throw new Error(payload.error ?? `Request failed for ${url}`);
   return (payload.data ?? payload) as T;
+}
+
+function prioritizeFixRoles(roles: string[]): string[] {
+  const normalized = roles.map((role) => {
+    if (role === "fit" || role === "fit_profile" || role === "fit_anchor") return "fit_anchor";
+    return role;
+  });
+
+  const deduped = Array.from(new Set(normalized));
+  const priority = ["three_quarter_left", "three_quarter_right", "fit_anchor", "detail"];
+  const prioritized = priority.filter((role) => deduped.includes(role));
+  const remaining = deduped.filter((role) => !priority.includes(role));
+  return [...prioritized, ...remaining];
 }
 
 async function ensureSourceProfile(selectedGenerationId: string): Promise<string> {
@@ -146,26 +166,63 @@ export async function loadReadiness(input: {
   };
 }
 
-export async function fixMissingAngles(input: { clipIntentId: string; skuCode?: string; roles?: string[] }) {
+export async function fixMissingAngles(
+  input: {
+    clipIntentId: string;
+    skuCode?: string;
+    roles?: string[];
+    startState?: SimpleViewState;
+    endState?: SimpleViewState;
+    durationSeconds?: 4 | 6 | 8;
+    validationMode?: boolean;
+    motionComplexity?: "low" | "medium" | "high";
+  },
+  onStep?: (step: FixMissingAnglesStep) => void,
+) {
+  const prioritizedRoles = prioritizeFixRoles(input.roles ?? []);
+  onStep?.("Checking existing angles");
+
+  onStep?.("Reusing available truth");
   await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/reuse-anchors`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ roles: input.roles ?? [] }),
+    body: JSON.stringify({ roles: prioritizedRoles }),
   });
 
+  onStep?.("Creating missing angles");
   await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/expand-anchors`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ roles: input.roles ?? [] }),
+    body: JSON.stringify({ roles: prioritizedRoles }),
   });
 
   if (input.skuCode?.trim()) {
+    onStep?.("Refreshing SKU truth");
     await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/apply-sku-truth`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sku_code: input.skuCode.trim() }),
     });
   }
+
+  onStep?.("Updating clip readiness");
+  const plannerBody = JSON.stringify({
+    requested_start: input.startState,
+    requested_end: input.endState,
+    duration_seconds: input.durationSeconds,
+    validation_mode: input.validationMode,
+    motion_complexity: input.motionComplexity,
+  });
+  await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/plan-fidelity`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: plannerBody,
+  });
+  await fetchJson(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/plan-transition-states`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: plannerBody,
+  });
 }
 
 export async function generateSimpleVideo(input: { clipIntentId: string; startState: SimpleViewState; endState: SimpleViewState; durationSeconds: 4 | 6 | 8; validationMode: boolean; motionComplexity: "low" | "medium" | "high"; }) {
