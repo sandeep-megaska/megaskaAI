@@ -1,6 +1,6 @@
 "use client";
 
-import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord } from "@/lib/video/v2/types";
+import { type DirectorPlanContract, type V2Mode, V2_MODE_OPTIONS, type VideoRunHistoryRecord, type VideoRunMode } from "@/lib/video/v2/types";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import { excerpt, resolveRunPrompt, resolveRunVideoUrl, shortId, statusTone } from "@/app/studio/video/v2/components/helpers";
 import { PHASE1_TEMPLATES, type Phase1TemplateId } from "@/lib/video/v2/templateMode";
@@ -16,6 +16,10 @@ export default function ProductionWorkspace(props: {
   setMotionRequest: (value: string) => void;
   productionMode: "phase1_template" | "experimental_freeform";
   setProductionMode: (mode: "phase1_template" | "experimental_freeform") => void;
+  runMode: VideoRunMode;
+  setRunMode: (mode: VideoRunMode) => void;
+  recentFailedMatch: VideoRunHistoryRecord | null;
+  validationRunsToday: number;
   phase1TemplateId: Phase1TemplateId;
   setPhase1TemplateId: (templateId: Phase1TemplateId) => void;
   templateReadinessSummary: string;
@@ -47,7 +51,7 @@ export default function ProductionWorkspace(props: {
   selectedSequenceId: string;
 }) {
   const selectedTemplate = PHASE1_TEMPLATES.find((template) => template.template_id === props.phase1TemplateId) ?? PHASE1_TEMPLATES[0];
-  const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun);
+  const resolvedVideoUrl = resolveRunVideoUrl(props.latestRun, { preferValidationPreview: true });
   const resolvedPrompt = resolveRunPrompt(props.latestRun);
   const outputValidation =
     props.latestRun?.output_validation && typeof props.latestRun.output_validation === "object"
@@ -93,6 +97,16 @@ export default function ProductionWorkspace(props: {
               <div className="mt-2 inline-flex rounded border border-zinc-700 bg-zinc-900/70 p-1 text-xs">
                 <button type="button" onClick={() => props.setProductionMode("phase1_template")} className={`rounded px-2 py-1 ${props.productionMode === "phase1_template" ? "bg-cyan-500 text-zinc-950" : "text-zinc-300"}`}>Phase-1 Template</button>
                 <button type="button" onClick={() => props.setProductionMode("experimental_freeform")} className={`rounded px-2 py-1 ${props.productionMode === "experimental_freeform" ? "bg-zinc-700 text-zinc-100" : "text-zinc-400"}`}>Experimental</button>
+              </div>
+              <div className="mt-2">
+                <p className="text-[11px] uppercase tracking-wide text-cyan-300">Run Type</p>
+                <div className="mt-1 inline-flex rounded border border-zinc-700 bg-zinc-900/70 p-1 text-xs">
+                  <button type="button" onClick={() => props.setRunMode("validation")} className={`rounded px-2 py-1 ${props.runMode === "validation" ? "bg-emerald-500 text-zinc-950" : "text-zinc-300"}`}>Validation</button>
+                  <button type="button" onClick={() => props.setRunMode("production")} className={`rounded px-2 py-1 ${props.runMode === "production" ? "bg-violet-500 text-zinc-950" : "text-zinc-400"}`}>Production</button>
+                </div>
+                <p className="mt-2 text-xs text-zinc-400">{props.runMode === "validation" ? "Validation Mode uses short preview review to reduce wasted spend." : "Production Mode is for final approved runs and full-output review."}</p>
+                {props.runMode === "validation" && props.validationRunsToday >= 6 ? <p className="mt-1 text-xs text-amber-300">Validation spend guardrail: {props.validationRunsToday} validation runs today.</p> : null}
+                {props.recentFailedMatch ? <p className="mt-1 text-xs text-amber-300">This config matches a recent failed run ({shortId(props.recentFailedMatch.id)}). Review before rerun.</p> : null}
               </div>
               {props.productionMode === "phase1_template" ? (
                 <div className="mt-3 space-y-2">
@@ -153,6 +167,10 @@ export default function ProductionWorkspace(props: {
         {props.latestRun ? (
           <div className="mt-3 space-y-2 text-sm">
             <p className={`font-medium uppercase ${statusTone(props.latestRun.status)}`}>{props.latestRun.status}</p>
+            <p className="text-xs text-zinc-500">Run type: <span className="text-zinc-300">{props.latestRun.run_mode === "production" ? "Production" : "Validation"}</span></p>
+            {props.latestRun.run_mode === "validation" ? (
+              <p className="text-xs text-cyan-300">{props.latestRun.preview_asset_url ? "Validation Preview (auto-trim)" : "Validation Preview (full output fallback)"}</p>
+            ) : <p className="text-xs text-violet-300">Full Production Output</p>}
             <p className="text-xs text-zinc-500">{new Date(props.latestRun.created_at).toLocaleString()}</p>
             <p className="text-xs text-zinc-500">Provider: {props.latestRun.provider_used ?? "unknown"} · File type: {props.latestRun.file_type ?? "unknown"}</p>
             {props.showingOlderRun ? <p className="rounded border border-amber-500/40 bg-amber-950/20 p-2 text-xs text-amber-200">Showing a result from a different pack than currently selected ({props.selectedPackName ?? "current pack"}).</p> : null}
@@ -173,7 +191,7 @@ export default function ProductionWorkspace(props: {
                   <source src={resolvedVideoUrl ?? undefined} type="video/mp4" />
                 </video>
                 <div className="flex flex-wrap gap-2">
-                  <DownloadAssetButton url={resolvedVideoUrl ?? ""} filenamePrefix={`run-${shortId(props.latestRun.id)}-output`} />
+                  <DownloadAssetButton url={resolvedVideoUrl ?? ""} filenamePrefix={`run-${shortId(props.latestRun.id)}-${props.latestRun.run_mode === "validation" ? "validation-preview" : "output"}`} />
                   {(() => {
                     const run = props.latestRun;
                     return (

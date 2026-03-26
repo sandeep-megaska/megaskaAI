@@ -9,6 +9,8 @@ import { deriveFallbackProviderFromPlan, deriveProviderFromPlan, normalizeRunSta
 import { buildCanonicalRunSnapshot, normalizePrompt, resolvePersistedRunPrompt } from "@/lib/video/v2/promptPropagation";
 import { classifyOutputAsset, validatePlayableVideoOutput } from "@/lib/video/validateVideoOutput";
 import { validateRuntimeExecution } from "@/lib/video/v2/fidelityRuntime";
+import { buildRunConfigSignature, normalizeRunMode } from "@/lib/video/v2/runMode";
+import { createValidationPreviewClip } from "@/lib/video/v2/validationPreview";
 import type {
   AnchorPack,
   AnchorPackItem,
@@ -18,6 +20,7 @@ import type {
   RetryStrategy,
   V2Mode,
   VideoRunHistoryRecord,
+  VideoRunMode,
   VideoRunStatus,
 } from "@/lib/video/v2/types";
 
@@ -141,6 +144,12 @@ function isRunEligibleForSuccessActions(run: { status: VideoRunStatus; validatio
 
 function parseRuntimeFidelity(snapshot: Record<string, unknown>) {
   const raw = snapshot.runtime_fidelity;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
+}
+
+function parseTemplateMode(snapshot: Record<string, unknown>) {
+  const raw = snapshot.template_mode;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   return raw as Record<string, unknown>;
 }
@@ -269,6 +278,7 @@ export async function GET() {
         request_payload_snapshot: hydratedRequestPayloadSnapshot,
         prompt_used: persistedPrompt,
         output_asset_url: outputAssetUrl,
+        full_output_asset_url: outputAssetUrl,
         output_thumbnail_url: output?.thumbnail_url ?? null,
         output_generation_status: output?.status ?? null,
         failure_message: typeof runMeta.failure_message === "string" ? runMeta.failure_message : null,
@@ -302,6 +312,12 @@ export async function GET() {
       }
       row.output_validation = outputValidation;
       row.file_type = typeof outputValidation?.contentType === "string" ? outputValidation.contentType : null;
+      row.run_mode = normalizeRunMode(runMeta.run_mode);
+      row.preview_asset_url = typeof runMeta.preview_asset_url === "string" ? runMeta.preview_asset_url : null;
+      row.auto_trim_produced = Boolean(runMeta.auto_trim_produced);
+      if (row.run_mode === "validation" && row.preview_asset_url) {
+        row.output_asset_url = row.preview_asset_url;
+      }
 
       const runAspectRatio = String(row.request_payload_snapshot?.aspect_ratio ?? "9:16");
       const providerCapability = getVideoCapabilityByBackendId(row.provider_used);
@@ -446,6 +462,7 @@ export async function POST(request: Request) {
           retry_strategy: "same_plan",
           retry_reason: "Operator-triggered scene extension.",
           action_type: "extend",
+          run_mode: normalizeRunMode(body.run_mode ?? inheritedSnapshot.run_mode),
         };
       } else {
         const planContract = parsePlanContract(plan as Record<string, unknown>);
@@ -493,6 +510,7 @@ export async function POST(request: Request) {
           retry_strategy: retryStrategy,
           retry_reason: body.retry_reason ?? "Operator-triggered recovery action.",
           action_type: "retry",
+          run_mode: normalizeRunMode(body.run_mode ?? inheritedSnapshot.run_mode),
         };
       }
     }
@@ -531,6 +549,11 @@ export async function POST(request: Request) {
       anchorCount: Array.isArray(pack.anchor_pack_items) ? pack.anchor_pack_items.length : undefined,
     });
     const runtimeFidelity = parseRuntimeFidelity(requestPayloadSnapshot);
+    const templateMode = parseTemplateMode(requestPayloadSnapshot);
+    const runMode: VideoRunMode = normalizeRunMode(runRequest.run_mode);
+    if (runMode === "validation" && templateMode?.production_mode !== "phase1_template") {
+      return json(400, { success: false, error: "Validation mode requires Phase-1 Template mode for safety." });
+    }
     const exactEndStateRequired = Boolean(runtimeFidelity?.exact_end_state_required);
     const startFrameGenerationId =
       typeof runtimeFidelity?.start_frame_generation_id === "string" ? runtimeFidelity.start_frame_generation_id : null;
@@ -568,6 +591,18 @@ export async function POST(request: Request) {
       branch_type: runRequest.lineage_meta?.branch_type ?? null,
       original_mode_selected: runRequest.source_run_id ? plan.mode_selected : null,
       retry_mode_selected: runRequest.source_run_id ? runRequest.mode_selected : null,
+      run_mode: runMode,
+      config_signature: buildRunConfigSignature({
+        selectedPackId: runRequest.selected_pack_id,
+        modeSelected: runRequest.mode_selected,
+        providerSelected: providerInfo.providerSelected,
+        modelSelected: providerInfo.modelSelected,
+        aspectRatio: String(runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16"),
+        runMode,
+        directorPrompt: canonicalDirectorPrompt,
+        productionMode: typeof templateMode?.production_mode === "string" ? templateMode.production_mode : null,
+        phase1TemplateId: typeof templateMode?.template_id === "string" ? templateMode.template_id : null,
+      }),
     };
 
     const { data: insertedRun, error: runError } = await supabase
@@ -715,6 +750,36 @@ export async function POST(request: Request) {
         .getPublicUrl(fileName);
 
       const publicUrl = publicUrlData.publicUrl;
+      let previewMeta: {
+        autoTrimProduced: boolean;
+        previewAssetUrl: string | null;
+        previewDurationSeconds: number;
+      } | null = null;
+      if (runMode === "validation") {
+        try {
+          const preview = await createValidationPreviewClip({
+            supabase,
+            bucket: storageBucket,
+            runId: insertedRun.id,
+            videoBytes: finalExecution.bytes,
+            previewSeconds: 3,
+          });
+          previewMeta = {
+            autoTrimProduced: preview.autoTrimProduced,
+            previewAssetUrl: preview.previewAssetUrl ?? null,
+            previewDurationSeconds: preview.previewDurationSeconds,
+          };
+        } catch (previewError) {
+          previewMeta = {
+            autoTrimProduced: false,
+            previewAssetUrl: null,
+            previewDurationSeconds: 3,
+          };
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[video-v2] validation preview generation failed", previewError);
+          }
+        }
+      }
 
       const generationInsertPayload = {
         prompt: canonicalDirectorPrompt,
@@ -777,6 +842,10 @@ export async function POST(request: Request) {
           provider_family: providerInfo.providerSelected,
           strategy: "same_provider_veo_3_1",
         },
+        preview_asset_url: previewMeta?.previewAssetUrl ?? null,
+        full_output_asset_url: publicUrl,
+        auto_trim_produced: previewMeta?.autoTrimProduced ?? false,
+        preview_duration_seconds: previewMeta?.previewDurationSeconds ?? null,
         execution_notes: "Provider execution completed; output metadata persisted.",
       };
 

@@ -25,6 +25,8 @@ export type V2Mode = (typeof V2_MODE_OPTIONS)[number];
 
 export const VIDEO_RUN_STATUSES = ["planned", "queued", "running", "succeeded", "failed", "validated", "completed"] as const;
 export type VideoRunStatus = (typeof VIDEO_RUN_STATUSES)[number];
+export const VIDEO_RUN_MODES = ["validation", "production"] as const;
+export type VideoRunMode = (typeof VIDEO_RUN_MODES)[number];
 
 export type MotionComplexity = "low" | "medium" | "high";
 export type AnchorRiskLevel = "low" | "medium" | "high";
@@ -193,6 +195,7 @@ export type ExecuteVideoRunRequest = {
   aspect_ratio: string;
   duration_seconds: number;
   request_payload_snapshot: Record<string, unknown>;
+  run_mode?: VideoRunMode;
   source_run_id?: string;
   retry_strategy?: RetryStrategy;
   retry_reason?: string;
@@ -214,6 +217,10 @@ export type ExecuteVideoRunResponse = {
 };
 
 export type VideoRunHistoryRecord = VideoGenerationRunRecord & {
+  run_mode?: VideoRunMode;
+  preview_asset_url?: string | null;
+  full_output_asset_url?: string | null;
+  auto_trim_produced?: boolean;
   plan_motion_request?: string | null;
   selected_pack_id?: string | null;
   selected_pack_name?: string | null;
