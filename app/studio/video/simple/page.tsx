@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
+import {
+  createEmptyGarmentAnchors,
+  type VideoSimpleGarmentAnchors,
+  type VideoSimpleMotionPreset,
+  type VideoSimpleReferenceRole,
+  validateVideoSimpleControls,
+  VIDEO_SIMPLE_MOTION_PRESETS,
+} from "@/lib/video/simpleControls";
 
 type VideoAspectRatio = "16:9" | "9:16";
 type VideoDuration = 4 | 6 | 8;
@@ -15,6 +23,14 @@ type SimpleVideoResponse = {
     model?: string;
     duration_seconds?: number;
     aspect_ratio?: VideoAspectRatio;
+    compiled_prompt?: string;
+    controls?: {
+      motion_preset?: VideoSimpleMotionPreset;
+      reference_count?: number;
+      has_start_frame?: boolean;
+      has_end_frame?: boolean;
+      garment_anchor_count?: number;
+    };
   };
 };
 
@@ -26,18 +42,61 @@ type FrameAsset = {
   label: string;
 };
 
+type PickerTarget = { kind: "start" | "end" } | { kind: "reference"; index: number };
+
+const REFERENCE_SLOTS: Array<{ label: string; role: VideoSimpleReferenceRole; hint: string }> = [
+  { label: "Front Reference", role: "front", hint: "Primary front garment view" },
+  { label: "Back Reference", role: "back", hint: "Back neckline and strap details" },
+  { label: "Optional Side / 3/4", role: "side", hint: "Optional side or angled continuity" },
+];
+
+const MOTION_PRESET_LABELS: Record<VideoSimpleMotionPreset, string> = {
+  freeform: "Freeform",
+  "slow-pivot": "Slow pivot",
+  "turn-and-settle": "Turn and settle",
+  "camera-orbit": "Camera orbit",
+  "back-reveal-hold": "Back reveal hold",
+  "over-shoulder-reveal": "Over-shoulder reveal",
+};
+
+function resolveImageAspectRatio(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!image.naturalWidth || !image.naturalHeight) {
+        resolve(null);
+        return;
+      }
+      resolve(image.naturalWidth / image.naturalHeight);
+    };
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
 export default function SimpleVideoStudioPage() {
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(6);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
   const [startFrame, setStartFrame] = useState<FrameAsset | null>(null);
   const [endFrame, setEndFrame] = useState<FrameAsset | null>(null);
-  const [pickerTarget, setPickerTarget] = useState<"start" | "end" | null>(null);
+  const [startFrameAspectRatio, setStartFrameAspectRatio] = useState<number | null>(null);
+  const [endFrameAspectRatio, setEndFrameAspectRatio] = useState<number | null>(null);
+  const [referenceImages, setReferenceImages] = useState<Array<FrameAsset | null>>(REFERENCE_SLOTS.map(() => null));
+  const [motionPreset, setMotionPreset] = useState<VideoSimpleMotionPreset>("freeform");
+  const [garmentAnchors, setGarmentAnchors] = useState<VideoSimpleGarmentAnchors>(() => createEmptyGarmentAnchors());
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [meta, setMeta] = useState<{ model: string; duration: number; aspectRatio: VideoAspectRatio } | null>(null);
+  const [meta, setMeta] = useState<{
+    model: string;
+    duration: number;
+    aspectRatio: VideoAspectRatio;
+    controls: NonNullable<SimpleVideoResponse["data"]>["controls"];
+    compiledPrompt: string;
+  } | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -45,6 +104,28 @@ export default function SimpleVideoStudioPage() {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
     return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   }, []);
+
+  const activeReferenceImages = useMemo(
+    () =>
+      referenceImages
+        .map((item, index) => (item ? { ...item, role: REFERENCE_SLOTS[index].role } : null))
+        .filter(Boolean) as Array<FrameAsset & { role: VideoSimpleReferenceRole }>,
+    [referenceImages],
+  );
+
+  const preflightWarnings = useMemo(
+    () =>
+      validateVideoSimpleControls({
+        prompt,
+        motionPreset,
+        startFrameAspectRatio,
+        endFrameAspectRatio,
+        hasEndFrame: Boolean(endFrame),
+        referenceImages: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
+        garmentAnchors,
+      }),
+    [activeReferenceImages, endFrame, endFrameAspectRatio, garmentAnchors, motionPreset, prompt, startFrameAspectRatio],
+  );
 
   const loadGalleryImages = useCallback(async () => {
     if (!supabase) return;
@@ -56,7 +137,7 @@ export default function SimpleVideoStudioPage() {
     void loadGalleryImages();
   }, [loadGalleryImages]);
 
-  function applyFrameSelection(item: GalleryImageItem) {
+  async function applyFrameSelection(item: GalleryImageItem) {
     const imageUrl = item.asset_url ?? item.url;
     if (!imageUrl || !pickerTarget) return;
 
@@ -66,13 +147,37 @@ export default function SimpleVideoStudioPage() {
       label: item.prompt || "Gallery image",
     };
 
-    if (pickerTarget === "start") {
+    const aspect = await resolveImageAspectRatio(imageUrl);
+
+    if (pickerTarget.kind === "start") {
       setStartFrame(selection);
-    } else {
+      setStartFrameAspectRatio(aspect);
+    } else if (pickerTarget.kind === "end") {
       setEndFrame(selection);
+      setEndFrameAspectRatio(aspect);
+    } else {
+      setReferenceImages((current) => {
+        const next = [...current];
+        next[pickerTarget.index] = selection;
+        return next;
+      });
     }
 
     setPickerTarget(null);
+  }
+
+  function updateGarmentAnchor<K extends keyof VideoSimpleGarmentAnchors>(key: K, value: string) {
+    setGarmentAnchors((current) => ({ ...current, [key]: value }));
+  }
+
+  function moveReferenceImage(index: number, direction: -1 | 1) {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= REFERENCE_SLOTS.length) return;
+    setReferenceImages((current) => {
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
   }
 
   async function handleGenerate() {
@@ -94,6 +199,9 @@ export default function SimpleVideoStudioPage() {
           aspect_ratio: aspectRatio,
           first_frame_url: startFrame?.url ?? null,
           last_frame_url: endFrame?.url ?? null,
+          motion_preset: motionPreset,
+          reference_images: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
+          garment_anchors: garmentAnchors,
         }),
       });
 
@@ -112,6 +220,8 @@ export default function SimpleVideoStudioPage() {
         model: payload.data?.model ?? "unknown",
         duration: payload.data?.duration_seconds ?? duration,
         aspectRatio: payload.data?.aspect_ratio ?? aspectRatio,
+        compiledPrompt: payload.data?.compiled_prompt ?? prompt.trim(),
+        controls: payload.data?.controls,
       });
       setCopyStatus("idle");
     } catch (generationError) {
@@ -235,17 +345,153 @@ export default function SimpleVideoStudioPage() {
                   <div className="rounded-xl border border-zinc-700 bg-zinc-950 p-2">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     {slot.value ? <img src={slot.value.url} alt={slot.label} className="h-28 w-full rounded-lg object-cover" /> : <div className="h-28 rounded-lg border border-dashed border-zinc-700" />}
-                    <button
-                      type="button"
-                      onClick={() => setPickerTarget(slot.key as "start" | "end")}
-                      className="mt-2 w-full rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
-                    >
-                      Choose from Image Project
-                    </button>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPickerTarget({ kind: slot.key as "start" | "end" })}
+                        className="w-full rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
+                      >
+                        Choose from Image Project
+                      </button>
+                      {slot.value ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (slot.key === "start") {
+                              setStartFrame(null);
+                              setStartFrameAspectRatio(null);
+                            } else {
+                              setEndFrame(null);
+                              setEndFrameAspectRatio(null);
+                            }
+                          }}
+                          className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
+
+            <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+              <div>
+                <h2 className="text-sm font-medium text-zinc-100">Reference Images (optional)</h2>
+                <p className="text-xs text-zinc-400">Add up to 3 references to improve garment continuity and back-view preservation.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {REFERENCE_SLOTS.map((slot, index) => {
+                  const value = referenceImages[index];
+                  return (
+                    <div key={slot.role} className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
+                      <div className="mb-1 text-xs font-medium text-zinc-200">{slot.label}</div>
+                      <p className="mb-2 text-[11px] text-zinc-500">{slot.hint}</p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {value ? <img src={value.url} alt={slot.label} className="h-20 w-full rounded object-cover" /> : <div className="h-20 rounded border border-dashed border-zinc-700" />}
+                      <div className="mt-2 grid grid-cols-2 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setPickerTarget({ kind: "reference", index })}
+                          className="col-span-2 rounded-md border border-cyan-500/40 px-2 py-1 text-[11px] text-cyan-100 hover:bg-cyan-500/20"
+                        >
+                          Choose
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveReferenceImage(index, -1)}
+                          disabled={index === 0 || !value}
+                          className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                        >
+                          Move ←
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveReferenceImage(index, 1)}
+                          disabled={index === REFERENCE_SLOTS.length - 1 || !value}
+                          className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                        >
+                          Move →
+                        </button>
+                        {value ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReferenceImages((current) => {
+                                const next = [...current];
+                                next[index] = null;
+                                return next;
+                              });
+                            }}
+                            className="col-span-2 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-zinc-200">Motion preset</span>
+              <select
+                value={motionPreset}
+                onChange={(event) => setMotionPreset(event.target.value as VideoSimpleMotionPreset)}
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+              >
+                {VIDEO_SIMPLE_MOTION_PRESETS.map((preset) => (
+                  <option key={preset} value={preset}>
+                    {MOTION_PRESET_LABELS[preset]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <details className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+              <summary className="cursor-pointer text-sm font-medium text-zinc-200">Garment Anchors (optional)</summary>
+              <p className="mt-2 text-xs text-zinc-400">Add only key garment details you want preserved. Keep each field concise.</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Back neckline / back cut</span>
+                  <input value={garmentAnchors.backNeckline} onChange={(event) => updateGarmentAnchor("backNeckline", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Strap structure</span>
+                  <input value={garmentAnchors.strapStructure} onChange={(event) => updateGarmentAnchor("strapStructure", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Back coverage / silhouette</span>
+                  <input value={garmentAnchors.backCoverage} onChange={(event) => updateGarmentAnchor("backCoverage", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Seam lines / paneling</span>
+                  <input value={garmentAnchors.seamLines} onChange={(event) => updateGarmentAnchor("seamLines", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Fabric finish / texture</span>
+                  <input value={garmentAnchors.fabricFinish} onChange={(event) => updateGarmentAnchor("fabricFinish", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs text-zinc-300">Color / print continuity</span>
+                  <input value={garmentAnchors.colorContinuity} onChange={(event) => updateGarmentAnchor("colorContinuity", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
+                </label>
+              </div>
+            </details>
+
+            {preflightWarnings.length ? (
+              <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+                <p className="font-medium">Preflight tips</p>
+                <ul className="list-disc space-y-1 pl-4">
+                  {preflightWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             <button
               type="button"
@@ -294,6 +540,21 @@ export default function SimpleVideoStudioPage() {
                 </a>
               </div>
               {meta ? <p className="text-xs text-zinc-400">{meta.model} · {meta.duration}s · {meta.aspectRatio}</p> : null}
+              {meta?.controls ? (
+                <div className="flex flex-wrap gap-2 text-[11px] text-zinc-300">
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Preset: {MOTION_PRESET_LABELS[meta.controls.motion_preset ?? "freeform"]}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Refs: {meta.controls.reference_count ?? 0}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Start: {meta.controls.has_start_frame ? "Yes" : "No"}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">End: {meta.controls.has_end_frame ? "Yes" : "No"}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Anchors: {meta.controls.garment_anchor_count ?? 0}</span>
+                </div>
+              ) : null}
+              {meta?.compiledPrompt ? (
+                <details className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+                  <summary className="cursor-pointer text-xs text-zinc-300">Compiled request prompt</summary>
+                  <p className="mt-2 text-xs text-zinc-400">{meta.compiledPrompt}</p>
+                </details>
+              ) : null}
             </div>
           ) : null}
 
@@ -307,7 +568,9 @@ export default function SimpleVideoStudioPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
           <div className="w-full max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-zinc-100">Choose {pickerTarget === "start" ? "start" : "end"} frame from Image Project</h2>
+              <h2 className="text-sm font-semibold text-zinc-100">
+                Choose {pickerTarget.kind === "start" ? "start" : pickerTarget.kind === "end" ? "end" : REFERENCE_SLOTS[pickerTarget.index].label} from Image Project
+              </h2>
               <div className="flex gap-2">
                 <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Refresh</button>
                 <button type="button" onClick={() => setPickerTarget(null)} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Close</button>
@@ -322,7 +585,7 @@ export default function SimpleVideoStudioPage() {
                     <button
                       key={item.id}
                       type="button"
-                      onClick={() => applyFrameSelection(item)}
+                      onClick={() => void applyFrameSelection(item)}
                       className="rounded border border-white/10 p-1 text-left hover:border-cyan-400/60"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
