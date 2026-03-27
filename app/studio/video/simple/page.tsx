@@ -42,6 +42,8 @@ export default function SimpleVideoStudioPage() {
   const [error, setError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ model: string; duration: number; aspectRatio: VideoAspectRatio } | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -120,10 +122,75 @@ export default function SimpleVideoStudioPage() {
         duration: payload.data?.duration_seconds ?? duration,
         aspectRatio: payload.data?.aspect_ratio ?? aspectRatio,
       });
+      setCopyStatus("idle");
     } catch (generationError) {
       setError(generationError instanceof Error ? generationError.message : "Failed to generate video.");
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  function buildDownloadFilename(url: string) {
+    try {
+      const parsedUrl = new URL(url);
+      const pathnameName = parsedUrl.pathname.split("/").pop() || "generated-video.mp4";
+      return pathnameName.includes(".") ? pathnameName : `${pathnameName}.mp4`;
+    } catch {
+      return "generated-video.mp4";
+    }
+  }
+
+  async function handleCopyVideoUrl() {
+    if (!videoUrl) return;
+    try {
+      await navigator.clipboard.writeText(videoUrl);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  async function handleDownloadVideo() {
+    if (!videoUrl) return;
+    setIsDownloading(true);
+    const filename = buildDownloadFilename(videoUrl);
+    try {
+      const isSameOrigin = new URL(videoUrl, window.location.href).origin === window.location.origin;
+      if (isSameOrigin) {
+        const link = document.createElement("a");
+        link.href = videoUrl;
+        link.download = filename;
+        link.rel = "noreferrer";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        return;
+      }
+
+      const response = await fetch(videoUrl);
+      if (!response.ok) {
+        throw new Error("Fetch failed");
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      const link = document.createElement("a");
+      link.href = videoUrl;
+      link.download = filename;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } finally {
+      setIsDownloading(false);
     }
   }
 
@@ -215,9 +282,26 @@ export default function SimpleVideoStudioPage() {
           {!isGenerating && videoUrl ? (
             <div className="space-y-3">
               <video className="w-full rounded-xl border border-zinc-700 bg-black" src={videoUrl} controls playsInline />
-              <a href={videoUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
-                Open video URL
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadVideo()}
+                  disabled={isDownloading}
+                  className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDownloading ? "Downloading..." : "Download video"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyVideoUrl()}
+                  className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
+                >
+                  {copyStatus === "copied" ? "URL copied" : copyStatus === "error" ? "Copy failed" : "Copy video URL"}
+                </button>
+                <a href={videoUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+                  Open video URL
+                </a>
+              </div>
               {meta ? <p className="text-xs text-zinc-400">{meta.model} · {meta.duration}s · {meta.aspectRatio}</p> : null}
             </div>
           ) : null}
