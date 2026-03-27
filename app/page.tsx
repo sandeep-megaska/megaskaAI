@@ -44,6 +44,20 @@ type SkuTruthDialogState = {
   suggestedRole: string | null;
 };
 
+type PromptBuilderResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    summary: string;
+    riskLevel: "low" | "medium" | "high";
+    recommendedMode: "single_shot" | "two_shot";
+    imagePrompt: string;
+    videoPrompt: string;
+    negativeConstraints: string[];
+    shotNotes: string[];
+  };
+};
+
 type StudioResultItem = {
   id: string;
   url: string;
@@ -86,6 +100,8 @@ function HomeContent() {
   const [modelReferenceUrls, setModelReferenceUrls] = useState<string[]>([]);
   const [outputCount, setOutputCount] = useState<number>(4);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isBuildingPrompt, setIsBuildingPrompt] = useState(false);
+  const [promptBuilderResult, setPromptBuilderResult] = useState<PromptBuilderResponse["data"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backends, setBackends] = useState<AIBackend[]>([]);
   const [results, setResults] = useState<StudioResultItem[]>([]);
@@ -417,6 +433,43 @@ function HomeContent() {
     return `p-${Math.abs(hash).toString(36)}`;
   }
 
+  async function handleGeneratePrompt() {
+    if (!prompt.trim() || isBuildingPrompt) return;
+
+    try {
+      setIsBuildingPrompt(true);
+      setError(null);
+
+      const response = await fetch("/api/prompt-builder", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectType: "image",
+          workflowMode: null,
+          userIdea: prompt.trim(),
+          environment: workflowMode === "more-views" ? "derived-views" : "master-candidates",
+          motionPreset: null,
+          garmentAnchors: {},
+          hasStartFrame: false,
+          hasEndFrame: false,
+          hasReferenceImages: garmentReferenceUrls.length + modelReferenceUrls.length + selectedReferenceImages.length > 0,
+        }),
+      });
+
+      const payload = (await response.json()) as PromptBuilderResponse;
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error ?? "Failed to generate prompt.");
+      }
+
+      setPrompt(payload.data.imagePrompt);
+      setPromptBuilderResult(payload.data);
+    } catch (buildError) {
+      setError(buildError instanceof Error ? buildError.message : "Failed to generate prompt.");
+    } finally {
+      setIsBuildingPrompt(false);
+    }
+  }
+
   async function handleGenerate() {
     if (isGenerating) return;
     if (workflowMode === "more-views" && !canGenerateMoreViews) return;
@@ -647,6 +700,19 @@ function HomeContent() {
               placeholder={workflowMode === "master-candidates" ? "Premium front-view swimwear campaign shot..." : "Back view, side angle, detail shot, poolside luxury..."}
               className="h-28 w-full rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm md:col-span-2"
             />
+            <button
+              type="button"
+              onClick={handleGeneratePrompt}
+              disabled={isBuildingPrompt || !prompt.trim()}
+              className="rounded-lg border border-indigo-300/50 bg-indigo-500/10 px-4 py-2 text-sm font-medium text-indigo-100 hover:bg-indigo-500/20 disabled:opacity-50"
+            >
+              {isBuildingPrompt ? "Generating Prompt..." : "Generate Prompt"}
+            </button>
+            <div className="rounded-lg border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
+              {promptBuilderResult
+                ? `Risk: ${promptBuilderResult.riskLevel} · Recommended mode: ${promptBuilderResult.recommendedMode}`
+                : "Prompt Builder will suggest cleaner provider-safe phrasing."}
+            </div>
             <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "garment")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
             <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "model")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
           </div>
@@ -712,6 +778,13 @@ function HomeContent() {
             <Sparkles className="h-4 w-4" />
             {isGenerating ? "Generating..." : workflowMode === "master-candidates" ? "Generate Master Candidates" : "Generate More Views"}
           </button>
+
+          {promptBuilderResult?.negativeConstraints?.length ? (
+            <div className="rounded-lg border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
+              <p className="font-medium text-zinc-200">Negative constraints</p>
+              <p className="mt-1">{promptBuilderResult.negativeConstraints.join(" · ")}</p>
+            </div>
+          ) : null}
 
           {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
         </section>
