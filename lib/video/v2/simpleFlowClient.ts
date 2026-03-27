@@ -39,6 +39,46 @@ export type SimpleRunResult = {
 };
 
 const SIMPLE_STRICT_TEMPLATE_ID: Phase1TemplateId = "front_still_luxury";
+const SIMPLE_STRICT_PRODUCTION_MODE = "phase1_template";
+const SIMPLE_FREEFORM_PRODUCTION_MODE = "experimental_freeform";
+
+type SimpleExecutionProfile = {
+  validationMode: boolean;
+  motionComplexity: "low" | "medium" | "high";
+  productionMode: "phase1_template" | "experimental_freeform";
+  phase1TemplateId: Phase1TemplateId | null;
+  finalPath: "phase1_template" | "experimental_freeform";
+};
+
+function resolveSimpleExecutionProfile(mode: SimpleMode): SimpleExecutionProfile {
+  if (mode === "strict") {
+    return {
+      validationMode: true,
+      motionComplexity: "low",
+      productionMode: SIMPLE_STRICT_PRODUCTION_MODE,
+      phase1TemplateId: SIMPLE_STRICT_TEMPLATE_ID,
+      finalPath: "phase1_template",
+    };
+  }
+
+  if (mode === "creative") {
+    return {
+      validationMode: false,
+      motionComplexity: "high",
+      productionMode: SIMPLE_FREEFORM_PRODUCTION_MODE,
+      phase1TemplateId: null,
+      finalPath: "experimental_freeform",
+    };
+  }
+
+  return {
+    validationMode: false,
+    motionComplexity: "medium",
+    productionMode: SIMPLE_FREEFORM_PRODUCTION_MODE,
+    phase1TemplateId: null,
+    finalPath: "experimental_freeform",
+  };
+}
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -83,13 +123,11 @@ export async function createSimpleClipIntent(input: {
   mode: SimpleMode;
 }): Promise<SimpleClipIntentContext> {
   const sourceProfileId = await ensureSourceProfile(input.startGenerationId);
-  const strictMode = input.mode === "strict";
-  const productionMode = strictMode ? "phase1_template" : "experimental_freeform";
-  const templateId = strictMode ? SIMPLE_STRICT_TEMPLATE_ID : null;
+  const executionProfile = resolveSimpleExecutionProfile(input.mode);
   console.info("[simple-video] create intent mode", {
     selectedSimpleMode: input.mode,
-    production_mode: productionMode,
-    phase1_template_id: templateId,
+    production_mode: executionProfile.productionMode,
+    template_mode: executionProfile.phase1TemplateId ? { production_mode: executionProfile.productionMode, template_id: executionProfile.phase1TemplateId } : { production_mode: executionProfile.productionMode },
   });
 
   const intent = await fetchJson<{ id: string }>("/api/studio/video/v2/clip-intents", {
@@ -102,8 +140,8 @@ export async function createSimpleClipIntent(input: {
       duration_seconds: input.durationSeconds,
       aspect_ratio: input.aspectRatio,
       sku_code: input.skuCode?.trim() || undefined,
-      production_mode: productionMode,
-      phase1_template_id: templateId,
+      production_mode: executionProfile.productionMode,
+      phase1_template_id: executionProfile.phase1TemplateId,
     }),
   });
 
@@ -134,23 +172,22 @@ export async function generateSimpleVideo(input: {
   hasEndFrame: boolean;
   mode: SimpleMode;
 }) {
-  const modeOverrides: Pick<V2PlannerOverrides, "validationMode" | "motionComplexity"> =
-    input.mode === "strict"
-      ? { validationMode: true, motionComplexity: "low" }
-      : input.mode === "creative"
-        ? { validationMode: false, motionComplexity: "high" }
-        : { validationMode: false, motionComplexity: "medium" };
+  const executionProfile = resolveSimpleExecutionProfile(input.mode);
 
   const plannerOverrides: V2PlannerOverrides = {
     requestedStart: "start_frame",
     requestedEnd: input.hasEndFrame ? "end_frame" : "start_frame",
     requestedDurationSeconds: input.durationSeconds,
     startEndFrameMode: input.hasEndFrame,
-    ...modeOverrides,
+    validationMode: executionProfile.validationMode,
+    motionComplexity: executionProfile.motionComplexity,
   };
   console.info("[simple-video] planner overrides", {
     selectedSimpleMode: input.mode,
+    production_mode: executionProfile.productionMode,
+    template_mode: executionProfile.phase1TemplateId ? { production_mode: executionProfile.productionMode, template_id: executionProfile.phase1TemplateId } : { production_mode: executionProfile.productionMode },
     validation_mode: Boolean(plannerOverrides.validationMode),
+    finalPathRequested: executionProfile.finalPath,
   });
 
   await orchestrateV2ClipIntent(input.clipIntentId, plannerOverrides);
@@ -165,6 +202,8 @@ export async function generateSimpleVideo(input: {
     finalCompileMode: compileResult.run_request_preview?.mode_selected ?? null,
     production_mode: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
     phase1_template_id: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.template_id ?? null,
+    validation_mode: Boolean(plannerOverrides.validationMode),
+    finalPathUsed: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
   });
 
   const generated = await fetchJson<{ run_id: string; status: string }>(`/api/studio/video/v2/clip-intents/${input.clipIntentId}/generate`, {
@@ -177,6 +216,8 @@ export async function generateSimpleVideo(input: {
     validation_mode: Boolean(plannerOverrides.validationMode),
     finalGenerateMode: compileResult.run_request_preview?.mode_selected ?? null,
     production_mode: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
+    phase1_template_id: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.template_id ?? null,
+    finalPathUsed: compileResult.run_request_preview?.request_payload_snapshot?.template_mode?.production_mode ?? null,
   });
 
   return { run_id: generated.run_id };
