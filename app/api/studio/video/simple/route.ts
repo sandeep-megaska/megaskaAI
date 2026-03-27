@@ -3,6 +3,15 @@ import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
 import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import {
+  buildVideoSimplePrompt,
+  createEmptyGarmentAnchors,
+  normalizeReferenceImagesForProvider,
+  type VideoSimpleGarmentAnchors,
+  type VideoSimpleMotionPreset,
+  type VideoSimpleReferenceImage,
+  VIDEO_SIMPLE_MOTION_PRESETS,
+} from "@/lib/video/simpleControls";
 
 type SimpleVideoGeneratePayload = {
   prompt?: string;
@@ -10,6 +19,9 @@ type SimpleVideoGeneratePayload = {
   aspect_ratio?: StudioAspectRatio;
   first_frame_url?: string | null;
   last_frame_url?: string | null;
+  reference_images?: VideoSimpleReferenceImage[];
+  motion_preset?: VideoSimpleMotionPreset;
+  garment_anchors?: Partial<VideoSimpleGarmentAnchors>;
   ai_backend_id?: string;
 };
 
@@ -33,6 +45,22 @@ function isSupportedDuration(value: unknown): value is (typeof SUPPORTED_DURATIO
 
 function isSupportedAspectRatio(value: unknown): value is SupportedAspectRatio {
   return typeof value === "string" && SUPPORTED_ASPECT_RATIOS.includes(value as SupportedAspectRatio);
+}
+
+function isMotionPreset(value: unknown): value is VideoSimpleMotionPreset {
+  return typeof value === "string" && VIDEO_SIMPLE_MOTION_PRESETS.includes(value as VideoSimpleMotionPreset);
+}
+
+function normalizeGarmentAnchors(value?: Partial<VideoSimpleGarmentAnchors>): VideoSimpleGarmentAnchors {
+  const base = createEmptyGarmentAnchors();
+  return {
+    backNeckline: value?.backNeckline?.trim() ?? base.backNeckline,
+    strapStructure: value?.strapStructure?.trim() ?? base.strapStructure,
+    backCoverage: value?.backCoverage?.trim() ?? base.backCoverage,
+    seamLines: value?.seamLines?.trim() ?? base.seamLines,
+    fabricFinish: value?.fabricFinish?.trim() ?? base.fabricFinish,
+    colorContinuity: value?.colorContinuity?.trim() ?? base.colorContinuity,
+  };
 }
 
 async function uploadVideoBytes(input: {
@@ -91,15 +119,27 @@ export async function POST(request: Request) {
     const firstFrameUrl = cleanUrl(payload.first_frame_url);
     const lastFrameUrl = cleanUrl(payload.last_frame_url);
 
+    const motionPreset = isMotionPreset(payload.motion_preset) ? payload.motion_preset : "freeform";
+    const garmentAnchors = normalizeGarmentAnchors(payload.garment_anchors);
+    const referenceImages = normalizeReferenceImagesForProvider(payload.reference_images ?? []);
+
+    const compiledPrompt = buildVideoSimplePrompt({
+      creativePrompt: prompt,
+      motionPreset,
+      hasEndFrame: Boolean(lastFrameUrl),
+      referenceImages,
+      garmentAnchors,
+    });
+
     const result = await runVeoVideo({
       apiKey: googleApiKey,
       model: backend.model,
-      prompt,
+      prompt: compiledPrompt,
       durationSeconds,
       aspectRatio,
       firstFrameUrl,
       lastFrameUrl,
-      referenceImageUrls: [],
+      referenceImageUrls: referenceImages.map((item) => item.url),
     });
 
     const fileName = `${Date.now()}-simple-${durationSeconds}s.mp4`;
@@ -119,6 +159,14 @@ export async function POST(request: Request) {
         model: backend.model,
         duration_seconds: durationSeconds,
         aspect_ratio: aspectRatio,
+        compiled_prompt: compiledPrompt,
+        controls: {
+          motion_preset: motionPreset,
+          reference_count: referenceImages.length,
+          has_start_frame: Boolean(firstFrameUrl),
+          has_end_frame: Boolean(lastFrameUrl),
+          garment_anchor_count: Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length,
+        },
       },
     });
   } catch (error) {
