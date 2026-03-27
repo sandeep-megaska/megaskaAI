@@ -176,6 +176,7 @@ export default function SimpleVideoStudioPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isBuildingPrompt, setIsBuildingPrompt] = useState(false);
   const [promptBuilderResult, setPromptBuilderResult] = useState<PromptBuilderResponse["data"] | null>(null);
+  const [promptBuilderInlineError, setPromptBuilderInlineError] = useState<string | null>(null);
   const [activeShot, setActiveShot] = useState<VideoSimpleShotType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
@@ -323,6 +324,7 @@ export default function SimpleVideoStudioPage() {
     try {
       setIsBuildingPrompt(true);
       setError(null);
+      setPromptBuilderInlineError(null);
 
       const response = await fetch("/api/prompt-builder", {
         method: "POST",
@@ -345,8 +347,14 @@ export default function SimpleVideoStudioPage() {
         throw new Error(payload.error ?? "Failed to generate prompt.");
       }
 
-      setPrompt(payload.data.videoPrompt);
       setPromptBuilderResult(payload.data);
+      const nextPrompt = payload.data.videoPrompt.trim();
+      if (!nextPrompt) {
+        setPromptBuilderInlineError("Prompt Builder returned an empty video prompt. Please simplify your idea and try again.");
+        return;
+      }
+
+      setPrompt(nextPrompt);
       if (payload.data.recommendedMode === "two_shot") {
         setWorkflowMode("two-shot-back-reveal");
       } else {
@@ -549,6 +557,7 @@ export default function SimpleVideoStudioPage() {
                   : "Prompt Builder improves continuity-safe wording."}
               </div>
             </div>
+            {promptBuilderInlineError ? <p className="text-xs text-rose-300">{promptBuilderInlineError}</p> : null}
 
             <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
               <p className="text-sm font-medium text-zinc-100">Workflow mode</p>

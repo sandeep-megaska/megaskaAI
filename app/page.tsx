@@ -102,6 +102,7 @@ function HomeContent() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isBuildingPrompt, setIsBuildingPrompt] = useState(false);
   const [promptBuilderResult, setPromptBuilderResult] = useState<PromptBuilderResponse["data"] | null>(null);
+  const [promptBuilderInlineError, setPromptBuilderInlineError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backends, setBackends] = useState<AIBackend[]>([]);
   const [results, setResults] = useState<StudioResultItem[]>([]);
@@ -439,6 +440,7 @@ function HomeContent() {
     try {
       setIsBuildingPrompt(true);
       setError(null);
+      setPromptBuilderInlineError(null);
 
       const response = await fetch("/api/prompt-builder", {
         method: "POST",
@@ -461,8 +463,14 @@ function HomeContent() {
         throw new Error(payload.error ?? "Failed to generate prompt.");
       }
 
-      setPrompt(payload.data.imagePrompt);
       setPromptBuilderResult(payload.data);
+      const nextPrompt = payload.data.imagePrompt.trim();
+      if (!nextPrompt) {
+        setPromptBuilderInlineError("Prompt Builder returned an empty image prompt. Please adjust the idea and try again.");
+        return;
+      }
+
+      setPrompt(nextPrompt);
     } catch (buildError) {
       setError(buildError instanceof Error ? buildError.message : "Failed to generate prompt.");
     } finally {
@@ -713,6 +721,7 @@ function HomeContent() {
                 ? `Risk: ${promptBuilderResult.riskLevel} · Recommended mode: ${promptBuilderResult.recommendedMode}`
                 : "Prompt Builder will suggest cleaner provider-safe phrasing."}
             </div>
+            {promptBuilderInlineError ? <p className="md:col-span-2 text-xs text-rose-300">{promptBuilderInlineError}</p> : null}
             <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "garment")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
             <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "model")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
           </div>
