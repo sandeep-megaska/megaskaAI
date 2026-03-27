@@ -112,11 +112,70 @@ function buildUserInput(input: PromptBuilderInput) {
   return JSON.stringify(input);
 }
 
+type OpenAIDebugInfo = {
+  model: string;
+  responseId: string | null;
+  requestId: string | null;
+  status: string | null;
+  finishReason: string | null;
+  refusal: string | null;
+  rawText: string;
+  hasRawText: boolean;
+  parsedJsonExists: boolean;
+  schemaParseFailed: boolean;
+  isTruncated: boolean;
+  isContentFiltered: boolean;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function collectOutputTextAndRefusal(payload: Record<string, unknown>) {
+  const rawTextParts: string[] = [];
+  const refusalParts: string[] = [];
+  const output = payload.output;
+  if (!Array.isArray(output)) return { rawText: "", refusal: null as string | null };
+
+  for (const item of output) {
+    const message = asRecord(item);
+    if (!message) continue;
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const part = asRecord(block);
+      if (!part) continue;
+      if (part.type === "output_text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        rawTextParts.push(part.text);
+      }
+      if (part.type === "refusal" && typeof part.refusal === "string" && part.refusal.trim().length > 0) {
+        refusalParts.push(part.refusal);
+      }
+    }
+  }
+
+  return {
+    rawText: rawTextParts.join("\n").trim(),
+    refusal: refusalParts.length ? refusalParts.join("\n").trim() : null,
+  };
+}
+
+function extractPrimaryOutputInfo(payload: Record<string, unknown>) {
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  const first = asRecord(output[0]);
+  const firstStatus = typeof first?.status === "string" ? first.status : null;
+  const firstFinishReason = typeof first?.finish_reason === "string" ? first.finish_reason : null;
+  return { firstStatus, firstFinishReason };
+}
+
 export async function generatePromptBuilderResult(input: PromptBuilderInput): Promise<PromptBuilderResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("Missing OPENAI_API_KEY.");
   }
+
+  const model = process.env.OPENAI_PROMPT_BUILDER_MODEL ?? "gpt-4.1-mini";
 
   const response = await fetch(OPENAI_RESPONSES_URL, {
     method: "POST",
@@ -125,7 +184,7 @@ export async function generatePromptBuilderResult(input: PromptBuilderInput): Pr
       authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_PROMPT_BUILDER_MODEL ?? "gpt-4.1-mini",
+      model,
       input: [
         { role: "system", content: [{ type: "input_text", text: buildSystemInstructions() }] },
         { role: "user", content: [{ type: "input_text", text: buildUserInput(input) }] },
@@ -142,8 +201,44 @@ export async function generatePromptBuilderResult(input: PromptBuilderInput): Pr
   });
 
   const payload = (await response.json()) as Record<string, unknown>;
+  const requestId = response.headers.get("x-request-id");
+
+  const { rawText, refusal } = collectOutputTextAndRefusal(payload);
+  const outputText = typeof payload.output_text === "string" && payload.output_text.trim().length > 0 ? payload.output_text.trim() : rawText;
+  const { firstStatus, firstFinishReason } = extractPrimaryOutputInfo(payload);
+  const incomplete = asRecord(payload.incomplete_details);
+  const incompleteReason = typeof incomplete?.reason === "string" ? incomplete.reason : null;
+  const finishReason = firstFinishReason ?? incompleteReason;
+  const status = typeof payload.status === "string" ? payload.status : firstStatus;
+
+  const debugInfo: OpenAIDebugInfo = {
+    model,
+    responseId: typeof payload.id === "string" ? payload.id : null,
+    requestId,
+    status,
+    finishReason,
+    refusal,
+    rawText: outputText,
+    hasRawText: outputText.length > 0,
+    parsedJsonExists: false,
+    schemaParseFailed: false,
+    isTruncated:
+      finishReason === "length" ||
+      finishReason === "max_output_tokens" ||
+      status === "incomplete" ||
+      incompleteReason === "max_output_tokens",
+    isContentFiltered:
+      finishReason === "content_filter" ||
+      finishReason === "content_filtered" ||
+      refusal !== null,
+  };
 
   if (!response.ok) {
+    console.error("[prompt-builder] OpenAI API error", {
+      debug: debugInfo,
+      httpStatus: response.status,
+      payload,
+    });
     const message =
       typeof payload.error === "object" && payload.error && "message" in payload.error
         ? String((payload.error as { message?: unknown }).message ?? "OpenAI request failed.")
@@ -151,22 +246,46 @@ export async function generatePromptBuilderResult(input: PromptBuilderInput): Pr
     throw new Error(message);
   }
 
-  const outputText = typeof payload.output_text === "string" ? payload.output_text : "";
   if (!outputText) {
-    throw new Error("OpenAI returned an empty response.");
+    console.error("[prompt-builder] OpenAI response had no text", {
+      debug: debugInfo,
+      payload,
+    });
+    throw new Error(
+      `OpenAI response did not include usable text. hasRawText=false schemaParseFailed=false finishReason=${finishReason ?? "unknown"} status=${status ?? "unknown"} refusal=${refusal ? "yes" : "no"}`,
+    );
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(outputText);
+    debugInfo.parsedJsonExists = true;
   } catch {
-    throw new Error("OpenAI returned invalid JSON.");
+    console.error("[prompt-builder] OpenAI returned non-JSON text", {
+      debug: debugInfo,
+      payload,
+    });
+    throw new Error(
+      `OpenAI returned non-JSON output. hasRawText=true schemaParseFailed=true finishReason=${finishReason ?? "unknown"} status=${status ?? "unknown"} refusal=${refusal ? "yes" : "no"}`,
+    );
   }
 
   const normalized = normalizePromptBuilderResult(parsed);
   if (!normalized) {
-    throw new Error("OpenAI returned JSON that does not match Prompt Builder schema.");
+    debugInfo.schemaParseFailed = true;
+    console.error("[prompt-builder] OpenAI JSON failed Prompt Builder schema", {
+      debug: debugInfo,
+      parsed,
+      payload,
+    });
+    throw new Error(
+      `OpenAI JSON did not match Prompt Builder schema. hasRawText=true schemaParseFailed=true finishReason=${finishReason ?? "unknown"} status=${status ?? "unknown"} truncated=${debugInfo.isTruncated} contentFiltered=${debugInfo.isContentFiltered}`,
+    );
   }
+
+  console.info("[prompt-builder] OpenAI response parsed", {
+    debug: { ...debugInfo, parsedJsonExists: true, schemaParseFailed: false },
+  });
 
   return normalized;
 }
