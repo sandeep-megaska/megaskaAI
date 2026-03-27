@@ -41,6 +41,20 @@ type SimpleVideoResponse = {
   };
 };
 
+type PromptBuilderResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    summary: string;
+    riskLevel: "low" | "medium" | "high";
+    recommendedMode: "single_shot" | "two_shot";
+    imagePrompt: string;
+    videoPrompt: string;
+    negativeConstraints: string[];
+    shotNotes: string[];
+  };
+};
+
 type GalleryImageItem = ImageGenerationAsset;
 
 type FrameAsset = {
@@ -160,6 +174,8 @@ export default function SimpleVideoStudioPage() {
   const [historyItems, setHistoryItems] = useState<PersistedSimpleVideoItem[]>([]);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isBuildingPrompt, setIsBuildingPrompt] = useState(false);
+  const [promptBuilderResult, setPromptBuilderResult] = useState<PromptBuilderResponse["data"] | null>(null);
   const [activeShot, setActiveShot] = useState<VideoSimpleShotType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
@@ -299,6 +315,48 @@ export default function SimpleVideoStudioPage() {
       firstFrameUrl: intermediateFrame?.url ?? null,
       lastFrameUrl: endFrame?.url ?? null,
     };
+  }
+
+  async function handleGeneratePrompt() {
+    if (!prompt.trim() || isBuildingPrompt) return;
+
+    try {
+      setIsBuildingPrompt(true);
+      setError(null);
+
+      const response = await fetch("/api/prompt-builder", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectType: "video",
+          workflowMode: workflowMode === "two-shot-back-reveal" ? "two_shot" : "single_shot",
+          userIdea: prompt.trim(),
+          environment: "simple-video",
+          motionPreset,
+          garmentAnchors,
+          hasStartFrame: Boolean(startFrame),
+          hasEndFrame: Boolean(endFrame),
+          hasReferenceImages: activeReferenceImages.length > 0,
+        }),
+      });
+
+      const payload = (await response.json()) as PromptBuilderResponse;
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error ?? "Failed to generate prompt.");
+      }
+
+      setPrompt(payload.data.videoPrompt);
+      setPromptBuilderResult(payload.data);
+      if (payload.data.recommendedMode === "two_shot") {
+        setWorkflowMode("two-shot-back-reveal");
+      } else {
+        setWorkflowMode("single-shot");
+      }
+    } catch (buildError) {
+      setError(buildError instanceof Error ? buildError.message : "Failed to generate prompt.");
+    } finally {
+      setIsBuildingPrompt(false);
+    }
   }
 
   async function generateShot(shotType: VideoSimpleShotType) {
@@ -475,6 +533,22 @@ export default function SimpleVideoStudioPage() {
                 placeholder="Describe the motion, subject behavior, and camera movement."
               />
             </label>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => void handleGeneratePrompt()}
+                disabled={isBuildingPrompt || !prompt.trim()}
+                className="rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
+              >
+                {isBuildingPrompt ? "Generating Prompt..." : "Generate Prompt"}
+              </button>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
+                {promptBuilderResult
+                  ? `Risk: ${promptBuilderResult.riskLevel} · Recommended: ${promptBuilderResult.recommendedMode}`
+                  : "Prompt Builder improves continuity-safe wording."}
+              </div>
+            </div>
 
             <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
               <p className="text-sm font-medium text-zinc-100">Workflow mode</p>
@@ -731,6 +805,20 @@ export default function SimpleVideoStudioPage() {
                 </button>
               </div>
             )}
+
+            {promptBuilderResult?.negativeConstraints?.length ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+                <p className="font-medium text-zinc-100">Negative constraints</p>
+                <p className="mt-1">{promptBuilderResult.negativeConstraints.join(" · ")}</p>
+              </div>
+            ) : null}
+
+            {promptBuilderResult?.shotNotes?.length ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+                <p className="font-medium text-zinc-100">Shot notes</p>
+                <p className="mt-1">{promptBuilderResult.shotNotes.join(" · ")}</p>
+              </div>
+            ) : null}
 
             {error ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
           </div>
