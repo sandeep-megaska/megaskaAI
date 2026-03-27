@@ -4,12 +4,15 @@ import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
+  buildShotPrompt,
   buildVideoSimplePrompt,
   createEmptyGarmentAnchors,
   normalizeReferenceImagesForProvider,
   type VideoSimpleGarmentAnchors,
   type VideoSimpleMotionPreset,
   type VideoSimpleReferenceImage,
+  type VideoSimpleShotType,
+  type VideoSimpleWorkflowMode,
   VIDEO_SIMPLE_MOTION_PRESETS,
 } from "@/lib/video/simpleControls";
 
@@ -22,6 +25,9 @@ type SimpleVideoGeneratePayload = {
   reference_images?: VideoSimpleReferenceImage[];
   motion_preset?: VideoSimpleMotionPreset;
   garment_anchors?: Partial<VideoSimpleGarmentAnchors>;
+  workflow_mode?: VideoSimpleWorkflowMode;
+  shot_type?: VideoSimpleShotType;
+  workflow_group_id?: string | null;
   ai_backend_id?: string;
 };
 
@@ -61,6 +67,21 @@ function normalizeGarmentAnchors(value?: Partial<VideoSimpleGarmentAnchors>): Vi
     fabricFinish: value?.fabricFinish?.trim() ?? base.fabricFinish,
     colorContinuity: value?.colorContinuity?.trim() ?? base.colorContinuity,
   };
+}
+
+function normalizeWorkflowMode(value: unknown): VideoSimpleWorkflowMode {
+  return value === "two-shot-back-reveal" ? "two-shot-back-reveal" : "single-shot";
+}
+
+function normalizeShotType(value: unknown, workflowMode: VideoSimpleWorkflowMode): VideoSimpleShotType {
+  if (workflowMode === "two-shot-back-reveal" && (value === "shot-a" || value === "shot-b")) return value;
+  return "single";
+}
+
+function cleanWorkflowGroupId(value: unknown) {
+  if (typeof value !== "string") return null;
+  const next = value.trim();
+  return next.length ? next : null;
 }
 
 async function uploadVideoBytes(input: {
@@ -122,14 +143,28 @@ export async function POST(request: Request) {
     const motionPreset = isMotionPreset(payload.motion_preset) ? payload.motion_preset : "freeform";
     const garmentAnchors = normalizeGarmentAnchors(payload.garment_anchors);
     const referenceImages = normalizeReferenceImagesForProvider(payload.reference_images ?? []);
+    const workflowMode = normalizeWorkflowMode(payload.workflow_mode);
+    const shotType = normalizeShotType(payload.shot_type, workflowMode);
+    const workflowGroupId = cleanWorkflowGroupId(payload.workflow_group_id);
 
-    const compiledPrompt = buildVideoSimplePrompt({
-      creativePrompt: prompt,
-      motionPreset,
-      hasEndFrame: Boolean(lastFrameUrl),
-      referenceImages,
-      garmentAnchors,
-    });
+    const compiledPrompt =
+      workflowMode === "two-shot-back-reveal"
+        ? buildShotPrompt({
+            creativePrompt: prompt,
+            motionPreset,
+            hasEndFrame: Boolean(lastFrameUrl),
+            referenceImages,
+            garmentAnchors,
+            workflowMode,
+            shotType,
+          })
+        : buildVideoSimplePrompt({
+            creativePrompt: prompt,
+            motionPreset,
+            hasEndFrame: Boolean(lastFrameUrl),
+            referenceImages,
+            garmentAnchors,
+          });
 
     const result = await runVeoVideo({
       apiKey: googleApiKey,
@@ -150,9 +185,45 @@ export async function POST(request: Request) {
       mimeType: result.mimeType || "video/mp4",
     });
 
+    const supabase = getSupabaseAdminClient();
+    const garmentAnchorCount = Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length;
+    const { data: insertedGeneration, error: insertError } = await supabase
+      .from("generations")
+      .insert({
+        prompt,
+        type: "video",
+        media_type: "video",
+        status: "completed",
+        aspect_ratio: aspectRatio,
+        asset_url: videoUrl,
+        url: videoUrl,
+        generation_kind: "video",
+        reference_urls: referenceImages.map((item) => item.url),
+        video_meta: {
+          source: "video-simple",
+          workflowMode,
+          shotType,
+          workflowGroupId,
+          motionPreset,
+          durationSeconds,
+          aspectRatio,
+          hasStartFrame: Boolean(firstFrameUrl),
+          hasEndFrame: Boolean(lastFrameUrl),
+          referenceCount: referenceImages.length,
+          garmentAnchorCount,
+        },
+      })
+      .select("id")
+      .single();
+
+    if (insertError) {
+      throw new Error(`Failed to persist generation: ${insertError.message}`);
+    }
+
     return asJson(200, {
       success: true,
       data: {
+        generation_id: insertedGeneration.id,
         video_url: videoUrl,
         provider_output_uri: result.rawOutputUri,
         provider: "google-veo",
@@ -165,7 +236,10 @@ export async function POST(request: Request) {
           reference_count: referenceImages.length,
           has_start_frame: Boolean(firstFrameUrl),
           has_end_frame: Boolean(lastFrameUrl),
-          garment_anchor_count: Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length,
+          garment_anchor_count: garmentAnchorCount,
+          workflow_mode: workflowMode,
+          shot_type: shotType,
+          workflow_group_id: workflowGroupId,
         },
       },
     });
