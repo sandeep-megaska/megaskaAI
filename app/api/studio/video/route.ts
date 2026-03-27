@@ -45,6 +45,7 @@ import { planShots } from "@/lib/video/sequence/planShots";
 import { selectShotCandidate } from "@/lib/video/sequence/selectShotCandidate";
 import { stitchVideoClips } from "@/lib/video/sequence/stitchVideoClips";
 import type { VideoSequenceResult, VideoShotCandidate, VideoShotPlanItem } from "@/lib/video/sequence/types";
+import { UploadSizeLimitError, uploadGeneratedVideoToSupabase } from "@/lib/supabaseStorageUpload";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -229,31 +230,6 @@ function selectBackendForShot(shot: VideoShotPlanItem, requestedBackendId?: stri
   if (shot.providerPreference === "experimental") return "veo-3-fast";
   if (shot.providerPreference === "continuity") return "veo-2";
   return "veo-2";
-}
-
-async function uploadVideoBytes(input: {
-  bucket: string;
-  bytes: Buffer;
-  fileName: string;
-  mimeType: string;
-}) {
-  const supabase = getSupabaseAdminClient();
-  const filePath = `video/${input.fileName}`;
-  const { error: uploadError } = await supabase.storage.from(input.bucket).upload(filePath, input.bytes, {
-    contentType: input.mimeType || "video/mp4",
-    upsert: false,
-  });
-
-  if (uploadError) {
-    throw new Error(`Supabase upload failed: ${uploadError.message}`);
-  }
-
-  const { data: publicData } = supabase.storage.from(input.bucket).getPublicUrl(filePath);
-
-  return {
-    filePath,
-    publicUrl: publicData.publicUrl,
-  };
 }
 
 async function loadAnchorSceneHints(generationIds: string[]) {
@@ -899,10 +875,12 @@ export async function POST(request: Request) {
     const rawOutputUriFormat: UriClassification = rawOutputUri ? classifyStoredVideoUri(rawOutputUri) : "unknown-uri";
 
     const fileName = `${Date.now()}-${sanitizeForPath(effectiveMotionPreset)}-${payload.duration_seconds}s.mp4`;
-    const uploaded = await uploadVideoBytes({
+    const filePath = `video/${fileName}`;
+    const uploaded = await uploadGeneratedVideoToSupabase({
       bucket: supabaseBucket,
       bytes: videoResult.bytes,
       fileName,
+      filePath,
       mimeType: videoResult.mimeType || "video/mp4",
     });
 
@@ -1159,6 +1137,18 @@ export async function POST(request: Request) {
         error_code: error.code,
         error: error.message,
         diagnostics: error.diagnostics,
+      });
+    }
+
+    if (error instanceof UploadSizeLimitError) {
+      return asJson(413, {
+        success: false,
+        error_code: error.code,
+        error: error.message,
+        size_bytes: error.sizeBytes,
+        size_mb: Number(error.sizeMb.toFixed(2)),
+        max_bytes: error.maxBytes,
+        max_mb: Number(error.maxMb.toFixed(2)),
       });
     }
 

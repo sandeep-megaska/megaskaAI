@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
 import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { UploadSizeLimitError, uploadGeneratedVideoToSupabase } from "@/lib/supabaseStorageUpload";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
   buildShotPrompt,
@@ -84,27 +85,6 @@ function cleanWorkflowGroupId(value: unknown) {
   return next.length ? next : null;
 }
 
-async function uploadVideoBytes(input: {
-  bucket: string;
-  bytes: Buffer;
-  fileName: string;
-  mimeType: string;
-}) {
-  const supabase = getSupabaseAdminClient();
-  const filePath = `video/${input.fileName}`;
-  const { error: uploadError } = await supabase.storage.from(input.bucket).upload(filePath, input.bytes, {
-    contentType: input.mimeType || "video/mp4",
-    upsert: false,
-  });
-
-  if (uploadError) {
-    throw new Error(`Supabase upload failed: ${uploadError.message}`);
-  }
-
-  const { data: publicData } = supabase.storage.from(input.bucket).getPublicUrl(filePath);
-  return publicData.publicUrl;
-}
-
 export async function POST(request: Request) {
   try {
     const googleApiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
@@ -178,12 +158,15 @@ export async function POST(request: Request) {
     });
 
     const fileName = `${Date.now()}-simple-${durationSeconds}s.mp4`;
-    const videoUrl = await uploadVideoBytes({
+    const filePath = `video/${fileName}`;
+    const uploaded = await uploadGeneratedVideoToSupabase({
       bucket: supabaseBucket,
       bytes: result.bytes,
       fileName,
+      filePath,
       mimeType: result.mimeType || "video/mp4",
     });
+    const videoUrl = uploaded.publicUrl;
 
     const supabase = getSupabaseAdminClient();
     const garmentAnchorCount = Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length;
@@ -244,6 +227,18 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof UploadSizeLimitError) {
+      return asJson(413, {
+        success: false,
+        error_code: error.code,
+        error: error.message,
+        size_bytes: error.sizeBytes,
+        size_mb: Number(error.sizeMb.toFixed(2)),
+        max_bytes: error.maxBytes,
+        max_mb: Number(error.maxMb.toFixed(2)),
+      });
+    }
+
     const message = error instanceof Error ? error.message : "Failed to generate simple video.";
     return asJson(500, { success: false, error: message });
   }
