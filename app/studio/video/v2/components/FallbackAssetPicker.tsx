@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { excerpt, getAssetUrl, shortId } from "@/app/studio/video/v2/components/helpers";
+import { excerpt, getAssetCardLabel, getAssetUrl, shortId } from "@/app/studio/video/v2/components/helpers";
 
 type GalleryImage = { id: string; prompt: string; asset_url?: string | null; url?: string | null };
 
@@ -50,7 +50,10 @@ export default function FallbackAssetPicker({ images, selectedGenerationId, onSe
                     ) : null}
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-medium">{shortId(image.id)}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-xs font-medium">{shortId(image.id)}</p>
+                      <span className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">{getAssetCardLabel(image.prompt)}</span>
+                    </div>
                     <p className="truncate text-[11px] text-zinc-400">{excerpt(image.prompt, 72)}</p>
                   </div>
                 </button>

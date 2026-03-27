@@ -86,6 +86,16 @@ export function excerpt(text?: string | null, max = 90) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+export function getAssetCardLabel(prompt?: string | null) {
+  const normalized = (prompt ?? "").toLowerCase();
+  if (!normalized) return "prompt snippet";
+  if (normalized.includes("3/4 left") || normalized.includes("three quarter left") || normalized.includes("three-quarter left")) return "3/4 left";
+  if (normalized.includes("3/4 right") || normalized.includes("three quarter right") || normalized.includes("three-quarter right")) return "3/4 right";
+  if (normalized.includes("back view") || normalized.includes("rear view") || normalized.includes("from back") || normalized.includes(" back ")) return "back";
+  if (normalized.includes("front view") || normalized.includes("from front") || normalized.includes(" front ")) return "generated from front";
+  return "prompt snippet";
+}
+
 export function statusTone(status: string) {
   if (status === "validated") return "text-emerald-300";
   if (status === "succeeded" || status === "completed") return "text-emerald-200";
