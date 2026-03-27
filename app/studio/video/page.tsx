@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
+import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
 import {
   clearIncomingVideoAssets,
   getIncomingVideoAssets,
@@ -50,12 +51,7 @@ type AIBackend = {
   isLegacy?: boolean;
 };
 
-type GalleryImageItem = {
-  id: string;
-  prompt: string;
-  asset_url?: string | null;
-  url?: string | null;
-};
+type GalleryImageItem = ImageGenerationAsset;
 
 type FrameSelection = {
   sourceGenerationId: string | null;
@@ -204,13 +200,8 @@ export default function VideoProjectPage() {
 
   const loadGalleryImages = useCallback(async () => {
     if (!supabase) return;
-    const { data } = await supabase
-      .from("generations")
-      .select("id,prompt,asset_url,url")
-      .eq("generation_kind", "image")
-      .order("created_at", { ascending: false })
-      .limit(30);
-    setGalleryImages((data ?? []) as GalleryImageItem[]);
+    const assets = await loadDistinctImageGenerationAssets(supabase, { queryLimit: 180, maxResults: 90 });
+    setGalleryImages(assets);
   }, [supabase]);
 
   const loadVideoGallery = useCallback(

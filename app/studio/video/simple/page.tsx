@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
 
 type VideoAspectRatio = "16:9" | "9:16";
 type VideoDuration = 4 | 6 | 8;
@@ -17,12 +18,7 @@ type SimpleVideoResponse = {
   };
 };
 
-type GalleryImageItem = {
-  id: string;
-  prompt: string;
-  asset_url?: string | null;
-  url?: string | null;
-};
+type GalleryImageItem = ImageGenerationAsset;
 
 type FrameAsset = {
   id: string;
@@ -52,13 +48,8 @@ export default function SimpleVideoStudioPage() {
 
   const loadGalleryImages = useCallback(async () => {
     if (!supabase) return;
-    const { data } = await supabase
-      .from("generations")
-      .select("id,prompt,asset_url,url")
-      .eq("generation_kind", "image")
-      .order("created_at", { ascending: false })
-      .limit(30);
-    setGalleryImages((data ?? []) as GalleryImageItem[]);
+    const assets = await loadDistinctImageGenerationAssets(supabase, { queryLimit: 180, maxResults: 90 });
+    setGalleryImages(assets);
   }, [supabase]);
 
   useEffect(() => {
