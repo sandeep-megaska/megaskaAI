@@ -536,10 +536,12 @@ export async function POST(request: Request) {
           });
 
           const shotFileName = `${Date.now()}-${sequenceId}-${shot.shotId}.mp4`;
-          const uploaded = await uploadVideoBytes({
+          const shotFilePath = `video/sequence/${shotFileName}`;
+          const uploaded = await uploadGeneratedVideoToSupabase({
             bucket: supabaseBucket,
             bytes: shotResult.bytes,
             fileName: shotFileName,
+            filePath: shotFilePath,
             mimeType: shotResult.mimeType || "video/mp4",
           });
 
@@ -548,7 +550,7 @@ export async function POST(request: Request) {
             candidateId,
             shotId: shot.shotId,
             outputUrl: uploaded.publicUrl,
-            storagePath: uploaded.filePath,
+            storagePath: shotFilePath,
             mimeType: shotResult.mimeType || "video/mp4",
             provider: shotResult.provider,
             backendId: shotResult.backendId,
@@ -610,15 +612,17 @@ export async function POST(request: Request) {
         try {
           const stitched = await stitchVideoClips(selectedClips);
           const stitchedFileName = `${Date.now()}-${sequenceId}-stitched.mp4`;
-          const uploadedStitched = await uploadVideoBytes({
+          const stitchedFilePath = `video/sequence/${stitchedFileName}`;
+          const uploadedStitched = await uploadGeneratedVideoToSupabase({
             bucket: supabaseBucket,
             bytes: stitched.bytes,
             fileName: stitchedFileName,
+            filePath: stitchedFilePath,
             mimeType: stitched.mimeType,
           });
 
           stitchedVideoUrl = uploadedStitched.publicUrl;
-          stitchedVideoStoragePath = uploadedStitched.filePath;
+          stitchedVideoStoragePath = stitchedFilePath;
           stitchStatus = "completed";
           stitchDiagnostics = stitched.diagnostics;
           for (const shot of shotPlan) {

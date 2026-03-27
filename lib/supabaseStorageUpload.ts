@@ -163,7 +163,7 @@ async function uploadViaTusResumable(input: { bucket: string; filePath: string; 
       "upload-offset": "0",
       "content-type": "application/offset+octet-stream",
     },
-    body: input.bytes,
+    body: new Uint8Array(input.bytes),
   });
 
   if (!patchResponse.ok) {
