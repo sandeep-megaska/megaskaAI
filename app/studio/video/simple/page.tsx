@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 type VideoAspectRatio = "16:9" | "9:16";
 type VideoDuration = 4 | 6 | 8;
@@ -16,16 +17,70 @@ type SimpleVideoResponse = {
   };
 };
 
+type GalleryImageItem = {
+  id: string;
+  prompt: string;
+  asset_url?: string | null;
+  url?: string | null;
+};
+
+type FrameAsset = {
+  id: string;
+  url: string;
+  label: string;
+};
+
 export default function SimpleVideoStudioPage() {
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(6);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
-  const [startFrameUrl, setStartFrameUrl] = useState("");
-  const [endFrameUrl, setEndFrameUrl] = useState("");
+  const [startFrame, setStartFrame] = useState<FrameAsset | null>(null);
+  const [endFrame, setEndFrame] = useState<FrameAsset | null>(null);
+  const [pickerTarget, setPickerTarget] = useState<"start" | "end" | null>(null);
+  const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ model: string; duration: number; aspectRatio: VideoAspectRatio } | null>(null);
+
+  const supabase = useMemo(() => {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
+    return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+  }, []);
+
+  const loadGalleryImages = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase
+      .from("generations")
+      .select("id,prompt,asset_url,url")
+      .eq("generation_kind", "image")
+      .order("created_at", { ascending: false })
+      .limit(30);
+    setGalleryImages((data ?? []) as GalleryImageItem[]);
+  }, [supabase]);
+
+  useEffect(() => {
+    void loadGalleryImages();
+  }, [loadGalleryImages]);
+
+  function applyFrameSelection(item: GalleryImageItem) {
+    const imageUrl = item.asset_url ?? item.url;
+    if (!imageUrl || !pickerTarget) return;
+
+    const selection: FrameAsset = {
+      id: item.id,
+      url: imageUrl,
+      label: item.prompt || "Gallery image",
+    };
+
+    if (pickerTarget === "start") {
+      setStartFrame(selection);
+    } else {
+      setEndFrame(selection);
+    }
+
+    setPickerTarget(null);
+  }
 
   async function handleGenerate() {
     if (!prompt.trim()) {
@@ -44,8 +99,8 @@ export default function SimpleVideoStudioPage() {
           prompt: prompt.trim(),
           duration_seconds: duration,
           aspect_ratio: aspectRatio,
-          first_frame_url: startFrameUrl.trim() || null,
-          last_frame_url: endFrameUrl.trim() || null,
+          first_frame_url: startFrame?.url ?? null,
+          last_frame_url: endFrame?.url ?? null,
         }),
       });
 
@@ -113,24 +168,25 @@ export default function SimpleVideoStudioPage() {
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-zinc-200">Start frame URL (optional)</span>
-                <input
-                  value={startFrameUrl}
-                  onChange={(event) => setStartFrameUrl(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-                  placeholder="https://..."
-                />
-              </label>
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-zinc-200">End frame URL (optional)</span>
-                <input
-                  value={endFrameUrl}
-                  onChange={(event) => setEndFrameUrl(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-                  placeholder="https://..."
-                />
-              </label>
+              {[
+                { key: "start", label: "Start frame (optional)", value: startFrame },
+                { key: "end", label: "End frame (optional)", value: endFrame },
+              ].map((slot) => (
+                <div key={slot.key} className="space-y-2">
+                  <span className="text-sm font-medium text-zinc-200">{slot.label}</span>
+                  <div className="rounded-xl border border-zinc-700 bg-zinc-950 p-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    {slot.value ? <img src={slot.value.url} alt={slot.label} className="h-28 w-full rounded-lg object-cover" /> : <div className="h-28 rounded-lg border border-dashed border-zinc-700" />}
+                    <button
+                      type="button"
+                      onClick={() => setPickerTarget(slot.key as "start" | "end")}
+                      className="mt-2 w-full rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
+                    >
+                      Choose from Image Project
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
 
             <button
@@ -171,6 +227,40 @@ export default function SimpleVideoStudioPage() {
           ) : null}
         </aside>
       </div>
+
+      {pickerTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
+          <div className="w-full max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-100">Choose {pickerTarget === "start" ? "start" : "end"} frame from Image Project</h2>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Refresh</button>
+                <button type="button" onClick={() => setPickerTarget(null)} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Close</button>
+              </div>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto pr-1">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {galleryImages.map((item) => {
+                  const imageUrl = item.asset_url ?? item.url;
+                  if (!imageUrl) return null;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => applyFrameSelection(item)}
+                      className="rounded border border-white/10 p-1 text-left hover:border-cyan-400/60"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={imageUrl} alt="Gallery" className="h-28 w-full rounded object-cover" />
+                      <p className="mt-1 line-clamp-2 text-[10px] text-zinc-300">{item.prompt || "Gallery image"}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
