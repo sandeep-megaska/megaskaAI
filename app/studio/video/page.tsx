@@ -121,6 +121,14 @@ type VideoResult = {
   createdAt: string;
 };
 
+function normalizeUploadLimitError(input: { error?: string; error_code?: string; max_mb?: number }) {
+  if (input.error_code !== "upload-limit-exceeded") return input.error ?? "Video generation failed.";
+  const maxMb = typeof input.max_mb === "number" ? input.max_mb.toFixed(2) : null;
+  return maxMb
+    ? `Generated video is larger than the upload limit (${maxMb} MB max). Try a shorter duration or lower motion complexity.`
+    : "Generated video is larger than the upload limit. Try a shorter duration or lower motion complexity.";
+}
+
 type VideoGalleryItem = {
   id: string;
   prompt: string;
@@ -350,6 +358,8 @@ export default function VideoProjectPage() {
         downloadUrl?: string;
         thumbnailUrl?: string;
         error?: string;
+        error_code?: string;
+        max_mb?: number;
         videoMeta?: {
           motionPreset: VideoMotionPreset;
           durationSeconds: VideoDurationSeconds;
@@ -378,7 +388,7 @@ export default function VideoProjectPage() {
         };
       };
       if (!response.ok || !payload.success || !payload.outputUrl || !payload.generationId || !payload.videoMeta) {
-        throw new Error(payload.error ?? "Video generation failed.");
+        throw new Error(normalizeUploadLimitError(payload));
       }
 
       const result: VideoResult = {

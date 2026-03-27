@@ -5,6 +5,7 @@ import { ProviderUnavailableError } from "@/lib/ai/providerErrors";
 import { runStudioGeneration, type StudioGenerationType } from "@/lib/generation/runStudioGeneration";
 import { isStudioAspectRatio, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { estimateGeminiGenerationCostUsd } from "@/lib/billing/geminiCost";
+import { UploadSizeLimitError, uploadGeneratedVideoToSupabase } from "@/lib/supabaseStorageUpload";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -186,17 +187,29 @@ export async function POST(request: Request) {
     const fileName = `${Date.now()}-${sanitizeForPath(prompt)}.${ext}`;
     const filePath = `${type}/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage
-      .from(supabaseBucket)
-      .upload(filePath, bytes, { contentType: mimeType, upsert: false });
+    let publicUrl: string;
+    if (isVideoGeneration) {
+      const uploaded = await uploadGeneratedVideoToSupabase({
+        bucket: supabaseBucket,
+        bytes,
+        fileName,
+        filePath,
+        mimeType,
+      });
+      publicUrl = uploaded.publicUrl;
+    } else {
+      const { error: uploadError } = await supabase.storage
+        .from(supabaseBucket)
+        .upload(filePath, bytes, { contentType: mimeType, upsert: false });
 
-    if (uploadError) {
-      console.error("[generate] upload error", uploadError);
-      return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
+      if (uploadError) {
+        console.error("[generate] upload error", uploadError);
+        return asJson(500, { success: false, error: `Supabase upload failed: ${uploadError.message}` });
+      }
+
+      const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
+      publicUrl = publicData.publicUrl;
     }
-
-    const { data: publicData } = supabase.storage.from(supabaseBucket).getPublicUrl(filePath);
-    const publicUrl = publicData.publicUrl;
 
     if (isVideoGeneration) {
       console.log("[generate] canonical video output ready", {
@@ -307,6 +320,18 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("[generate] unhandled error", error);
+
+    if (error instanceof UploadSizeLimitError) {
+      return asJson(413, {
+        success: false,
+        error_code: error.code,
+        error: error.message,
+        size_bytes: error.sizeBytes,
+        size_mb: Number(error.sizeMb.toFixed(2)),
+        max_bytes: error.maxBytes,
+        max_mb: Number(error.maxMb.toFixed(2)),
+      });
+    }
 
     if (error instanceof ProviderUnavailableError) {
       return asJson(503, {

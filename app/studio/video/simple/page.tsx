@@ -21,6 +21,8 @@ type VideoDuration = 4 | 6 | 8;
 type SimpleVideoResponse = {
   success?: boolean;
   error?: string;
+  error_code?: string;
+  max_mb?: number;
   data?: {
     generation_id?: string;
     video_url?: string;
@@ -54,6 +56,14 @@ type PromptBuilderResponse = {
     shotNotes: string[];
   };
 };
+
+function normalizeUploadLimitError(input: { error?: string; error_code?: string; max_mb?: number }) {
+  if (input.error_code !== "upload-limit-exceeded") return input.error ?? "Failed to generate video.";
+  const maxMb = typeof input.max_mb === "number" ? input.max_mb.toFixed(2) : null;
+  return maxMb
+    ? `Generated video is larger than the upload limit (${maxMb} MB max). Try a shorter duration or simpler motion.`
+    : "Generated video is larger than the upload limit. Try a shorter duration or simpler motion.";
+}
 
 type GalleryImageItem = ImageGenerationAsset;
 
@@ -414,7 +424,7 @@ export default function SimpleVideoStudioPage() {
 
       const payload = (await response.json()) as SimpleVideoResponse;
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error ?? "Failed to generate video.");
+        throw new Error(normalizeUploadLimitError(payload));
       }
 
       const generatedUrl = payload.data?.video_url ?? null;
