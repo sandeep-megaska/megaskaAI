@@ -79,7 +79,7 @@ function HomeContent() {
   const GALLERY_PAGE_SIZE = 12;
   const searchParams = useSearchParams();
   const [prompt, setPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("1:1");
+  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>("3:4");
   const [backendId, setBackendId] = useState("");
   const [workflowMode, setWorkflowMode] = useState<StudioWorkflowMode>("master-candidates");
   const [garmentReferenceUrls, setGarmentReferenceUrls] = useState<string[]>([]);
