@@ -15,6 +15,7 @@ type SimpleVideoGeneratePayload = {
 
 const SUPPORTED_DURATIONS = [4, 6, 8] as const;
 const SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16"] as const satisfies readonly StudioAspectRatio[];
+type SupportedAspectRatio = (typeof SUPPORTED_ASPECT_RATIOS)[number];
 
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
@@ -30,8 +31,8 @@ function isSupportedDuration(value: unknown): value is (typeof SUPPORTED_DURATIO
   return typeof value === "number" && SUPPORTED_DURATIONS.includes(value as (typeof SUPPORTED_DURATIONS)[number]);
 }
 
-function isSupportedAspectRatio(value: unknown): value is StudioAspectRatio {
-  return typeof value === "string" && SUPPORTED_ASPECT_RATIOS.includes(value as StudioAspectRatio);
+function isSupportedAspectRatio(value: unknown): value is SupportedAspectRatio {
+  return typeof value === "string" && SUPPORTED_ASPECT_RATIOS.includes(value as SupportedAspectRatio);
 }
 
 async function uploadVideoBytes(input: {
