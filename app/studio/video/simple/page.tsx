@@ -140,6 +140,7 @@ export default function SimpleVideoStudioPage() {
   async function applyFrameSelection(item: GalleryImageItem) {
     const imageUrl = item.asset_url ?? item.url;
     if (!imageUrl || !pickerTarget) return;
+    const target = pickerTarget;
 
     const selection: FrameAsset = {
       id: item.id,
@@ -149,18 +150,19 @@ export default function SimpleVideoStudioPage() {
 
     const aspect = await resolveImageAspectRatio(imageUrl);
 
-    if (pickerTarget.kind === "start") {
-      setStartFrame(selection);
-      setStartFrameAspectRatio(aspect);
-    } else if (pickerTarget.kind === "end") {
-      setEndFrame(selection);
-      setEndFrameAspectRatio(aspect);
-    } else {
+    if (target.kind === "reference") {
+      const referenceIndex = target.index;
       setReferenceImages((current) => {
         const next = [...current];
-        next[pickerTarget.index] = selection;
+        next[referenceIndex] = selection;
         return next;
       });
+    } else if (target.kind === "start") {
+      setStartFrame(selection);
+      setStartFrameAspectRatio(aspect);
+    } else {
+      setEndFrame(selection);
+      setEndFrameAspectRatio(aspect);
     }
 
     setPickerTarget(null);
@@ -294,6 +296,15 @@ export default function SimpleVideoStudioPage() {
       setIsDownloading(false);
     }
   }
+
+  const pickerTargetLabel =
+    pickerTarget?.kind === "reference"
+      ? REFERENCE_SLOTS[pickerTarget.index].label
+      : pickerTarget?.kind === "start"
+        ? "start"
+        : pickerTarget?.kind === "end"
+          ? "end"
+          : "";
 
   return (
     <main className="min-h-screen bg-zinc-950 p-6 text-zinc-100">
@@ -569,7 +580,7 @@ export default function SimpleVideoStudioPage() {
           <div className="w-full max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-zinc-100">
-                Choose {pickerTarget.kind === "start" ? "start" : pickerTarget.kind === "end" ? "end" : REFERENCE_SLOTS[pickerTarget.index].label} from Image Project
+                Choose {pickerTargetLabel} from Image Project
               </h2>
               <div className="flex gap-2">
                 <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Refresh</button>
