@@ -5,9 +5,12 @@ import { createClient } from "@supabase/supabase-js";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
 import {
   createEmptyGarmentAnchors,
+  createWorkflowGroupId,
   type VideoSimpleGarmentAnchors,
   type VideoSimpleMotionPreset,
   type VideoSimpleReferenceRole,
+  type VideoSimpleShotType,
+  type VideoSimpleWorkflowMode,
   validateVideoSimpleControls,
   VIDEO_SIMPLE_MOTION_PRESETS,
 } from "@/lib/video/simpleControls";
@@ -19,6 +22,7 @@ type SimpleVideoResponse = {
   success?: boolean;
   error?: string;
   data?: {
+    generation_id?: string;
     video_url?: string;
     model?: string;
     duration_seconds?: number;
@@ -30,6 +34,9 @@ type SimpleVideoResponse = {
       has_start_frame?: boolean;
       has_end_frame?: boolean;
       garment_anchor_count?: number;
+      workflow_mode?: VideoSimpleWorkflowMode;
+      shot_type?: VideoSimpleShotType;
+      workflow_group_id?: string | null;
     };
   };
 };
@@ -42,7 +49,49 @@ type FrameAsset = {
   label: string;
 };
 
-type PickerTarget = { kind: "start" | "end" } | { kind: "reference"; index: number };
+type PickerTarget = { kind: "start" | "intermediate" | "end" } | { kind: "reference"; index: number };
+
+type ShotDescriptor = {
+  shotType: Extract<VideoSimpleShotType, "shot-a" | "shot-b">;
+  label: string;
+  flowLabel: string;
+  helper: string;
+};
+
+type OutputItem = {
+  generationId: string;
+  videoUrl: string;
+  createdAt: string;
+  model: string;
+  duration: number;
+  aspectRatio: VideoAspectRatio;
+  compiledPrompt: string;
+  controls: NonNullable<SimpleVideoResponse["data"]>["controls"];
+};
+
+type PersistedSimpleVideoItem = {
+  id: string;
+  prompt: string;
+  created_at?: string | null;
+  asset_url?: string | null;
+  url?: string | null;
+  video_meta?: Record<string, unknown> | null;
+};
+
+const SHOT_DESCRIPTORS: ShotDescriptor[] = [
+  {
+    shotType: "shot-a",
+    label: "Shot 1",
+    flowLabel: "Front → Mid",
+    helper: "Start frame to Intermediate Anchor for a controlled partial reveal.",
+  },
+  {
+    shotType: "shot-b",
+    label: "Shot 2",
+    flowLabel: "Mid → Back",
+    helper: "Intermediate Anchor to End frame for the final back reveal.",
+  },
+];
 
 const REFERENCE_SLOTS: Array<{ label: string; role: VideoSimpleReferenceRole; hint: string }> = [
   { label: "Front Reference", role: "front", hint: "Primary front garment view" },
@@ -74,29 +123,47 @@ function resolveImageAspectRatio(url: string): Promise<number | null> {
   });
 }
 
+function readMetaString(videoMeta: Record<string, unknown> | null | undefined, key: string) {
+  const value = videoMeta?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function readMetaNumber(videoMeta: Record<string, unknown> | null | undefined, key: string, fallback: number) {
+  const value = videoMeta?.[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+function asValidAspectRatio(value: string): VideoAspectRatio {
+  return value === "16:9" ? "16:9" : "9:16";
+}
+
 export default function SimpleVideoStudioPage() {
   const [prompt, setPrompt] = useState("");
   const [duration, setDuration] = useState<VideoDuration>(6);
   const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
+  const [workflowMode, setWorkflowMode] = useState<VideoSimpleWorkflowMode>("single-shot");
+  const [workflowGroupId, setWorkflowGroupId] = useState<string>(() => createWorkflowGroupId());
+
   const [startFrame, setStartFrame] = useState<FrameAsset | null>(null);
+  const [intermediateFrame, setIntermediateFrame] = useState<FrameAsset | null>(null);
   const [endFrame, setEndFrame] = useState<FrameAsset | null>(null);
   const [startFrameAspectRatio, setStartFrameAspectRatio] = useState<number | null>(null);
+  const [intermediateFrameAspectRatio, setIntermediateFrameAspectRatio] = useState<number | null>(null);
   const [endFrameAspectRatio, setEndFrameAspectRatio] = useState<number | null>(null);
+
   const [referenceImages, setReferenceImages] = useState<Array<FrameAsset | null>>(REFERENCE_SLOTS.map(() => null));
   const [motionPreset, setMotionPreset] = useState<VideoSimpleMotionPreset>("freeform");
   const [garmentAnchors, setGarmentAnchors] = useState<VideoSimpleGarmentAnchors>(() => createEmptyGarmentAnchors());
+
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
+  const [historyItems, setHistoryItems] = useState<PersistedSimpleVideoItem[]>([]);
+
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activeShot, setActiveShot] = useState<VideoSimpleShotType | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [meta, setMeta] = useState<{
-    model: string;
-    duration: number;
-    aspectRatio: VideoAspectRatio;
-    controls: NonNullable<SimpleVideoResponse["data"]>["controls"];
-    compiledPrompt: string;
-  } | null>(null);
+  const [outputs, setOutputs] = useState<OutputItem[]>([]);
+  const latestOutput = outputs[0] ?? null;
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -118,13 +185,27 @@ export default function SimpleVideoStudioPage() {
       validateVideoSimpleControls({
         prompt,
         motionPreset,
+        workflowMode,
         startFrameAspectRatio,
+        intermediateFrameAspectRatio,
         endFrameAspectRatio,
+        hasIntermediateFrame: Boolean(intermediateFrame),
         hasEndFrame: Boolean(endFrame),
         referenceImages: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
         garmentAnchors,
       }),
-    [activeReferenceImages, endFrame, endFrameAspectRatio, garmentAnchors, motionPreset, prompt, startFrameAspectRatio],
+    [
+      activeReferenceImages,
+      endFrame,
+      endFrameAspectRatio,
+      garmentAnchors,
+      intermediateFrame,
+      intermediateFrameAspectRatio,
+      motionPreset,
+      prompt,
+      startFrameAspectRatio,
+      workflowMode,
+    ],
   );
 
   const loadGalleryImages = useCallback(async () => {
@@ -133,9 +214,23 @@ export default function SimpleVideoStudioPage() {
     setGalleryImages(assets);
   }, [supabase]);
 
+  const loadSimpleHistory = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase
+      .from("generations")
+      .select("id,prompt,created_at,asset_url,url,video_meta,generation_kind")
+      .eq("generation_kind", "video")
+      .eq("video_meta->>source", "video-simple")
+      .order("created_at", { ascending: false })
+      .limit(8);
+
+    setHistoryItems(((data ?? []) as PersistedSimpleVideoItem[]).filter((item) => Boolean(item.asset_url ?? item.url)));
+  }, [supabase]);
+
   useEffect(() => {
     void loadGalleryImages();
-  }, [loadGalleryImages]);
+    void loadSimpleHistory();
+  }, [loadGalleryImages, loadSimpleHistory]);
 
   async function applyFrameSelection(item: GalleryImageItem) {
     const imageUrl = item.asset_url ?? item.url;
@@ -160,6 +255,9 @@ export default function SimpleVideoStudioPage() {
     } else if (target.kind === "start") {
       setStartFrame(selection);
       setStartFrameAspectRatio(aspect);
+    } else if (target.kind === "intermediate") {
+      setIntermediateFrame(selection);
+      setIntermediateFrameAspectRatio(aspect);
     } else {
       setEndFrame(selection);
       setEndFrameAspectRatio(aspect);
@@ -182,13 +280,51 @@ export default function SimpleVideoStudioPage() {
     });
   }
 
-  async function handleGenerate() {
+  function resolveShotFrames(shotType: VideoSimpleShotType) {
+    if (workflowMode !== "two-shot-back-reveal") {
+      return {
+        firstFrameUrl: startFrame?.url ?? null,
+        lastFrameUrl: endFrame?.url ?? null,
+      };
+    }
+
+    if (shotType === "shot-a") {
+      return {
+        firstFrameUrl: startFrame?.url ?? null,
+        lastFrameUrl: intermediateFrame?.url ?? null,
+      };
+    }
+
+    return {
+      firstFrameUrl: intermediateFrame?.url ?? null,
+      lastFrameUrl: endFrame?.url ?? null,
+    };
+  }
+
+  async function generateShot(shotType: VideoSimpleShotType) {
     if (!prompt.trim()) {
       setError("Enter a prompt first.");
       return;
     }
 
+    if (workflowMode === "two-shot-back-reveal") {
+      if (!intermediateFrame) {
+        setError("Two-shot mode requires an Intermediate Anchor frame.");
+        return;
+      }
+
+      if (shotType === "shot-b" && !endFrame) {
+        setError("Shot 2 requires an End frame.");
+        return;
+      }
+    }
+
+    const { firstFrameUrl, lastFrameUrl } = resolveShotFrames(shotType);
+    const requestWorkflowMode = workflowMode;
+    const requestGroupId = requestWorkflowMode === "two-shot-back-reveal" ? workflowGroupId : null;
+
     setIsGenerating(true);
+    setActiveShot(shotType);
     setError(null);
 
     try {
@@ -199,9 +335,12 @@ export default function SimpleVideoStudioPage() {
           prompt: prompt.trim(),
           duration_seconds: duration,
           aspect_ratio: aspectRatio,
-          first_frame_url: startFrame?.url ?? null,
-          last_frame_url: endFrame?.url ?? null,
+          first_frame_url: firstFrameUrl,
+          last_frame_url: lastFrameUrl,
           motion_preset: motionPreset,
+          workflow_mode: requestWorkflowMode,
+          shot_type: requestWorkflowMode === "two-shot-back-reveal" ? shotType : "single",
+          workflow_group_id: requestGroupId,
           reference_images: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
           garment_anchors: garmentAnchors,
         }),
@@ -217,19 +356,27 @@ export default function SimpleVideoStudioPage() {
         throw new Error("Video generation succeeded but no video URL was returned.");
       }
 
-      setVideoUrl(generatedUrl);
-      setMeta({
+      const nextOutput: OutputItem = {
+        generationId: payload.data?.generation_id ?? `${Date.now()}`,
+        videoUrl: generatedUrl,
+        createdAt: new Date().toISOString(),
         model: payload.data?.model ?? "unknown",
         duration: payload.data?.duration_seconds ?? duration,
         aspectRatio: payload.data?.aspect_ratio ?? aspectRatio,
         compiledPrompt: payload.data?.compiled_prompt ?? prompt.trim(),
         controls: payload.data?.controls,
-      });
+      };
+      setOutputs((current) => [nextOutput, ...current]);
       setCopyStatus("idle");
+      if (requestWorkflowMode === "two-shot-back-reveal" && shotType === "shot-b") {
+        setWorkflowGroupId(createWorkflowGroupId());
+      }
+      await loadSimpleHistory();
     } catch (generationError) {
       setError(generationError instanceof Error ? generationError.message : "Failed to generate video.");
     } finally {
       setIsGenerating(false);
+      setActiveShot(null);
     }
   }
 
@@ -244,9 +391,9 @@ export default function SimpleVideoStudioPage() {
   }
 
   async function handleCopyVideoUrl() {
-    if (!videoUrl) return;
+    if (!latestOutput?.videoUrl) return;
     try {
-      await navigator.clipboard.writeText(videoUrl);
+      await navigator.clipboard.writeText(latestOutput.videoUrl);
       setCopyStatus("copied");
     } catch {
       setCopyStatus("error");
@@ -254,14 +401,14 @@ export default function SimpleVideoStudioPage() {
   }
 
   async function handleDownloadVideo() {
-    if (!videoUrl) return;
+    if (!latestOutput?.videoUrl) return;
     setIsDownloading(true);
-    const filename = buildDownloadFilename(videoUrl);
+    const filename = buildDownloadFilename(latestOutput.videoUrl);
     try {
-      const isSameOrigin = new URL(videoUrl, window.location.href).origin === window.location.origin;
+      const isSameOrigin = new URL(latestOutput.videoUrl, window.location.href).origin === window.location.origin;
       if (isSameOrigin) {
         const link = document.createElement("a");
-        link.href = videoUrl;
+        link.href = latestOutput.videoUrl;
         link.download = filename;
         link.rel = "noreferrer";
         document.body.append(link);
@@ -270,7 +417,7 @@ export default function SimpleVideoStudioPage() {
         return;
       }
 
-      const response = await fetch(videoUrl);
+      const response = await fetch(latestOutput.videoUrl);
       if (!response.ok) {
         throw new Error("Fetch failed");
       }
@@ -285,7 +432,7 @@ export default function SimpleVideoStudioPage() {
       URL.revokeObjectURL(objectUrl);
     } catch {
       const link = document.createElement("a");
-      link.href = videoUrl;
+      link.href = latestOutput.videoUrl;
       link.download = filename;
       link.target = "_blank";
       link.rel = "noreferrer";
@@ -302,9 +449,11 @@ export default function SimpleVideoStudioPage() {
       ? REFERENCE_SLOTS[pickerTarget.index].label
       : pickerTarget?.kind === "start"
         ? "start"
-        : pickerTarget?.kind === "end"
-          ? "end"
-          : "";
+        : pickerTarget?.kind === "intermediate"
+          ? "intermediate"
+          : pickerTarget?.kind === "end"
+            ? "end"
+            : "";
 
   return (
     <main className="min-h-screen bg-zinc-950 p-6 text-zinc-100">
@@ -313,7 +462,7 @@ export default function SimpleVideoStudioPage() {
           <header className="mb-6 space-y-2">
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Simple Video</p>
             <h1 className="text-3xl font-semibold">Standalone video generator</h1>
-            <p className="text-sm text-zinc-400">Generate a single clip directly from provider APIs, without Studio V2 orchestration.</p>
+            <p className="text-sm text-zinc-400">Generate short clips directly from provider APIs, with a two-shot back reveal workflow for difficult turns.</p>
           </header>
 
           <div className="space-y-4">
@@ -326,6 +475,33 @@ export default function SimpleVideoStudioPage() {
                 placeholder="Describe the motion, subject behavior, and camera movement."
               />
             </label>
+
+            <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+              <p className="text-sm font-medium text-zinc-100">Workflow mode</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setWorkflowMode("single-shot")}
+                  className={`rounded-lg border px-3 py-2 text-sm ${
+                    workflowMode === "single-shot" ? "border-cyan-400/60 bg-cyan-500/15 text-cyan-100" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+                  }`}
+                >
+                  Single Shot
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkflowMode("two-shot-back-reveal")}
+                  className={`rounded-lg border px-3 py-2 text-sm ${
+                    workflowMode === "two-shot-back-reveal" ? "border-cyan-400/60 bg-cyan-500/15 text-cyan-100" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+                  }`}
+                >
+                  Two-Shot Back Reveal
+                </button>
+              </div>
+              {workflowMode === "two-shot-back-reveal" ? (
+                <p className="text-xs text-zinc-400">Use a midpoint anchor to split difficult front-to-back turns into two safer clips.</p>
+              ) : null}
+            </section>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="space-y-2">
@@ -346,10 +522,11 @@ export default function SimpleVideoStudioPage() {
               </label>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className={`grid gap-4 ${workflowMode === "two-shot-back-reveal" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
               {[
                 { key: "start", label: "Start frame (optional)", value: startFrame },
-                { key: "end", label: "End frame (optional)", value: endFrame },
+                ...(workflowMode === "two-shot-back-reveal" ? [{ key: "intermediate", label: "Intermediate Anchor frame (required)", value: intermediateFrame }] : []),
+                { key: "end", label: workflowMode === "two-shot-back-reveal" ? "End frame (required for Shot 2)" : "End frame (optional)", value: endFrame },
               ].map((slot) => (
                 <div key={slot.key} className="space-y-2">
                   <span className="text-sm font-medium text-zinc-200">{slot.label}</span>
@@ -359,7 +536,7 @@ export default function SimpleVideoStudioPage() {
                     <div className="mt-2 flex gap-2">
                       <button
                         type="button"
-                        onClick={() => setPickerTarget({ kind: slot.key as "start" | "end" })}
+                        onClick={() => setPickerTarget({ kind: slot.key as "start" | "intermediate" | "end" })}
                         className="w-full rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
                       >
                         Choose from Image Project
@@ -371,6 +548,9 @@ export default function SimpleVideoStudioPage() {
                             if (slot.key === "start") {
                               setStartFrame(null);
                               setStartFrameAspectRatio(null);
+                            } else if (slot.key === "intermediate") {
+                              setIntermediateFrame(null);
+                              setIntermediateFrameAspectRatio(null);
                             } else {
                               setEndFrame(null);
                               setEndFrameAspectRatio(null);
@@ -386,6 +566,21 @@ export default function SimpleVideoStudioPage() {
                 </div>
               ))}
             </div>
+
+            {workflowMode === "two-shot-back-reveal" ? (
+              <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+                <p className="text-sm font-medium text-zinc-100">Two-shot mapping</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {SHOT_DESCRIPTORS.map((shot) => (
+                    <div key={shot.shotType} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2">
+                      <p className="text-xs font-medium text-zinc-200">{shot.label}: {shot.flowLabel}</p>
+                      <p className="mt-1 text-[11px] text-zinc-400">{shot.helper}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-zinc-500">Tips: use a 3/4 rear intermediate anchor, keep lighting/framing stable, and keep aspect ratios matched.</p>
+              </section>
+            ) : null}
 
             <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
               <div>
@@ -460,6 +655,9 @@ export default function SimpleVideoStudioPage() {
                   </option>
                 ))}
               </select>
+              {workflowMode === "two-shot-back-reveal" ? (
+                <p className="text-xs text-zinc-500">Two-shot mode auto-biases prompts toward slower partial transitions for continuity safety.</p>
+              ) : null}
             </label>
 
             <details className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
@@ -504,32 +702,51 @@ export default function SimpleVideoStudioPage() {
               </div>
             ) : null}
 
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={isGenerating}
-              className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isGenerating ? "Generating..." : "Generate clip"}
-            </button>
+            {workflowMode === "single-shot" ? (
+              <button
+                type="button"
+                onClick={() => void generateShot("single")}
+                disabled={isGenerating}
+                className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isGenerating ? "Generating..." : "Generate clip"}
+              </button>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void generateShot("shot-a")}
+                  disabled={isGenerating}
+                  className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGenerating && activeShot === "shot-a" ? "Generating Shot 1..." : "Generate Shot 1 (Front → Mid)"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void generateShot("shot-b")}
+                  disabled={isGenerating}
+                  className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGenerating && activeShot === "shot-b" ? "Generating Shot 2..." : "Generate Shot 2 (Mid → Back)"}
+                </button>
+              </div>
+            )}
 
             {error ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
           </div>
         </section>
 
-        <aside className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-          <header className="mb-4">
+        <aside className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
+          <header>
             <h2 className="text-lg font-semibold">Output panel</h2>
-            <p className="text-sm text-zinc-400">The latest generated clip appears here.</p>
+            <p className="text-sm text-zinc-400">Latest result and recent simple video history.</p>
           </header>
 
-          {isGenerating ? (
-            <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-300">Generating clip… this can take a minute.</div>
-          ) : null}
+          {isGenerating ? <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-300">Generating clip… this can take a minute.</div> : null}
 
-          {!isGenerating && videoUrl ? (
+          {!isGenerating && latestOutput ? (
             <div className="space-y-3">
-              <video className="w-full rounded-xl border border-zinc-700 bg-black" src={videoUrl} controls playsInline />
+              <video className="w-full rounded-xl border border-zinc-700 bg-black" src={latestOutput.videoUrl} controls playsInline />
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -546,32 +763,68 @@ export default function SimpleVideoStudioPage() {
                 >
                   {copyStatus === "copied" ? "URL copied" : copyStatus === "error" ? "Copy failed" : "Copy video URL"}
                 </button>
-                <a href={videoUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+                <a href={latestOutput.videoUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
                   Open video URL
                 </a>
               </div>
-              {meta ? <p className="text-xs text-zinc-400">{meta.model} · {meta.duration}s · {meta.aspectRatio}</p> : null}
-              {meta?.controls ? (
+              <p className="text-xs text-zinc-400">
+                {latestOutput.model} · {latestOutput.duration}s · {latestOutput.aspectRatio}
+              </p>
+              {latestOutput.controls ? (
                 <div className="flex flex-wrap gap-2 text-[11px] text-zinc-300">
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Preset: {MOTION_PRESET_LABELS[meta.controls.motion_preset ?? "freeform"]}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Refs: {meta.controls.reference_count ?? 0}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Start: {meta.controls.has_start_frame ? "Yes" : "No"}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">End: {meta.controls.has_end_frame ? "Yes" : "No"}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Anchors: {meta.controls.garment_anchor_count ?? 0}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Preset: {MOTION_PRESET_LABELS[latestOutput.controls.motion_preset ?? "freeform"]}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Refs: {latestOutput.controls.reference_count ?? 0}</span>
+                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Mode: {latestOutput.controls.workflow_mode === "two-shot-back-reveal" ? "Two-Shot" : "Single"}</span>
+                  {latestOutput.controls.shot_type === "shot-a" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 1</span> : null}
+                  {latestOutput.controls.shot_type === "shot-b" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 2</span> : null}
                 </div>
               ) : null}
-              {meta?.compiledPrompt ? (
+              {latestOutput.compiledPrompt ? (
                 <details className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
                   <summary className="cursor-pointer text-xs text-zinc-300">Compiled request prompt</summary>
-                  <p className="mt-2 text-xs text-zinc-400">{meta.compiledPrompt}</p>
+                  <p className="mt-2 text-xs text-zinc-400">{latestOutput.compiledPrompt}</p>
                 </details>
               ) : null}
             </div>
           ) : null}
 
-          {!isGenerating && !videoUrl ? (
-            <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-400">No output yet. Generate a clip to populate this panel.</div>
-          ) : null}
+          {!isGenerating && !latestOutput ? <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-400">No output yet. Generate a clip to populate this panel.</div> : null}
+
+          <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-zinc-100">Recent simple history</h3>
+              <button type="button" onClick={() => void loadSimpleHistory()} className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800">
+                Refresh
+              </button>
+            </div>
+            <div className="space-y-2">
+              {historyItems.length ? (
+                historyItems.map((item) => {
+                  const videoUrl = item.asset_url ?? item.url;
+                  if (!videoUrl) return null;
+                  const videoMeta = item.video_meta ?? {};
+                  const workflow = readMetaString(videoMeta, "workflowMode");
+                  const shot = readMetaString(videoMeta, "shotType");
+                  const savedAspectRatio = asValidAspectRatio(readMetaString(videoMeta, "aspectRatio") || "9:16");
+                  const savedDuration = readMetaNumber(videoMeta, "durationSeconds", 6);
+                  return (
+                    <article key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2">
+                      <video className="w-full rounded border border-zinc-800 bg-black" src={videoUrl} controls preload="metadata" playsInline />
+                      <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-zinc-300">
+                        {workflow === "two-shot-back-reveal" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Two-Shot</span> : <span className="rounded-full border border-zinc-700 px-2 py-0.5">Single</span>}
+                        {shot === "shot-a" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 1 · Front → Mid</span> : null}
+                        {shot === "shot-b" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 2 · Mid → Back</span> : null}
+                        <span className="rounded-full border border-zinc-700 px-2 py-0.5">{savedDuration}s</span>
+                        <span className="rounded-full border border-zinc-700 px-2 py-0.5">{savedAspectRatio}</span>
+                      </div>
+                    </article>
+                  );
+                })
+              ) : (
+                <p className="text-xs text-zinc-500">No saved simple-video generations yet.</p>
+              )}
+            </div>
+          </section>
         </aside>
       </div>
 
@@ -579,12 +832,14 @@ export default function SimpleVideoStudioPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
           <div className="w-full max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-zinc-100">
-                Choose {pickerTargetLabel} from Image Project
-              </h2>
+              <h2 className="text-sm font-semibold text-zinc-100">Choose {pickerTargetLabel} from Image Project</h2>
               <div className="flex gap-2">
-                <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Refresh</button>
-                <button type="button" onClick={() => setPickerTarget(null)} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Close</button>
+                <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+                  Refresh
+                </button>
+                <button type="button" onClick={() => setPickerTarget(null)} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+                  Close
+                </button>
               </div>
             </div>
             <div className="max-h-[60vh] overflow-y-auto pr-1">
