@@ -331,7 +331,7 @@ export async function GET() {
       } else if (!providerCapability?.supportsLastFrame) {
         row.continuation_allowed = false;
         row.continuation_block_reason = "Provider does not support extension";
-      } else if (!providerCapability.allowedAspectRatios.includes(runAspectRatio as "16:9" | "9:16")) {
+      } else if (!isStudioAspectRatio(runAspectRatio) || !providerCapability.allowedAspectRatios.includes(runAspectRatio)) {
         row.continuation_allowed = false;
         row.continuation_block_reason = "Resolution/aspect ratio incompatible";
       } else {
@@ -440,7 +440,7 @@ export async function POST(request: Request) {
         const providerCapability = getVideoCapabilityByBackendId(sourceRun.provider_used);
         if (!providerCapability?.supportsLastFrame) return json(400, { success: false, error: "Provider does not support extension" });
         const sourceAspect = String(inheritedSnapshot.aspect_ratio ?? "9:16");
-        if (!providerCapability.allowedAspectRatios.includes(sourceAspect as "16:9" | "9:16")) {
+        if (!isStudioAspectRatio(sourceAspect) || !providerCapability.allowedAspectRatios.includes(sourceAspect)) {
           return json(400, { success: false, error: "Resolution/aspect ratio incompatible" });
         }
 
