@@ -109,12 +109,29 @@ function getPollingConfig() {
   };
 }
 
+function getSdkHttpStatus(sdkHttpResponse: unknown): number | null {
+  if (!sdkHttpResponse || typeof sdkHttpResponse !== "object") {
+    return null;
+  }
+
+  const httpResponse = sdkHttpResponse as { status?: unknown; statusCode?: unknown };
+  if (typeof httpResponse.status === "number") {
+    return httpResponse.status;
+  }
+
+  if (typeof httpResponse.statusCode === "number") {
+    return httpResponse.statusCode;
+  }
+
+  return null;
+}
+
 function summarizeOperation(operation: {
   name?: string;
   done?: boolean;
   error?: Record<string, unknown>;
   response?: unknown;
-  sdkHttpResponse?: { status?: number };
+  sdkHttpResponse?: unknown;
 }) {
   const response = operation.response as Record<string, unknown> | undefined;
   return {
@@ -123,7 +140,7 @@ function summarizeOperation(operation: {
     hasResponse: Boolean(operation.response),
     hasError: Boolean(operation.error),
     error: operation.error ?? null,
-    httpStatus: operation.sdkHttpResponse?.status ?? null,
+    httpStatus: getSdkHttpStatus(operation.sdkHttpResponse),
     generatedVideosLength: Array.isArray(response?.generatedVideos) ? response.generatedVideos.length : 0,
   };
 }
