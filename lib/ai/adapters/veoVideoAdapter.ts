@@ -11,15 +11,19 @@ const SUPPORTED_VEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 type VeoAspectRatio = (typeof SUPPORTED_VEO_ASPECT_RATIOS)[number];
 
 const MAX_REFERENCE_IMAGES = 3;
-const MAX_SAFE_POLLS = 60;
-const POLL_INTERVAL_MS = 5000;
+const DEFAULT_MAX_SAFE_POLLS = 96;
+const DEFAULT_POLL_INTERVAL_MS = 5000;
 
 export type VideoGenerationFailureCode =
   | "no-operation"
   | "operation-not-done"
+  | "operation-error"
   | "response-missing"
+  | "final-artifact-missing"
   | "generatedVideos-empty"
   | "download-failed"
+  | "non-video-output"
+  | "classifier-rejected"
   | "rejected-params"
   | "model-not-found"
   | "unknown";
@@ -86,6 +90,43 @@ type VeoAssetCandidate = {
   mimeType: string | null;
   video: GeneratedVideoLike | null;
 };
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function getPollingConfig() {
+  const pollIntervalMs = parsePositiveInt(process.env.VEO_VIDEO_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS);
+  const maxPolls = parsePositiveInt(process.env.VEO_VIDEO_MAX_POLLS, DEFAULT_MAX_SAFE_POLLS);
+  return {
+    pollIntervalMs,
+    maxPolls,
+    maxWaitMs: pollIntervalMs * maxPolls,
+  };
+}
+
+function summarizeOperation(operation: {
+  name?: string;
+  done?: boolean;
+  error?: Record<string, unknown>;
+  response?: unknown;
+  sdkHttpResponse?: { status?: number };
+}) {
+  const response = operation.response as Record<string, unknown> | undefined;
+  return {
+    operationName: typeof operation.name === "string" ? operation.name : null,
+    done: Boolean(operation.done),
+    hasResponse: Boolean(operation.response),
+    hasError: Boolean(operation.error),
+    error: operation.error ?? null,
+    httpStatus: operation.sdkHttpResponse?.status ?? null,
+    generatedVideosLength: Array.isArray(response?.generatedVideos) ? response.generatedVideos.length : 0,
+  };
+}
 
 function normalizeAssetType(value: unknown): "video" | "image" | "unknown" {
   if (typeof value !== "string") return "unknown";
@@ -415,6 +456,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   }
 
   const ai = new GoogleGenAI({ apiKey });
+  const pollingConfig = getPollingConfig();
   const frameInput = await buildFrameInputs({
     model: input.model,
     firstFrameUrl: input.firstFrameUrl,
@@ -450,17 +492,23 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
 
   let operation;
   try {
-    console.log("[veo-video-adapter] submitting video generation request", {
+    console.log("[veo-video-adapter] request.start", {
       model: input.model,
+      durationSeconds: typeof input.durationSeconds === "number" ? input.durationSeconds : null,
       aspectRatio,
       promptLength: input.prompt.length,
       frameInputDiagnostics: frameInput.diagnostics,
       modelFrameSupport: frameInput.support,
+      polling: pollingConfig,
     });
     operation = await ai.models.generateVideos({
       model: input.model,
       source,
       config,
+    });
+    console.log("[veo-video-adapter] request.initial-response", {
+      ...summarizeOperation(operation),
+      rawBody: operation,
     });
   } catch (error) {
     console.error("[veo-video-adapter] generateVideos request failed", error);
@@ -473,16 +521,23 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     });
   }
 
-  console.log("[veo-video-adapter] provider operation accepted", {
-    done: Boolean(operation.done),
-    hasResponse: Boolean(operation.response),
-  });
+  console.log("[veo-video-adapter] operation.accepted", summarizeOperation(operation));
 
   let pollCount = 0;
-  while (!operation.done && pollCount < MAX_SAFE_POLLS) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  const pollStatuses: Array<Record<string, unknown>> = [];
+  while (!operation.done && pollCount < pollingConfig.maxPolls) {
+    await new Promise((resolve) => setTimeout(resolve, pollingConfig.pollIntervalMs));
     try {
       operation = await ai.operations.getVideosOperation({ operation });
+      const pollSummary = summarizeOperation(operation);
+      pollStatuses.push({
+        pollCount: pollCount + 1,
+        ...pollSummary,
+      });
+      console.log("[veo-video-adapter] polling.tick", {
+        pollCount: pollCount + 1,
+        ...pollSummary,
+      });
     } catch (error) {
       console.error("[veo-video-adapter] getVideosOperation poll failed", {
         pollCount,
@@ -493,34 +548,70 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     pollCount += 1;
   }
 
+  console.log("[veo-video-adapter] polling.complete", {
+    pollCount,
+    finalStatus: summarizeOperation(operation),
+    statusesSeen: pollStatuses.map((entry) => ({
+      pollCount: entry.pollCount,
+      done: entry.done,
+      hasResponse: entry.hasResponse,
+      hasError: entry.hasError,
+    })),
+  });
+
   if (!operation.done) {
-    throw new VideoGenerationOutputError("Video generation timed out before completion.", "operation-not-done", {
+    throw new VideoGenerationOutputError("Provider returned operation id but no final artifact before timeout.", "operation-not-done", {
       requestedModelId: input.model,
       pollCount,
       done: Boolean(operation.done),
       hasResponse: Boolean(operation.response),
       operationName: typeof operation.name === "string" ? operation.name : null,
+      polling: pollingConfig,
+      statusesSeen: pollStatuses,
     });
   }
 
+  if (operation.error) {
+    throw new VideoGenerationOutputError("Provider operation completed with an error before video artifacts were available.", "operation-error", {
+      requestedModelId: input.model,
+      pollCount,
+      operationName: typeof operation.name === "string" ? operation.name : null,
+      providerError: operation.error,
+      hasResponse: Boolean(operation.response),
+      statusesSeen: pollStatuses,
+    });
+  }
+
+  console.log("FINAL PROVIDER PAYLOAD:", JSON.stringify(operation.response ?? null, null, 2));
+
   if (!operation.response) {
-    throw new VideoGenerationOutputError("Video generation completed without a provider response payload.", "response-missing", {
+    throw new VideoGenerationOutputError("Provider completed operation but final payload was empty (missing response object).", "response-missing", {
       requestedModelId: input.model,
       pollCount,
       done: Boolean(operation.done),
       hasResponse: false,
       operationName: typeof operation.name === "string" ? operation.name : null,
+      providerError: operation.error ?? null,
+      statusesSeen: pollStatuses,
     });
   }
 
   const assetCandidates = collectVeoAssetCandidates(operation.response as Record<string, unknown> | undefined);
-  console.log("VEO ASSET CANDIDATES:", assetCandidates.map((asset) => ({
-    index: asset.index,
-    type: asset.type,
-    role: asset.role,
-    hasUrl: Boolean(asset.url),
-    mime: asset.mimeType,
-  })));
+  console.log("[veo-video-adapter] payload.extraction", {
+    checkedFields: [
+      "response.generatedVideos[0].video.downloadUri",
+      "response.generatedVideos[0].video.uri",
+      "response.generatedVideos[*].video",
+      "response.assets[*].url/downloadUri/uri",
+    ],
+    assetCandidates: assetCandidates.map((asset) => ({
+      index: asset.index,
+      type: asset.type,
+      role: asset.role,
+      hasUrl: Boolean(asset.url),
+      mime: asset.mimeType,
+    })),
+  });
 
   const generatedVideo = operation.response?.generatedVideos?.[0]?.video as GeneratedVideoLike | undefined;
   const selectedAssetMeta = generatedVideo
@@ -556,15 +647,39 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
         done: Boolean(operation.done),
         hasResponse: Boolean(operation.response),
         generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
+        candidateTypes: assetCandidates.map((asset) => asset.type),
+        candidateMimes: assetCandidates.map((asset) => asset.mimeType),
         operationName: typeof operation.name === "string" ? operation.name : null,
       },
     );
   }
 
+  const generatedVideoUri = generatedVideo.downloadUri?.trim() || generatedVideo.uri?.trim() || null;
+  if (!generatedVideoUri && !generatedVideo.videoBytes) {
+    throw new VideoGenerationOutputError("Final payload missing video URI.", "final-artifact-missing", {
+      requestedModelId: input.model,
+      operationName: typeof operation.name === "string" ? operation.name : null,
+      pollCount,
+      generatedVideo,
+      checkedFields: ["video.downloadUri", "video.uri", "video.videoBytes"],
+    });
+  }
+
+  const derivedMimeType = generatedVideo.mimeType ?? "video/mp4";
+  if (!derivedMimeType.toLowerCase().startsWith("video/")) {
+    throw new VideoGenerationOutputError("Provider returned non-video output.", "non-video-output", {
+      requestedModelId: input.model,
+      operationName: typeof operation.name === "string" ? operation.name : null,
+      pollCount,
+      mimeType: derivedMimeType,
+      generatedVideo,
+    });
+  }
+
   console.log("[veo-video-adapter] provider response payload summary", {
     pollCount,
     generatedVideosCount: operation.response?.generatedVideos?.length ?? 0,
-    mimeType: generatedVideo.mimeType ?? "video/mp4",
+    mimeType: derivedMimeType,
     outputVideoUri: generatedVideo.uri ?? null,
     outputVideoDownloadUri: generatedVideo.downloadUri ?? null,
     outputVideoFileName:
@@ -584,7 +699,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     diagnostics = resolved.diagnostics;
   } catch (error) {
     throw new VideoGenerationOutputError(
-      "The provider generated a result but the video could not be downloaded.",
+      "Artifact download failed from provider URI.",
       "download-failed",
       {
         requestedModelId: input.model,
@@ -597,7 +712,7 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   console.log("[veo-video-adapter] resolved provider video bytes diagnostics", diagnostics);
 
   if (!bytes) {
-    throw new VideoGenerationOutputError("The provider generated a result but the video could not be downloaded.", "download-failed", {
+    throw new VideoGenerationOutputError("Artifact download failed from provider URI.", "download-failed", {
       requestedModelId: input.model,
       operationName: typeof operation.name === "string" ? operation.name : null,
       pollCount,
@@ -605,9 +720,17 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     });
   }
 
+  console.log("[veo-video-adapter] download.validation", {
+    downloadSucceeded: Boolean(bytes),
+    bytesLength: bytes.length,
+    mimeType: derivedMimeType,
+    classifier: "mime/video-prefix",
+    classifierResult: "accepted",
+  });
+
   return {
     bytes,
-    mimeType: generatedVideo.mimeType ?? "video/mp4",
+    mimeType: derivedMimeType,
     model: input.model,
     rawOutputUri: generatedVideo.uri ?? null,
     providerResponseMeta: {

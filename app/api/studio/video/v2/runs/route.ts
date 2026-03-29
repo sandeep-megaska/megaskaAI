@@ -669,6 +669,13 @@ export async function POST(request: Request) {
     try {
       const selectedAspectRatio = String(runRequest.aspect_ratio ?? plan.aspect_ratio ?? "9:16");
       const requestedDuration = Number(runRequest.duration_seconds ?? plan.duration_seconds ?? 8);
+      console.log("[video-v2] request.start", {
+        runId: insertedRun.id,
+        providerModel: providerInfo.modelSelected,
+        providerBackendId: providerInfo.providerSelected,
+        requestedDuration,
+        selectedAspectRatio,
+      });
       const execution = await runVideoJob({
         backendId: providerInfo.providerSelected,
         prompt: canonicalDirectorPrompt,
@@ -727,6 +734,12 @@ export async function POST(request: Request) {
         mimeType: finalExecution.mimeType,
         url: outputAssetUrl,
       });
+      console.log("[video-v2] payload.extraction", {
+        runId: insertedRun.id,
+        providerResponsePresent: Boolean(finalExecution.providerResponseMeta),
+        outputAssetUrlPresent: Boolean(outputAssetUrl),
+        mimeType: finalExecution.mimeType,
+      });
       if (process.env.NODE_ENV !== "production") {
         console.log("[video-v2] output classification diagnostics", outputClassification);
         console.log("[video-v2] output validation diagnostics", {
@@ -758,6 +771,13 @@ export async function POST(request: Request) {
       if (uploadError) {
         throw new Error(`Video upload failed: ${uploadError.message}`);
       }
+      console.log("[video-v2] persistence.upload", {
+        runId: insertedRun.id,
+        bucket: storageBucket,
+        fileName,
+        bytesLength: finalExecution.bytes.length,
+        uploadSucceeded: true,
+      });
 
       const { data: publicUrlData } = supabase.storage
         .from(storageBucket)
@@ -864,9 +884,10 @@ export async function POST(request: Request) {
       };
 
       if (!outputValidation.valid) {
+        const classifierFailureMessage = `Video artifact rejected by classifier: ${outputValidation.errorMessage ?? "validator rejected output."}`;
         const failMeta = {
           ...successMeta,
-          failure_message: outputValidation.errorMessage,
+          failure_message: classifierFailureMessage,
         };
         const { data: failedRun, error: failedUpdateError } = await supabase
           .from("video_generation_runs")
@@ -881,10 +902,10 @@ export async function POST(request: Request) {
         if (failedUpdateError || !failedRun) {
           return json(201, {
             success: true,
-            data: { ...insertedRun, status: "failed", output_generation_id: outputGeneration.id, run_meta: failMeta, failure_message: outputValidation.errorMessage },
+            data: { ...insertedRun, status: "failed", output_generation_id: outputGeneration.id, run_meta: failMeta, failure_message: classifierFailureMessage },
           });
         }
-        return json(201, { success: true, data: { ...failedRun, failure_message: outputValidation.errorMessage } });
+        return json(201, { success: true, data: { ...failedRun, failure_message: classifierFailureMessage } });
       }
 
       const { data: updatedRun, error: updateError } = await supabase
