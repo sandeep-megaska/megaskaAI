@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { Trash2 } from "lucide-react";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
 import {
   createEmptyGarmentAnchors,
@@ -193,6 +194,7 @@ export default function SimpleVideoStudioPage() {
   const latestOutput = outputs[0] ?? null;
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isDeletingHistoryId, setIsDeletingHistoryId] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -517,6 +519,27 @@ export default function SimpleVideoStudioPage() {
       link.remove();
     } finally {
       setIsDownloading(false);
+    }
+  }
+
+  async function handleDeleteHistoryItem(item: PersistedSimpleVideoItem) {
+    if (isDeletingHistoryId) return;
+    const confirmed = window.confirm("Delete this generated video?");
+    if (!confirmed) return;
+
+    try {
+      setIsDeletingHistoryId(item.id);
+      const response = await fetch(`/api/generations/${item.id}`, { method: "DELETE" });
+      const payload = (await response.json()) as { success?: boolean; error?: string };
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error ?? "Failed to delete generated video.");
+      }
+      setHistoryItems((current) => current.filter((entry) => entry.id !== item.id));
+      setOutputs((current) => current.filter((entry) => entry.generationId !== item.id));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete generated video.");
+    } finally {
+      setIsDeletingHistoryId(null);
     }
   }
 
@@ -917,6 +940,17 @@ export default function SimpleVideoStudioPage() {
                   return (
                     <article key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2">
                       <video className="w-full rounded border border-zinc-800 bg-black" src={videoUrl} controls preload="metadata" playsInline />
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteHistoryItem(item)}
+                          disabled={isDeletingHistoryId === item.id}
+                          className="inline-flex items-center gap-1 rounded border border-rose-500/40 px-2 py-1 text-[10px] text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          {isDeletingHistoryId === item.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
                       <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-zinc-300">
                         {workflow === "two-shot-back-reveal" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Two-Shot</span> : <span className="rounded-full border border-zinc-700 px-2 py-0.5">Single</span>}
                         {shot === "shot-a" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 1 · Front → Mid</span> : null}

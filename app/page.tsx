@@ -558,15 +558,16 @@ function HomeContent() {
   }
 
   async function handleDeleteGeneration(item: GenerationItem) {
-    if (!supabase || isDeletingId) return;
+    if (isDeletingId) return;
     const confirmed = window.confirm("Delete this generated image?");
     if (!confirmed) return;
 
     try {
       setIsDeletingId(item.id);
-      const { error: deleteError } = await supabase.from("generations").delete().eq("id", item.id);
-      if (deleteError) {
-        throw deleteError;
+      const response = await fetch(`/api/generations/${item.id}`, { method: "DELETE" });
+      const payload = (await response.json()) as { success?: boolean; error?: string };
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error ?? "Delete failed.");
       }
       setGalleryItems((current) => current.filter((entry) => entry.id !== item.id));
       setHasMoreGalleryItems(true);
