@@ -111,17 +111,25 @@ function ratioToFrame(ratio: string | undefined): "square" | "portrait" | "lands
   return width > height ? "landscape" : "portrait";
 }
 
-const quickActions = [
-  "Back View",
-  "Side View",
-  "3/4 View",
-  "Detail Upper",
-  "Detail Lower",
-  "Seated Pose",
-  "Walking Pose",
-  "Poolside Luxury",
-  "Resort Editorial",
-  "Indoor Premium",
+type QuickAction = {
+  label: string;
+  /** Text appended to the prompt. */
+  direction: string;
+  /** Scene actions are the only ones that unlock the setting. */
+  kind: "camera" | "pose" | "scene";
+};
+
+const quickActions: QuickAction[] = [
+  { label: "Back view", direction: "Camera: back view", kind: "camera" },
+  { label: "Side view", direction: "Camera: side profile view", kind: "camera" },
+  { label: "3/4 view", direction: "Camera: three-quarter view", kind: "camera" },
+  { label: "Upper detail", direction: "Camera: close crop on the upper garment", kind: "camera" },
+  { label: "Lower detail", direction: "Camera: close crop on the lower garment", kind: "camera" },
+  { label: "Seated", direction: "Pose: seated", kind: "pose" },
+  { label: "Walking", direction: "Pose: mid-stride walking", kind: "pose" },
+  { label: "Poolside", direction: "New setting: poolside luxury", kind: "scene" },
+  { label: "Resort", direction: "New setting: resort editorial", kind: "scene" },
+  { label: "Indoors", direction: "New setting: indoor premium", kind: "scene" },
 ];
 
 function HomeContent() {
@@ -161,6 +169,7 @@ function HomeContent() {
   const [isSavingSkuTruth, setIsSavingSkuTruth] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"garment" | "model" | null>(null);
   const [pendingDelete, setPendingDelete] = useState<GenerationItem | null>(null);
+  const [preserveScene, setPreserveScene] = useState(true);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -352,7 +361,7 @@ function HomeContent() {
     };
     }
 
-    const wrappedPrompt = buildMoreViewsPrompt({ userPrompt: prompt });
+    const wrappedPrompt = buildMoreViewsPrompt({ userPrompt: prompt, preserveScene });
     const referenceUrls = [
       ...(masterState.selectedMasterUrl ? [masterState.selectedMasterUrl] : []),
       ...garmentReferenceUrls,
@@ -589,11 +598,17 @@ function HomeContent() {
     }
   }
 
-  function applyQuickAction(action: string) {
+  function applyQuickAction(action: QuickAction) {
+    // Camera and pose directions are appended on their own line so they read as
+    // instructions rather than as extra clauses in the scene description — the
+    // latter is what made "Side View" behave like a fresh prompt.
     setPrompt((current) => {
-      if (!current.trim()) return action;
-      return `${current.trim()}, ${action}`;
+      const trimmed = current.trim();
+      if (!trimmed) return action.direction;
+      return `${trimmed}\n${action.direction}`;
     });
+
+    if (action.kind === "scene") setPreserveScene(false);
   }
 
   function selectAsMaster(item: StudioResultItem) {
@@ -793,15 +808,34 @@ function HomeContent() {
                 <div className="flex flex-wrap gap-1.5">
                   {quickActions.map((action) => (
                     <button
-                      key={action}
+                      key={action.label}
                       type="button"
                       onClick={() => applyQuickAction(action)}
                       className="rounded-lg border border-line px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:border-accent/50 hover:text-ink"
                     >
-                      + {action}
+                      + {action.label}
                     </button>
                   ))}
                 </div>
+
+                {/* Without this the model treats the background as fair game:
+                    a shot built around a specific prop would come back with the
+                    prop recoloured even though the garment was perfect. */}
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-line bg-well p-3">
+                  <input
+                    type="checkbox"
+                    checked={preserveScene}
+                    onChange={(event) => setPreserveScene(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium text-ink">Keep the same scene</span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-ink-3">
+                      Locks the location, props, vehicles and their colours to the master image. Only the camera and
+                      pose change. Turn this off to move the same look to a new setting.
+                    </span>
+                  </span>
+                </label>
               </div>
             ) : null}
           </Card>
