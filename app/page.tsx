@@ -4,8 +4,34 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Sparkles, Trash2, X } from "lucide-react";
+import {
+  Anchor,
+  ArrowRight,
+  BadgeCheck,
+  Check,
+  Crown,
+  FileText,
+  Layers,
+  Sparkles,
+  Trash2,
+  Video,
+  Wand2,
+  X,
+} from "lucide-react";
 import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
+import ActionMenu from "@/components/ui/ActionMenu";
+import Alert from "@/components/ui/Alert";
+import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import DropZone from "@/components/ui/DropZone";
+import { SelectField, TextAreaField, TextField } from "@/components/ui/Field";
+import MediaFrame from "@/components/ui/MediaFrame";
+import Modal from "@/components/ui/Modal";
+import PageShell from "@/components/ui/PageShell";
+import SegmentedControl from "@/components/ui/SegmentedControl";
+import { Badge, Card, EmptyState, SectionHeading, Skeleton, Well } from "@/components/ui/Surface";
+import { revealResults } from "@/components/ui/revealResults";
+import { cn } from "@/lib/cn";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { SKU_TRUTH_ROLES, type SkuTruthRole } from "@/lib/video/v2/skuTruth/types";
@@ -76,6 +102,16 @@ type SelectedMaster = {
   selectedMasterMetadata: Record<string, unknown> | null;
 };
 
+/** Map a studio aspect ratio onto the closest MediaFrame shape so gallery
+ *  thumbnails stop cropping portrait generations into a 16:9 letterbox. */
+function ratioToFrame(ratio: string | undefined): "square" | "portrait" | "landscape" {
+  if (!ratio) return "square";
+  const [width, height] = ratio.split(":").map(Number);
+  if (!width || !height) return "square";
+  if (width === height) return "square";
+  return width > height ? "landscape" : "portrait";
+}
+
 const quickActions = [
   "Back View",
   "Side View",
@@ -124,6 +160,8 @@ function HomeContent() {
   const [sentToVideoImages, setSentToVideoImages] = useState<StagedImageAsset[]>([]);
   const [skuTruthDialog, setSkuTruthDialog] = useState<SkuTruthDialogState | null>(null);
   const [isSavingSkuTruth, setIsSavingSkuTruth] = useState(false);
+  const [uploadingKind, setUploadingKind] = useState<"garment" | "model" | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<GenerationItem | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -210,19 +248,6 @@ function HomeContent() {
   }, []);
 
   useEffect(() => {
-    if (!promptDialogItem) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setPromptDialogItem(null);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [promptDialogItem]);
-
-  useEffect(() => {
     setSelectedReferenceImages(getStagedImageReferences());
     setSelectedAnchorImages(getStagedVideoAnchors());
     setSentToVideoImages(getIncomingVideoAssets());
@@ -266,24 +291,44 @@ function HomeContent() {
   }, [searchParams]);
 
   async function uploadFiles(files: FileList | null, kind: "garment" | "model") {
-    if (!files?.length) return;
-    const uploaded: string[] = [];
-    for (const file of Array.from(files)) {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: form });
-      const json = await res.json();
-      if (res.ok && json.public_url) uploaded.push(json.public_url);
+    if (!files?.length || uploadingKind) return;
+
+    setUploadingKind(kind);
+    setError(null);
+
+    try {
+      const uploaded: string[] = [];
+      let failures = 0;
+
+      for (const file of Array.from(files)) {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch("/api/upload", { method: "POST", body: form });
+        const json = await res.json();
+        if (res.ok && json.public_url) uploaded.push(json.public_url);
+        else failures += 1;
+      }
+
+      // A silent no-op used to be the only signal that an upload had failed.
+      if (failures) {
+        setError(
+          failures === files.length
+            ? "None of those files could be uploaded. Check the file type and size, then try again."
+            : `${failures} of ${files.length} files could not be uploaded.`,
+        );
+      }
+
+      if (!uploaded.length) return;
+
+      if (kind === "garment") {
+        setGarmentReferenceUrls((current) => [...current, ...uploaded]);
+        return;
+      }
+
+      setModelReferenceUrls((current) => [...current, ...uploaded]);
+    } finally {
+      setUploadingKind(null);
     }
-
-    if (!uploaded.length) return;
-
-    if (kind === "garment") {
-      setGarmentReferenceUrls((current) => [...current, ...uploaded]);
-      return;
-    }
-
-    setModelReferenceUrls((current) => [...current, ...uploaded]);
   }
 
   function buildRequestForMode() {
@@ -343,19 +388,25 @@ function HomeContent() {
   function handleUseAsReference(item: GenerationItem) {
     const mapped = mapGenerationToStagedAsset(item);
     if (!mapped) return;
-    setSelectedReferenceImages(stageImageReference(mapped));
+    const staged = stageImageReference(mapped);
+    setSelectedReferenceImages(staged);
+    setHandoffNotice(`Added to references. ${staged.length} gallery reference${staged.length === 1 ? "" : "s"} in use.`);
   }
 
   function handleUseAsAnchor(item: GenerationItem) {
     const mapped = mapGenerationToStagedAsset(item);
     if (!mapped) return;
-    setSelectedAnchorImages(stageVideoAnchorCandidate(mapped));
+    const staged = stageVideoAnchorCandidate(mapped);
+    setSelectedAnchorImages(staged);
+    setHandoffNotice(`Staged as a video anchor. ${staged.length} anchor${staged.length === 1 ? "" : "s"} ready.`);
   }
 
   function handleSendToVideo(item: GenerationItem) {
     const mapped = mapGenerationToStagedAsset(item);
     if (!mapped) return;
-    setSentToVideoImages(sendAssetToVideoProject(mapped));
+    const sent = sendAssetToVideoProject(mapped);
+    setSentToVideoImages(sent);
+    setHandoffNotice(`Sent to the Video Project. ${sent.length} image${sent.length === 1 ? "" : "s"} waiting there.`);
   }
 
   function suggestSkuRole(item: GenerationItem): string | null {
@@ -530,6 +581,7 @@ function HomeContent() {
       setResults((current) => [...generatedItems, ...current]);
       setGalleryPage(0);
       await loadGallery(0, true);
+      revealResults("session-results");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Generation failed.");
     } finally {
@@ -559,8 +611,6 @@ function HomeContent() {
 
   async function handleDeleteGeneration(item: GenerationItem) {
     if (isDeletingId) return;
-    const confirmed = window.confirm("Delete this generated image?");
-    if (!confirmed) return;
 
     try {
       setIsDeletingId(item.id);
@@ -586,6 +636,7 @@ function HomeContent() {
       setError(deleteError instanceof Error ? deleteError.message : "Delete failed.");
     } finally {
       setIsDeletingId(null);
+      setPendingDelete(null);
     }
   }
 
@@ -599,261 +650,457 @@ function HomeContent() {
     }
   }
 
+  const activeResults = [...derivedFromSelectedMaster, ...allOtherResults];
+  const referenceTotal =
+    garmentReferenceUrls.length + modelReferenceUrls.length + selectedReferenceImages.length;
+  const generateDisabledReason = !backendId
+    ? "Loading available models…"
+    : workflowMode === "more-views" && !canGenerateMoreViews
+      ? "Select a master image first."
+      : null;
+
   return (
-    <main className="min-h-screen bg-zinc-950 px-6 py-10 text-zinc-100">
-      <div className="mx-auto max-w-6xl space-y-8">
-        <section className="rounded-xl border border-white/10 bg-zinc-900/50 p-6 space-y-6">
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-indigo-300">Studio Project</p>
-                <h1 className="text-2xl font-semibold text-white">Image Project</h1>
-                <p className="text-sm text-zinc-400">Generate master candidates, select the strongest result as master, and expand into more views.</p>
-              </div>
-              <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
-                <Link href="/" className="rounded-md bg-indigo-500 px-4 py-2 text-sm text-white">Image Project</Link>
-              </div>
+    <PageShell
+      accent="violet"
+      eyebrow="Studio Project"
+      title="Image Project"
+      description="Generate master candidates, promote the strongest one to master, then expand it into more views."
+      headerAction={
+        <Link
+          href="/video/simple"
+          className="inline-flex h-10 items-center gap-2 rounded-xl border border-line-strong px-3.5 text-sm font-medium text-ink-2 transition-colors hover:border-accent/50 hover:text-ink"
+        >
+          <Video className="h-4 w-4" aria-hidden />
+          Video Project
+          <ArrowRight className="h-4 w-4" aria-hidden />
+        </Link>
+      }
+      rail={
+        <div className="space-y-4">
+          {/* Step 1 — what are we making? Everything below reacts to this. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading
+              step={1}
+              title="Workflow"
+              description={
+                workflowMode === "master-candidates"
+                  ? "Create 3–4 strong front-view candidates from your references."
+                  : "Use the master image as an anchor for back, side, detail or lifestyle variations."
+              }
+            />
+            <SegmentedControl
+              label="Studio workflow"
+              value={workflowMode}
+              columns={1}
+              onChange={(next) => setWorkflowMode(next)}
+              options={[
+                {
+                  value: "master-candidates",
+                  label: "Generate master candidates",
+                  description: "Start here. Produces several options to choose from.",
+                },
+                {
+                  value: "more-views",
+                  label: "Generate more views",
+                  description: "Expand your chosen master into other angles.",
+                  disabled: !canGenerateMoreViews,
+                  disabledReason: "Select a generated candidate as master first.",
+                },
+              ]}
+            />
+
+            {masterState.selectedMasterUrl ? (
+              <Well className="flex items-center gap-3 p-2.5">
+                <MediaFrame
+                  src={masterState.selectedMasterUrl}
+                  alt="Selected master image"
+                  ratio="square"
+                  className="h-14 w-14 shrink-0 rounded-lg"
+                />
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-accent">Master image</p>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ink-3">
+                    Anchors every &ldquo;more views&rdquo; generation.
+                  </p>
+                </div>
+              </Well>
+            ) : null}
+          </Card>
+
+          {/* Step 2 — the prompt, given the most room of any control. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading step={2} title="Prompt" />
+
+            <TextAreaField
+              label="Describe the shot"
+              hint="Subject, wardrobe, setting, lighting and camera framing."
+              value={prompt}
+              maxLength={2000}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={
+                workflowMode === "master-candidates"
+                  ? "Premium front-view swimwear campaign shot, natural daylight, sand backdrop…"
+                  : "Back view, side angle, detail shot, poolside luxury…"
+              }
+            />
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={handleGeneratePrompt}
+                loading={isBuildingPrompt}
+                disabled={!prompt.trim()}
+                iconLeft={<Wand2 className="h-3.5 w-3.5" />}
+              >
+                Refine with Prompt Builder
+              </Button>
+              {promptBuilderResult ? (
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge
+                    tone={
+                      promptBuilderResult.riskLevel === "high"
+                        ? "danger"
+                        : promptBuilderResult.riskLevel === "medium"
+                          ? "warning"
+                          : "success"
+                    }
+                  >
+                    {promptBuilderResult.riskLevel} risk
+                  </Badge>
+                  <Badge>{promptBuilderResult.recommendedMode.replace("_", " ")}</Badge>
+                </div>
+              ) : null}
             </div>
 
-            <p className="text-sm font-medium text-zinc-300">Studio Workflow</p>
-            <div className="inline-flex rounded-lg border border-white/10 bg-zinc-950/70 p-1">
-              <button type="button" onClick={() => setWorkflowMode("master-candidates")} className={`rounded-md px-4 py-2 text-sm ${workflowMode === "master-candidates" ? "bg-indigo-500 text-white" : "text-zinc-300"}`}>
-                Generate Master Candidates
-              </button>
-              <button
-                type="button"
-                disabled={!canGenerateMoreViews}
-                onClick={() => canGenerateMoreViews && setWorkflowMode("more-views")}
-                className={`rounded-md px-4 py-2 text-sm ${workflowMode === "more-views" ? "bg-indigo-500 text-white" : "text-zinc-300"} disabled:opacity-40`}
-              >
-                Generate More Views
-              </button>
-            </div>
-            {!canGenerateMoreViews && <p className="text-xs text-zinc-400">Select a generated candidate as master before generating more views.</p>}
-            <p className="text-xs text-zinc-400">
-              {workflowMode === "master-candidates"
-                ? "Create 3–4 strong front-view candidates from garment and model references."
-                : "Use the selected master image as the anchor to generate back, side, detail, or lifestyle variations with prompt-based control."}
-            </p>
-            {handoffNotice ? (
-              <div className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-                {handoffNotice}
+            {promptBuilderInlineError ? (
+              <Alert tone="warning" onDismiss={() => setPromptBuilderInlineError(null)}>
+                {promptBuilderInlineError}
+              </Alert>
+            ) : null}
+
+            {promptBuilderResult?.negativeConstraints?.length ? (
+              <Well className="p-3">
+                <p className="text-xs font-medium text-ink-2">Negative constraints</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
+                  {promptBuilderResult.negativeConstraints.join(" · ")}
+                </p>
+              </Well>
+            ) : null}
+
+            {workflowMode === "more-views" ? (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-ink-2">Quick additions</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {quickActions.map((action) => (
+                    <button
+                      key={action}
+                      type="button"
+                      onClick={() => applyQuickAction(action)}
+                      className="rounded-lg border border-line px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:border-accent/50 hover:text-ink"
+                    >
+                      + {action}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
-          </div>
+          </Card>
 
-          {masterState.selectedMasterUrl && (
-            <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-3">
-              <p className="text-sm font-medium text-indigo-200">Master Image</p>
-              <div className="mt-2 flex items-center gap-3">
-                <img src={masterState.selectedMasterUrl} alt="Selected master" className="h-24 w-24 rounded-md object-cover" />
-                <p className="text-xs text-zinc-300">This image is the primary anchor for Generate More Views.</p>
-              </div>
-            </div>
-          )}
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="rounded-lg border border-white/10 bg-zinc-950/40 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-medium text-zinc-200">Selected References ({selectedReferenceImages.length})</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearStagedImageReferences();
-                    setSelectedReferenceImages([]);
-                  }}
-                  className="text-[11px] text-zinc-400 hover:text-zinc-200"
-                >
-                  Clear
-                </button>
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {selectedReferenceImages.map((item) => (
-                  <div key={`reference-${item.id}`} className="relative h-14 w-14 shrink-0 overflow-hidden rounded border border-white/15">
-                    <img src={item.url} alt={item.prompt} className="h-full w-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => setSelectedReferenceImages(removeStagedImageReference(item.id))}
-                      className="absolute right-0 top-0 rounded-bl bg-black/60 px-1 text-[10px]"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                {!selectedReferenceImages.length ? <p className="text-xs text-zinc-500">Use “Use as Reference” on any gallery image.</p> : null}
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-white/10 bg-zinc-950/40 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-medium text-zinc-200">Video Bridge · Anchors {selectedAnchorImages.length} · Sent {sentToVideoImages.length}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearStagedVideoAnchors();
-                    setSelectedAnchorImages([]);
-                  }}
-                  className="text-[11px] text-zinc-400 hover:text-zinc-200"
-                >
-                  Clear Anchors
-                </button>
-              </div>
-              <p className="text-xs text-zinc-500">Use “Use as Anchor” or “Send to Video Project” on gallery cards. Open Video Project to assign slots directly.</p>
-            </div>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={workflowMode === "master-candidates" ? "Premium front-view swimwear campaign shot..." : "Back view, side angle, detail shot, poolside luxury..."}
-              className="h-28 w-full rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm md:col-span-2"
+          {/* Step 3 — references, with real previews instead of a bare file input. */}
+          <Card className="space-y-4 p-4">
+            <SectionHeading
+              step={3}
+              title="References"
+              description="Optional, but they are what keep the garment and the model consistent."
+              action={referenceTotal ? <Badge tone="accent">{referenceTotal}</Badge> : null}
             />
-            <button
-              type="button"
-              onClick={handleGeneratePrompt}
-              disabled={isBuildingPrompt || !prompt.trim()}
-              className="rounded-lg border border-indigo-300/50 bg-indigo-500/10 px-4 py-2 text-sm font-medium text-indigo-100 hover:bg-indigo-500/20 disabled:opacity-50"
-            >
-              {isBuildingPrompt ? "Generating Prompt..." : "Generate Prompt"}
-            </button>
-            <div className="rounded-lg border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
-              {promptBuilderResult
-                ? `Risk: ${promptBuilderResult.riskLevel} · Recommended mode: ${promptBuilderResult.recommendedMode}`
-                : "Prompt Builder will suggest cleaner provider-safe phrasing."}
-            </div>
-            {promptBuilderInlineError ? <p className="md:col-span-2 text-xs text-rose-300">{promptBuilderInlineError}</p> : null}
-            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "garment")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.target.files, "model")} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm" />
-          </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            <select
+            <DropZone
+              label="Garment references"
+              hint="Flat lays or on-body shots of the product itself."
+              urls={garmentReferenceUrls}
+              uploading={uploadingKind === "garment"}
+              onFiles={(files) => void uploadFiles(files, "garment")}
+              onRemove={(url) => setGarmentReferenceUrls((current) => current.filter((entry) => entry !== url))}
+            />
+
+            <DropZone
+              label="Model references"
+              hint="Face, body and posing references for identity continuity."
+              urls={modelReferenceUrls}
+              uploading={uploadingKind === "model"}
+              onFiles={(files) => void uploadFiles(files, "model")}
+              onRemove={(url) => setModelReferenceUrls((current) => current.filter((entry) => entry !== url))}
+            />
+
+            {selectedAnchorImages.length || sentToVideoImages.length ? (
+              <Well className="space-y-2 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-ink-2">Staged for the Video Project</p>
+                    <p className="mt-0.5 text-[11px] leading-snug text-ink-3">
+                      {selectedAnchorImages.length} anchor{selectedAnchorImages.length === 1 ? "" : "s"} ·{" "}
+                      {sentToVideoImages.length} sent
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearStagedVideoAnchors();
+                      setSelectedAnchorImages([]);
+                    }}
+                    className="shrink-0 text-xs text-ink-3 transition-colors hover:text-ink"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <Link
+                  href="/video/simple"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-accent transition-opacity hover:opacity-80"
+                >
+                  Open Video Project
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                </Link>
+              </Well>
+            ) : null}
+
+            {selectedReferenceImages.length ? (
+              <div className="space-y-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm font-medium text-ink">From your gallery</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearStagedImageReferences();
+                      setSelectedReferenceImages([]);
+                    }}
+                    className="text-xs text-ink-3 transition-colors hover:text-ink"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                <ul className="flex flex-wrap gap-2">
+                  {selectedReferenceImages.map((item) => (
+                    <li key={`reference-${item.id}`} className="relative">
+                      <MediaFrame
+                        src={item.url}
+                        alt={item.prompt}
+                        ratio="square"
+                        className="h-16 w-16 rounded-lg border border-line"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReferenceImages(removeStagedImageReference(item.id))}
+                        aria-label="Remove gallery reference"
+                        className="absolute -right-1.5 -top-1.5 rounded-full border border-line-strong bg-raised p-1 text-ink-2 transition-colors hover:border-danger/60 hover:text-danger"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="text-xs leading-relaxed text-ink-3">
+                Tip: use <span className="text-ink-2">Use as reference</span> on any gallery image to add it here.
+              </p>
+            )}
+          </Card>
+
+          {/* Step 4 — output settings, the least-often-changed group, so last. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading step={4} title="Output" />
+
+            <SelectField
+              label="Aspect ratio"
+              hint="Pick the format for where the image will run."
               value={aspectRatio}
               onChange={(event) => setAspectRatio(event.target.value as StudioAspectRatio)}
-              className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"
             >
               {STUDIO_ASPECT_RATIO_OPTIONS.map((option) => (
                 <option key={option.id} value={option.ratio}>
                   {option.label} — {option.ratio}
                 </option>
               ))}
-            </select>
-            <select value={backendId} onChange={(event) => setBackendId(event.target.value)} className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm">
-              {geminiImageBackends.map((backend) => (
-                <option key={backend.id} value={backend.id}>
-                  {backend.name}
-                </option>
-              ))}
-            </select>
-            <select
+            </SelectField>
+
+            <SelectField
+              label="Model"
+              value={backendId}
+              onChange={(event) => setBackendId(event.target.value)}
+              disabled={!geminiImageBackends.length}
+            >
+              {geminiImageBackends.length ? (
+                geminiImageBackends.map((backend) => (
+                  <option key={backend.id} value={backend.id}>
+                    {backend.name}
+                  </option>
+                ))
+              ) : (
+                <option value="">Loading models…</option>
+              )}
+            </SelectField>
+
+            <SelectField
+              label="Variations"
+              hint="More variations cost more but give you a better pick."
               value={outputCount}
               onChange={(event) => setOutputCount(Number(event.target.value))}
-              className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-sm"
             >
               {workflowMode === "master-candidates" ? (
                 <>
-                  <option value={4}>4 outputs (default)</option>
-                  <option value={3}>3 outputs</option>
+                  <option value={4}>4 images (recommended)</option>
+                  <option value={3}>3 images</option>
                 </>
               ) : (
                 <>
-                  <option value={1}>1 output (default)</option>
-                  <option value={2}>2 outputs</option>
+                  <option value={1}>1 image (recommended)</option>
+                  <option value={2}>2 images</option>
                 </>
               )}
-            </select>
-          </div>
+            </SelectField>
+          </Card>
 
-          <p className="text-xs text-zinc-400">Choose the output format best suited for Instagram, ads, catalog, or editorial use.</p>
-
-          {workflowMode === "more-views" && (
-            <div className="flex flex-wrap gap-2">
-              {quickActions.map((action) => (
-                <button key={action} type="button" onClick={() => applyQuickAction(action)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
-                  {action}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <p className="text-xs text-zinc-400">Garment refs: {garmentReferenceUrls.length} · Model refs: {modelReferenceUrls.length}</p>
-
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={isGenerating || !backendId || (workflowMode === "more-views" && !canGenerateMoreViews)}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            <Sparkles className="h-4 w-4" />
-            {isGenerating ? "Generating..." : workflowMode === "master-candidates" ? "Generate Master Candidates" : "Generate More Views"}
-          </button>
-
-          {promptBuilderResult?.negativeConstraints?.length ? (
-            <div className="rounded-lg border border-white/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
-              <p className="font-medium text-zinc-200">Negative constraints</p>
-              <p className="mt-1">{promptBuilderResult.negativeConstraints.join(" · ")}</p>
-            </div>
+          {error ? (
+            <Alert tone="danger" title="Generation failed" onDismiss={() => setError(null)}>
+              {error}
+            </Alert>
           ) : null}
 
-          {error && <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
-        </section>
+          {/* The primary action stays reachable instead of sitting below ten
+              controls the way it used to. */}
+          <div className="-mx-1 px-1 pb-1 pt-1 xl:sticky xl:bottom-0 xl:bg-gradient-to-t xl:from-canvas xl:from-75% xl:to-transparent xl:pb-2 xl:pt-8">
+            <Button
+              variant="primary"
+              size="lg"
+              block
+              onClick={handleGenerate}
+              loading={isGenerating}
+              disabled={Boolean(generateDisabledReason)}
+              iconLeft={<Sparkles className="h-4 w-4" />}
+            >
+              {isGenerating
+                ? "Generating…"
+                : workflowMode === "master-candidates"
+                  ? `Generate ${outputCount} candidates`
+                  : `Generate ${outputCount === 1 ? "view" : `${outputCount} views`}`}
+            </Button>
+            {generateDisabledReason ? (
+              <p className="mt-1.5 text-center text-[11px] text-ink-3">{generateDisabledReason}</p>
+            ) : null}
+          </div>
+        </div>
+      }
+    >
+      {handoffNotice ? (
+        <Alert tone="success" onDismiss={() => setHandoffNotice(null)}>
+          {handoffNotice}
+        </Alert>
+      ) : null}
 
-        <section className="space-y-4">
-          <h2 className="text-xl font-semibold">Studio Results</h2>
-          {selectedMasterId && (
-            <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-3 text-xs text-indigo-100">
-              Derived views for the selected master are grouped first for iterative branching.
-            </div>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[...derivedFromSelectedMaster, ...allOtherResults].map((item) => (
-              <article key={`${item.workflowMode}-${item.id}`} className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950/60">
-                <div className="aspect-square overflow-hidden bg-zinc-900">
-                  <img src={item.url} alt={item.prompt} className="h-full w-full object-cover" />
-                </div>
-                <div className="space-y-2 p-3">
-                  <p className="text-xs text-zinc-400">
-                    {item.workflowMode === "master-candidates" ? "Master Candidate" : "More Views"}
-                    {item.workflowMode === "more-views" && item.masterGenerationId === selectedMasterId ? " · Derived from current master" : ""}
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => selectAsMaster(item)}
-                      className={`rounded-md px-3 py-2 text-xs ${masterState.selectedMasterGenerationId === item.id ? "bg-indigo-500 text-white" : "border border-white/15"}`}
-                    >
-                      {masterState.selectedMasterGenerationId === item.id ? "Selected Master" : "Use as Master"}
-                    </button>
-                    <DownloadAssetButton url={item.url} filenamePrefix={`studio-result-${item.id}`} label="Download" />
-                  </div>
-                </div>
-              </article>
+      <section aria-labelledby="session-results" className="space-y-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <h2 id="session-results" className="text-lg font-semibold tracking-tight text-ink">
+            This session
+          </h2>
+          {activeResults.length ? (
+            <span className="text-xs text-ink-3">{activeResults.length} generated</span>
+          ) : null}
+        </div>
+
+        {isGenerating ? (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {Array.from({ length: outputCount }).map((_, index) => (
+              <Skeleton key={index} className="aspect-square" />
             ))}
           </div>
-        </section>
+        ) : activeResults.length ? (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {activeResults.map((item) => {
+              const isMaster = masterState.selectedMasterGenerationId === item.id;
+              return (
+                <Card
+                  key={`${item.workflowMode}-${item.id}`}
+                  className={cn("overflow-hidden transition-colors", isMaster && "border-accent/60")}
+                >
+                  <MediaFrame src={item.url} alt={item.prompt} ratio={ratioToFrame(aspectRatio)} />
+                  <div className="space-y-2.5 p-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={item.workflowMode === "master-candidates" ? "neutral" : "accent"}>
+                        {item.workflowMode === "master-candidates" ? "Candidate" : "More views"}
+                      </Badge>
+                      {item.workflowMode === "more-views" && item.masterGenerationId === selectedMasterId ? (
+                        <Badge tone="accent">From current master</Badge>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant={isMaster ? "primary" : "secondary"}
+                        onClick={() => selectAsMaster(item)}
+                        iconLeft={isMaster ? <Check className="h-3.5 w-3.5" /> : <Crown className="h-3.5 w-3.5" />}
+                        className="flex-1"
+                      >
+                        {isMaster ? "Master" : "Use as master"}
+                      </Button>
+                      <DownloadAssetButton url={item.url} filenamePrefix={`studio-result-${item.id}`} label="Save" />
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<Sparkles className="h-6 w-6" />}
+            title="Nothing generated yet"
+            description="Write a prompt, add a reference or two, then generate your first set of master candidates."
+          />
+        )}
+      </section>
 
-        <section className="space-y-4">
-          <h2 className="text-xl font-semibold">Recent Gallery</h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <section aria-labelledby="gallery" className="space-y-3">
+        <h2 id="gallery" className="text-lg font-semibold tracking-tight text-ink">
+          Gallery
+        </h2>
+
+        {galleryItems.length ? (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {galleryItems.map((item) => {
               const src = item.asset_url || item.url;
               const workflow = item.overlay_json?.["studioWorkflowMode"];
-              const galleryMasterGenerationId = (item.overlay_json?.["masterGenerationId"] as string | undefined) ?? null;
+              const galleryMasterGenerationId =
+                (item.overlay_json?.["masterGenerationId"] as string | undefined) ?? null;
               const isCurrentMaster = masterState.selectedMasterGenerationId === item.id;
               const canUseAsMaster = typeof workflow === "string";
+
               return (
-                <article key={item.id} className={`overflow-hidden rounded-xl border bg-zinc-950/60 ${isCurrentMaster ? "border-indigo-500/70" : "border-white/10"}`}>
-                  <div className="aspect-video overflow-hidden bg-zinc-900">{src ? <img src={src} alt={item.prompt} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-sm text-zinc-500">No preview</div>}</div>
-                  <div className="space-y-2 p-4">
-                    <p className="text-xs text-zinc-400">
-                      {String(workflow ?? "legacy")}
-                      {galleryMasterGenerationId && selectedMasterId === galleryMasterGenerationId ? " · Derived from current master" : ""}
-                    </p>
-                    <p className="text-xs text-zinc-500">{formatGeneratedAt(item.created_at)}</p>
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      <button
-                        type="button"
+                <Card
+                  key={item.id}
+                  className={cn("overflow-hidden transition-colors", isCurrentMaster && "border-accent/60")}
+                >
+                  <MediaFrame
+                    src={src}
+                    alt={item.prompt || "Generated image"}
+                    ratio={ratioToFrame(item.aspect_ratio)}
+                  />
+
+                  <div className="space-y-2.5 p-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge>{String(workflow ?? "legacy")}</Badge>
+                      {galleryMasterGenerationId && selectedMasterId === galleryMasterGenerationId ? (
+                        <Badge tone="accent">From current master</Badge>
+                      ) : null}
+                    </div>
+
+                    <p className="text-[11px] text-ink-3">{formatGeneratedAt(item.created_at)}</p>
+
+                    {/* One primary action on the card; the other six live in the
+                        overflow menu instead of forming a wall of buttons. */}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant={isCurrentMaster ? "primary" : "secondary"}
                         disabled={!canUseAsMaster || !src}
                         onClick={() =>
                           src &&
@@ -870,143 +1117,221 @@ function HomeContent() {
                             promptHash: String(item.overlay_json?.["promptHash"] ?? ""),
                           })
                         }
-                        className={`rounded-md px-3 py-2 text-xs ${isCurrentMaster ? "bg-indigo-500 text-white" : "border border-white/15"} disabled:opacity-40`}
+                        iconLeft={
+                          isCurrentMaster ? <Check className="h-3.5 w-3.5" /> : <Crown className="h-3.5 w-3.5" />
+                        }
+                        className="flex-1"
                       >
-                        {isCurrentMaster ? "Selected Master" : "Use as Master"}
-                      </button>
-                      <button type="button" onClick={() => setPromptDialogItem(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
-                        View Prompt
-                      </button>
-                      {src ? <DownloadAssetButton url={src} filenamePrefix={`gallery-${item.id}`} label="Download" /> : null}
-                      <button type="button" disabled={!src} onClick={() => handleUseAsReference(item)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200 disabled:opacity-40">
-                        Use as Reference
-                      </button>
-                      <button type="button" disabled={!src} onClick={() => handleUseAsAnchor(item)} className="rounded-md border border-cyan-400/40 px-3 py-2 text-xs text-cyan-200 disabled:opacity-40">
-                        Use as Anchor
-                      </button>
-                      <button type="button" disabled={!src} onClick={() => handleSendToVideo(item)} className="rounded-md border border-indigo-400/40 px-3 py-2 text-xs text-indigo-200 disabled:opacity-40">
-                        Send to Video Project
-                      </button>
-                      <button type="button" onClick={() => openSkuTruthDialog(item)} className="rounded-md border border-emerald-400/40 px-3 py-2 text-xs text-emerald-200">
-                        Save as SKU Truth
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isDeletingId === item.id}
-                        onClick={() => handleDeleteGeneration(item)}
-                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 px-3 py-2 text-xs text-rose-200 disabled:opacity-50"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete
-                      </button>
+                        {isCurrentMaster ? "Master" : "Use as master"}
+                      </Button>
+
+                      {src ? <DownloadAssetButton url={src} filenamePrefix={`gallery-${item.id}`} label="Save" /> : null}
+
+                      <ActionMenu
+                        label={`More actions for image generated ${formatGeneratedAt(item.created_at)}`}
+                        items={[
+                          {
+                            key: "prompt",
+                            label: "View prompt",
+                            icon: <FileText className="h-3.5 w-3.5" />,
+                            onSelect: () => setPromptDialogItem(item),
+                          },
+                          {
+                            key: "reference",
+                            label: "Use as reference",
+                            icon: <Layers className="h-3.5 w-3.5" />,
+                            disabled: !src,
+                            onSelect: () => handleUseAsReference(item),
+                          },
+                          {
+                            key: "anchor",
+                            label: "Use as video anchor",
+                            icon: <Anchor className="h-3.5 w-3.5" />,
+                            disabled: !src,
+                            onSelect: () => handleUseAsAnchor(item),
+                          },
+                          {
+                            key: "send",
+                            label: "Send to Video Project",
+                            icon: <Video className="h-3.5 w-3.5" />,
+                            disabled: !src,
+                            onSelect: () => handleSendToVideo(item),
+                          },
+                          {
+                            key: "sku",
+                            label: "Save as SKU truth",
+                            icon: <BadgeCheck className="h-3.5 w-3.5" />,
+                            onSelect: () => openSkuTruthDialog(item),
+                          },
+                          {
+                            key: "delete",
+                            label: "Delete image",
+                            icon: <Trash2 className="h-3.5 w-3.5" />,
+                            destructive: true,
+                            onSelect: () => setPendingDelete(item),
+                          },
+                        ]}
+                      />
                     </div>
                   </div>
-                </article>
+                </Card>
               );
             })}
           </div>
-          {hasMoreGalleryItems ? (
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => void handleLoadMoreGallery()}
-                disabled={isLoadingMoreGallery}
-                className="rounded-md border border-white/15 px-4 py-2 text-sm text-zinc-200 disabled:opacity-50"
-              >
-                {isLoadingMoreGallery ? "Loading..." : "Load more"}
-              </button>
-            </div>
-          ) : null}
-        </section>
-      </div>
+        ) : (
+          <EmptyState
+            icon={<Layers className="h-6 w-6" />}
+            title="Your gallery is empty"
+            description="Generated images are saved here automatically, ready to reuse as references or video anchors."
+          />
+        )}
 
-      {promptDialogItem && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Prompt details"
-          onClick={() => setPromptDialogItem(null)}
-        >
-          <div className="flex max-h-[80vh] w-full max-w-[720px] flex-col overflow-hidden rounded-xl border border-white/10 bg-zinc-900 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-white/10 bg-zinc-900 px-4 py-3">
-              <div>
-                <h3 className="text-base font-semibold text-zinc-100">Prompt Details</h3>
-                <p className="mt-1 text-xs text-zinc-400">{formatGeneratedAt(promptDialogItem.created_at)}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPromptDialogItem(null)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 text-zinc-300 transition hover:bg-zinc-800"
-                aria-label="Close prompt details"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+        {hasMoreGalleryItems && galleryItems.length ? (
+          <div className="flex justify-center pt-1">
+            <Button onClick={() => void handleLoadMoreGallery()} loading={isLoadingMoreGallery}>
+              Load more
+            </Button>
+          </div>
+        ) : null}
+      </section>
 
-            <div className="space-y-3 overflow-y-auto px-4 py-3">
-              <p className="whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-zinc-950/70 p-3 text-sm leading-relaxed text-zinc-200">
+      <Modal
+        open={Boolean(promptDialogItem)}
+        onClose={() => setPromptDialogItem(null)}
+        title="Prompt details"
+        description={promptDialogItem ? formatGeneratedAt(promptDialogItem.created_at) : undefined}
+        size="lg"
+      >
+        {promptDialogItem ? (
+          <div className="space-y-3">
+            <Well className="p-3">
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-ink-2">
                 {promptDialogItem.prompt}
               </p>
-              <div className="text-xs text-zinc-400">
-                <p>Workflow: {String(promptDialogItem.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</p>
-                {typeof promptDialogItem.overlay_json?.["backendModel"] === "string" && <p>Backend model: {String(promptDialogItem.overlay_json?.["backendModel"])}</p>}
+            </Well>
+            <dl className="grid gap-2 text-xs sm:grid-cols-2">
+              <div className="flex gap-2">
+                <dt className="text-ink-3">Workflow</dt>
+                <dd className="text-ink-2">{String(promptDialogItem.overlay_json?.["studioWorkflowMode"] ?? "legacy")}</dd>
               </div>
-            </div>
-
-            <div className="border-t border-white/10 px-4 py-3">
-              <button type="button" onClick={() => setPromptDialogItem(null)} className="rounded-md border border-white/15 px-3 py-2 text-xs text-zinc-200">
-                Close
-              </button>
-            </div>
+              {typeof promptDialogItem.overlay_json?.["backendModel"] === "string" ? (
+                <div className="flex gap-2">
+                  <dt className="text-ink-3">Model</dt>
+                  <dd className="font-mono text-ink-2">
+                    {String(promptDialogItem.overlay_json?.["backendModel"])}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
           </div>
-        </div>
-      )}
+        ) : null}
+      </Modal>
 
-      {skuTruthDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Save as SKU Truth" onClick={() => setSkuTruthDialog(null)}>
-          <div className="w-full max-w-lg rounded-xl border border-white/10 bg-zinc-900 p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <h3 className="text-base font-semibold text-zinc-100">Save as SKU Truth</h3>
-            <p className="mt-1 text-xs text-zinc-400">Use this selected image as approved truth for a SKU role.</p>
-            <div className="mt-3 grid gap-3">
-              <input
-                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-                placeholder="SKU code (example: MGSW05)"
-                value={skuTruthDialog.skuCode}
-                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, skuCode: event.target.value.toUpperCase() } : current)}
+      <Modal
+        open={Boolean(skuTruthDialog)}
+        onClose={() => setSkuTruthDialog(null)}
+        title="Save as SKU truth"
+        description="Mark this image as the approved reference for a SKU role."
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setSkuTruthDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleSaveAsSkuTruth}
+              loading={isSavingSkuTruth}
+              disabled={!skuTruthDialog?.skuCode.trim() || !skuTruthDialog?.role.trim()}
+            >
+              Save
+            </Button>
+          </div>
+        }
+      >
+        {skuTruthDialog ? (
+          <div className="space-y-4">
+            <div className="flex gap-3">
+              <MediaFrame
+                src={skuTruthDialog.item.asset_url || skuTruthDialog.item.url}
+                alt="Image being saved as SKU truth"
+                ratio="square"
+                className="h-20 w-20 shrink-0 rounded-lg border border-line"
               />
-              <select
-                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-                value={skuTruthDialog.role}
-                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, role: event.target.value as SkuTruthRole } : current)}
-              >
-                <option value="">-- select role --</option>
-                {SKU_TRUTH_ROLES.map((role) => (
-                  <option key={role} value={role}>{role}</option>
-                ))}
-              </select>
-              {skuTruthDialog.suggestedRole ? <p className="text-xs text-emerald-300">Suggested role: {skuTruthDialog.suggestedRole}</p> : <p className="text-xs text-zinc-500">No safe role suggestion found. Please choose manually.</p>}
-              <select
-                className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-                value={skuTruthDialog.sourceKind}
-                onChange={(event) => setSkuTruthDialog((current) => current ? { ...current, sourceKind: event.target.value as "sku_verified_truth" | "manual_verified_override" } : current)}
-              >
-                <option value="sku_verified_truth">Verified SKU Truth</option>
-                <option value="manual_verified_override">Manual Override</option>
-              </select>
+              <p className="text-xs leading-relaxed text-ink-3">
+                Verified truth images become the canonical reference the video pipeline checks garment continuity
+                against.
+              </p>
             </div>
-            <div className="mt-4 flex gap-2">
-              <button type="button" onClick={handleSaveAsSkuTruth} disabled={isSavingSkuTruth} className="rounded bg-emerald-400 px-3 py-2 text-sm font-medium text-zinc-950 disabled:opacity-40">
-                {isSavingSkuTruth ? "Saving..." : "Save"}
-              </button>
-              <button type="button" onClick={() => setSkuTruthDialog(null)} className="rounded border border-zinc-700 px-3 py-2 text-sm text-zinc-200">
-                Cancel
-              </button>
-            </div>
+
+            <TextField
+              label="SKU code"
+              required
+              hint="Uppercase product code, for example MGSW05."
+              placeholder="MGSW05"
+              value={skuTruthDialog.skuCode}
+              onChange={(event) =>
+                setSkuTruthDialog((current) =>
+                  current ? { ...current, skuCode: event.target.value.toUpperCase() } : current,
+                )
+              }
+            />
+
+            <SelectField
+              label="Role"
+              required
+              hint={
+                skuTruthDialog.suggestedRole
+                  ? `Suggested from this image: ${skuTruthDialog.suggestedRole}`
+                  : "No role could be inferred from this image — choose one."
+              }
+              value={skuTruthDialog.role}
+              onChange={(event) =>
+                setSkuTruthDialog((current) =>
+                  current ? { ...current, role: event.target.value as SkuTruthRole } : current,
+                )
+              }
+            >
+              <option value="">Select a role…</option>
+              {SKU_TRUTH_ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {role}
+                </option>
+              ))}
+            </SelectField>
+
+            <SelectField
+              label="Truth type"
+              value={skuTruthDialog.sourceKind}
+              onChange={(event) =>
+                setSkuTruthDialog((current) =>
+                  current
+                    ? {
+                        ...current,
+                        sourceKind: event.target.value as "sku_verified_truth" | "manual_verified_override",
+                      }
+                    : current,
+                )
+              }
+            >
+              <option value="sku_verified_truth">Verified SKU truth</option>
+              <option value="manual_verified_override">Manual override</option>
+            </SelectField>
           </div>
-        </div>
-      )}
-    </main>
+        ) : null}
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Delete this image?"
+        description="The image and its generation record are removed permanently. Anything already using it as a reference keeps the copy it made."
+        confirmLabel="Delete image"
+        busy={Boolean(pendingDelete && isDeletingId === pendingDelete.id)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) void handleDeleteGeneration(pendingDelete);
+        }}
+      />
+    </PageShell>
   );
 }
 
