@@ -202,7 +202,7 @@ export default function VideoProjectPage() {
 
   useEffect(() => {
     if (videoBackends.length && !videoBackends.some((backend) => backend.id === selectedBackendId)) {
-      setSelectedBackendId(videoBackends.find((backend) => backend.id === "veo-2")?.id ?? videoBackends[0].id);
+      setSelectedBackendId(videoBackends.find((backend) => backend.id === "veo-3.1")?.id ?? videoBackends[0].id);
     }
   }, [videoBackends, selectedBackendId]);
 

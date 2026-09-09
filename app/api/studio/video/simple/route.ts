@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
+import { findBackendById, getDefaultBackendForType, resolveActiveBackend } from "@/lib/ai-backends";
+import {
+  ProviderInvalidArgumentError,
+  ProviderModelNotFoundError,
+  ProviderUnavailableError,
+} from "@/lib/ai/providerErrors";
 import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { UploadSizeLimitError, uploadGeneratedVideoToSupabase } from "@/lib/supabaseStorageUpload";
@@ -116,7 +121,11 @@ export async function POST(request: Request) {
       return asJson(400, { success: false, error: "Supported aspect ratios are 16:9 and 9:16." });
     }
 
-    const backend = findBackendById(payload.ai_backend_id) ?? getDefaultBackendForType("video");
+    // A retired backend (Veo 2 / Veo 3.0) resolves to its replacement so stored
+    // selections do not 404 against the Gemini API.
+    const backend = resolveActiveBackend(
+      findBackendById(payload.ai_backend_id) ?? getDefaultBackendForType("video"),
+    );
     const firstFrameUrl = cleanUrl(payload.first_frame_url);
     const lastFrameUrl = cleanUrl(payload.last_frame_url);
 
@@ -210,7 +219,8 @@ export async function POST(request: Request) {
         video_url: videoUrl,
         provider_output_uri: result.rawOutputUri,
         provider: "google-veo",
-        model: backend.model,
+        model: result.resolvedModel,
+        requested_model: backend.model,
         duration_seconds: durationSeconds,
         aspect_ratio: aspectRatio,
         compiled_prompt: compiledPrompt,
@@ -227,6 +237,30 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof ProviderModelNotFoundError) {
+      return asJson(404, {
+        success: false,
+        error_code: "model-not-found",
+        error: error.message,
+      });
+    }
+
+    if (error instanceof ProviderInvalidArgumentError) {
+      return asJson(400, {
+        success: false,
+        error_code: "rejected-params",
+        error: "The provider rejected these generation settings. Try a shorter duration, fewer reference images, or a simpler motion preset.",
+      });
+    }
+
+    if (error instanceof ProviderUnavailableError) {
+      return asJson(503, {
+        success: false,
+        error_code: error.errorCode,
+        error: "AI video service is busy right now. Please retry.",
+      });
+    }
+
     if (error instanceof UploadSizeLimitError) {
       return asJson(413, {
         success: false,

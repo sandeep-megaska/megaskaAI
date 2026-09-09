@@ -1,4 +1,4 @@
-import { findBackendById, getDefaultBackendForType } from "@/lib/ai-backends";
+import { findBackendById, getDefaultBackendForType, resolveActiveBackend } from "@/lib/ai-backends";
 import { isVeoModel } from "@/lib/ai/backendFamilies";
 import { ProviderInvalidArgumentError, ProviderModelNotFoundError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
@@ -98,12 +98,15 @@ function mapMotionLevel(priority?: string): SafeMotionLevel {
   return "minimal";
 }
 
+// Veo 2 and Veo 3.0 were retired from the Gemini API on 2026-06-30, so falling
+// back "down" a generation now guarantees a 404. Retired backends instead fall
+// forward onto the Veo 3.1 family.
 function getModelFallbackBackendIds(backendId: string): string[] {
-  if (backendId === "veo-3.1") return ["veo-3", "veo-2"];
-  if (backendId === "veo-3.1-fast") return ["veo-3-fast", "veo-3", "veo-2"];
-  if (backendId === "veo-3-fast") return ["veo-3", "veo-2"];
-  if (backendId === "veo-3") return ["veo-2"];
-  return [];
+  if (backendId === "veo-3.1") return ["veo-3.1-fast"];
+  if (backendId === "veo-3.1-fast") return ["veo-3.1"];
+  if (backendId === "veo-3" || backendId === "veo-2") return ["veo-3.1", "veo-3.1-fast"];
+  if (backendId === "veo-3-fast") return ["veo-3.1-fast", "veo-3.1"];
+  return ["veo-3.1"];
 }
 
 export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobResult> {
@@ -113,7 +116,9 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
   }
 
   const defaultBackendId = getVideoCapabilityByBackendId("veo-3.1")?.backendId ?? "veo-3.1";
-  const backend = requestedBackend ?? findBackendById(defaultBackendId) ?? getDefaultBackendForType("video");
+  const backend = resolveActiveBackend(
+    requestedBackend ?? findBackendById(defaultBackendId) ?? getDefaultBackendForType("video"),
+  );
 
   if (backend.type !== "video") {
     throw new Error(`Backend '${backend.id}' supports ${backend.type} only.`);
@@ -208,7 +213,7 @@ export async function runVideoJob(input: RunVideoJobInput): Promise<RunVideoJobR
           backendLabel: capability.label,
           provider: capability.provider,
           backendModel: output.model,
-          providerModelId: output.model,
+          providerModelId: output.resolvedModel,
           rawOutputUri: output.rawOutputUri,
           providerResponseMeta: output.providerResponseMeta,
           diagnostics: {

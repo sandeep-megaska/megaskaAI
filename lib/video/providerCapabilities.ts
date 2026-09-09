@@ -1,4 +1,5 @@
 import { type AIBackend } from "@/lib/ai-backends";
+import { VEO_GEMINI_API_MODELS } from "@/lib/ai/veoModels";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 export type VideoProvider = "gemini-api";
@@ -26,6 +27,8 @@ export type VideoProviderCapability = {
   notes: string;
   warning?: string;
   isLegacy?: boolean;
+  /** Provider retired this model on the Gemini API path; requests are re-routed. */
+  isRetired?: boolean;
 };
 
 const COMMON_ASPECT_RATIOS: readonly StudioAspectRatio[] = ["16:9", "9:16"];
@@ -50,8 +53,9 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     shouldBeDefaultRecommended: false,
     shouldBeMarkedExperimental: false,
     notes: "Highest identity + garment preservation. Motion remains subtle and intentionally limited.",
-    warning: "Use for production-safe fidelity output. Dynamic motion is intentionally constrained.",
+    warning: "Retired by Google on 2026-06-30. Requests are served by Veo 3.1.",
     isLegacy: true,
+    isRetired: true,
   },
   "veo-3": {
     backendId: "veo-3",
@@ -72,7 +76,8 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     shouldBeDefaultRecommended: false,
     shouldBeMarkedExperimental: true,
     notes: "Higher motion potential with higher compatibility rejection and drift risk.",
-    warning: "May require compatibility fallback for complex anchor/reference requests.",
+    warning: "Retired by Google on 2026-06-30. Requests are served by Veo 3.1.",
+    isRetired: true,
   },
   "veo-3-fast": {
     backendId: "veo-3-fast",
@@ -93,14 +98,15 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     shouldBeDefaultRecommended: false,
     shouldBeMarkedExperimental: true,
     notes: "Fast iteration path; stricter request shape tolerance than fidelity baseline.",
-    warning: "Last-frame control is not supported and will be dropped.",
+    warning: "Retired by Google on 2026-06-30. Requests are served by Veo 3.1 Fast.",
+    isRetired: true,
   },
   "veo-3.1": {
     backendId: "veo-3.1",
     provider: "gemini-api",
     modelKey: "veo-3.1",
     label: "Veo 3.1",
-    providerModelId: "veo-3.1-generate-001",
+    providerModelId: VEO_GEMINI_API_MODELS.standard,
     recommendedPurpose: "experimental",
     supportsSourceImage: true,
     supportsLastFrame: true,
@@ -121,7 +127,7 @@ export const VIDEO_PROVIDER_CAPABILITIES: Record<string, VideoProviderCapability
     provider: "gemini-api",
     modelKey: "veo-3.1-fast",
     label: "Veo 3.1 Fast",
-    providerModelId: "veo-3.1-fast-generate-001",
+    providerModelId: VEO_GEMINI_API_MODELS.fast,
     recommendedPurpose: "experimental",
     supportsSourceImage: true,
     supportsLastFrame: true,
@@ -173,4 +179,11 @@ export function getDefaultRecommendedVideoBackendId() {
 export function getVideoCapabilityByBackendId(backendId?: string | null) {
   if (!backendId) return null;
   return VIDEO_PROVIDER_CAPABILITIES[backendId] ?? null;
+}
+
+/** Backend ids still served by the Gemini API, most capable first. */
+export function getSupportedVideoBackendIds() {
+  return Object.values(VIDEO_PROVIDER_CAPABILITIES)
+    .filter((capability) => !capability.isRetired)
+    .map((capability) => capability.backendId);
 }

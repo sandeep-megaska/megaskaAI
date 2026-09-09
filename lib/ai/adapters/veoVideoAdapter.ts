@@ -4,7 +4,8 @@ import {
   type VideoGenerationReferenceImage,
 } from "@google/genai";
 import { loadImageReference } from "@/lib/ai/loadImageReference";
-import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
+import { ProviderModelNotFoundError, mapGeminiProviderError } from "@/lib/ai/providerErrors";
+import { resolveVeoModelCandidates } from "@/lib/ai/veoModels";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 const SUPPORTED_VEO_ASPECT_RATIOS = ["16:9", "9:16"] as const;
@@ -54,7 +55,10 @@ type VeoInput = {
 type VeoOutput = {
   bytes: Buffer;
   mimeType: string;
+  /** Model ID as configured by the caller. */
   model: string;
+  /** Model ID the Gemini API actually accepted (may differ if a fallback was used). */
+  resolvedModel: string;
   rawOutputUri: string | null;
   providerResponseMeta: Record<string, unknown>;
 };
@@ -474,8 +478,10 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
 
   const ai = new GoogleGenAI({ apiKey });
   const pollingConfig = getPollingConfig();
+  const modelCandidates = resolveVeoModelCandidates(input.model);
+  const primaryModel = modelCandidates[0];
   const frameInput = await buildFrameInputs({
-    model: input.model,
+    model: primaryModel,
     firstFrameUrl: input.firstFrameUrl,
     lastFrameUrl: input.lastFrameUrl,
     referenceImageUrls: input.referenceImageUrls,
@@ -508,33 +514,75 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
   }
 
   let operation;
-  try {
-    console.log("[veo-video-adapter] request.start", {
-      model: input.model,
-      durationSeconds: typeof input.durationSeconds === "number" ? input.durationSeconds : null,
-      aspectRatio,
-      promptLength: input.prompt.length,
-      frameInputDiagnostics: frameInput.diagnostics,
-      modelFrameSupport: frameInput.support,
-      polling: pollingConfig,
-    });
-    operation = await ai.models.generateVideos({
-      model: input.model,
-      source,
-      config,
-    });
-    console.log("[veo-video-adapter] request.initial-response", {
-      ...summarizeOperation(operation),
-      rawBody: operation,
-    });
-  } catch (error) {
-    console.error("[veo-video-adapter] generateVideos request failed", error);
-    mapGeminiProviderError(error);
+  let resolvedModel = primaryModel;
+  const modelAttempts: Array<{ model: string; ok: boolean; reason?: string }> = [];
+
+  // Google rotates Veo model IDs between `-preview` and `-001` spellings and
+  // retires older generations, so a single hard-coded ID eventually 404s. Walk
+  // the known candidates and use the first one this API path still serves.
+  for (let index = 0; index < modelCandidates.length; index += 1) {
+    const candidateModel = modelCandidates[index];
+    try {
+      console.log("[veo-video-adapter] request.start", {
+        configuredModel: input.model,
+        model: candidateModel,
+        modelCandidates,
+        candidateIndex: index,
+        durationSeconds: typeof input.durationSeconds === "number" ? input.durationSeconds : null,
+        aspectRatio,
+        promptLength: input.prompt.length,
+        frameInputDiagnostics: frameInput.diagnostics,
+        modelFrameSupport: frameInput.support,
+        polling: pollingConfig,
+      });
+      operation = await ai.models.generateVideos({
+        model: candidateModel,
+        source,
+        config,
+      });
+      resolvedModel = candidateModel;
+      modelAttempts.push({ model: candidateModel, ok: true });
+      console.log("[veo-video-adapter] request.initial-response", {
+        model: candidateModel,
+        ...summarizeOperation(operation),
+        rawBody: operation,
+      });
+      break;
+    } catch (error) {
+      console.error("[veo-video-adapter] generateVideos request failed", { model: candidateModel, error });
+      let mapped: unknown = error;
+      try {
+        mapGeminiProviderError(error);
+      } catch (providerError) {
+        mapped = providerError;
+      }
+
+      const isLastCandidate = index === modelCandidates.length - 1;
+      if (mapped instanceof ProviderModelNotFoundError && !isLastCandidate) {
+        modelAttempts.push({ model: candidateModel, ok: false, reason: "model-not-found" });
+        console.warn("[veo-video-adapter] model not available on this API path, trying next candidate", {
+          model: candidateModel,
+          nextModel: modelCandidates[index + 1],
+        });
+        continue;
+      }
+
+      if (mapped instanceof ProviderModelNotFoundError) {
+        throw new ProviderModelNotFoundError(
+          `This model ID is not available on the current Gemini API path (tried: ${modelCandidates.join(", ")}).`,
+          { ...mapped.meta },
+        );
+      }
+
+      throw mapped;
+    }
   }
 
   if (!operation) {
     throw new VideoGenerationOutputError("Video generation failed before an operation was returned.", "no-operation", {
       requestedModelId: input.model,
+      modelCandidates,
+      modelAttempts,
     });
   }
 
@@ -749,8 +797,13 @@ export async function runVeoVideoGeneration(input: VeoInput): Promise<VeoOutput>
     bytes,
     mimeType: derivedMimeType,
     model: input.model,
+    resolvedModel,
     rawOutputUri: generatedVideo.uri ?? null,
     providerResponseMeta: {
+      configuredModelId: input.model,
+      resolvedModelId: resolvedModel,
+      modelCandidates,
+      modelAttempts,
       operationName: typeof operation.name === "string" ? operation.name : null,
       done: Boolean(operation.done),
       pollCount,
