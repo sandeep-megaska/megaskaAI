@@ -226,10 +226,11 @@ function dedupeReferenceUrls(urls: string[]) {
 
 function selectBackendForShot(shot: VideoShotPlanItem, requestedBackendId?: string | null) {
   if (requestedBackendId) return requestedBackendId;
+  // Veo 2 / Veo 3.0 are retired on the Gemini API path, so every preference
+  // resolves inside the Veo 3.1 family.
   if (shot.providerPreference === "motion-strong") return "veo-3.1";
-  if (shot.providerPreference === "experimental") return "veo-3-fast";
-  if (shot.providerPreference === "continuity") return "veo-2";
-  return "veo-2";
+  if (shot.providerPreference === "experimental") return "veo-3.1-fast";
+  return "veo-3.1";
 }
 
 async function loadAnchorSceneHints(generationIds: string[]) {

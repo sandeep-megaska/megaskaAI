@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { AI_BACKENDS } from "@/lib/ai-backends";
+import { getSelectableBackends } from "@/lib/ai-backends";
 
 export async function GET() {
-  return NextResponse.json({ success: true, data: AI_BACKENDS });
+  // Retired provider models are excluded so the picker cannot select a model ID
+  // the Gemini API no longer serves.
+  return NextResponse.json({ success: true, data: getSelectableBackends() });
 }

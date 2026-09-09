@@ -1,4 +1,10 @@
-import { findBackendById, getDefaultBackendForType, type AIBackend, type AIBackendType } from "@/lib/ai-backends";
+import {
+  findBackendById,
+  getDefaultBackendForType,
+  resolveActiveBackend,
+  type AIBackend,
+  type AIBackendType,
+} from "@/lib/ai-backends";
 import { isGeminiImageModel, isImagenModel, isVeoModel } from "@/lib/ai/backendFamilies";
 import { runGeminiImageGeneration } from "@/lib/ai/adapters/geminiImageAdapter";
 import { runImagenImageGeneration } from "@/lib/ai/adapters/imagenImageAdapter";
@@ -36,7 +42,7 @@ function resolveBackend(type: StudioGenerationType, backendId?: string | null) {
     throw new Error(`Backend '${backend.id}' supports ${backend.type} only.`);
   }
 
-  return backend;
+  return resolveActiveBackend(backend);
 }
 
 export async function runStudioGeneration(input: RunStudioGenerationInput): Promise<RunStudioGenerationResult> {

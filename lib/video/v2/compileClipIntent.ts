@@ -580,7 +580,7 @@ export async function compileClipIntent(input: { clipIntentId: string; force?: b
         "Do not change garment fit or print alignment.",
         "Do not introduce scene swaps or aggressive camera jumps.",
       ],
-      provider_order: ["veo-3.1", "veo-3.1-fast", "veo-2"],
+      provider_order: ["veo-3.1", "veo-3.1-fast"],
       planner_model: "slice-c-compiler",
       planner_version: "slice-c-compiler-v1",
       debug_trace: {
