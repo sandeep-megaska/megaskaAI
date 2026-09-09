@@ -5,65 +5,66 @@ import {
   ProviderModelNotFoundError,
   ProviderUnavailableError,
 } from "@/lib/ai/providerErrors";
-import { runVeoVideo } from "@/lib/video/adapters/runVeoVideo";
+import { isGarmentViewRole, type GarmentViewRole } from "@/lib/garment/roles";
+import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { UploadSizeLimitError, uploadGeneratedVideoToSupabase } from "@/lib/supabaseStorageUpload";
-import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 import {
-  buildShotPrompt,
-  buildVideoSimplePrompt,
+  assessFidelity,
+  planConditioning,
+  type ConditioningImage,
+  type ConditioningMode,
+} from "@/lib/video/veo/conditioning";
+import { generateVeoVideo, VideoGenerationOutputError } from "@/lib/video/veo/generate";
+import {
+  buildNegativePrompt,
+  compileVideoPrompt,
   createEmptyGarmentAnchors,
-  normalizeReferenceImagesForProvider,
-  type VideoSimpleGarmentAnchors,
-  type VideoSimpleMotionPreset,
-  type VideoSimpleReferenceImage,
-  type VideoSimpleShotType,
-  type VideoSimpleWorkflowMode,
-  VIDEO_SIMPLE_MOTION_PRESETS,
-} from "@/lib/video/simpleControls";
+  detectsTurnIntent,
+  MOTION_PRESETS,
+  type GarmentAnchors,
+  type MotionPreset,
+} from "@/lib/video/veo/prompt";
 
-type SimpleVideoGeneratePayload = {
+type ImageInput = { url?: string; role?: string; label?: string };
+
+type GenerateVideoPayload = {
   prompt?: string;
   duration_seconds?: number;
   aspect_ratio?: StudioAspectRatio;
-  first_frame_url?: string | null;
-  last_frame_url?: string | null;
-  reference_images?: VideoSimpleReferenceImage[];
-  motion_preset?: VideoSimpleMotionPreset;
-  garment_anchors?: Partial<VideoSimpleGarmentAnchors>;
-  workflow_mode?: VideoSimpleWorkflowMode;
-  shot_type?: VideoSimpleShotType;
-  workflow_group_id?: string | null;
+  resolution?: "720p" | "1080p";
+  start_frame?: ImageInput | null;
+  end_frame?: ImageInput | null;
+  reference_images?: ImageInput[];
+  motion_preset?: string;
+  garment_anchors?: Partial<GarmentAnchors>;
+  garment_description?: string;
+  sku_code?: string | null;
+  /** Force a conditioning mode instead of letting the planner choose. */
+  conditioning_mode?: ConditioningMode;
+  negative_prompt?: string;
+  seed?: number;
   ai_backend_id?: string;
+  /** Groups the halves of a split turn so they can be found together later. */
+  shot_group_id?: string | null;
+  shot_label?: string | null;
 };
 
 const SUPPORTED_DURATIONS = [4, 6, 8] as const;
 const SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16"] as const satisfies readonly StudioAspectRatio[];
-type SupportedAspectRatio = (typeof SUPPORTED_ASPECT_RATIOS)[number];
 
 function asJson(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
 
-function cleanUrl(value?: string | null) {
-  if (!value) return null;
-  const next = value.trim();
-  return next.length ? next : null;
+function toConditioningImage(input: ImageInput | null | undefined): ConditioningImage | null {
+  const url = input?.url?.trim();
+  if (!url) return null;
+  const role: GarmentViewRole | undefined = isGarmentViewRole(input?.role) ? input.role : undefined;
+  return { url, role, label: input?.label?.trim() || undefined };
 }
 
-function isSupportedDuration(value: unknown): value is (typeof SUPPORTED_DURATIONS)[number] {
-  return typeof value === "number" && SUPPORTED_DURATIONS.includes(value as (typeof SUPPORTED_DURATIONS)[number]);
-}
-
-function isSupportedAspectRatio(value: unknown): value is SupportedAspectRatio {
-  return typeof value === "string" && SUPPORTED_ASPECT_RATIOS.includes(value as SupportedAspectRatio);
-}
-
-function isMotionPreset(value: unknown): value is VideoSimpleMotionPreset {
-  return typeof value === "string" && VIDEO_SIMPLE_MOTION_PRESETS.includes(value as VideoSimpleMotionPreset);
-}
-
-function normalizeGarmentAnchors(value?: Partial<VideoSimpleGarmentAnchors>): VideoSimpleGarmentAnchors {
+function normalizeAnchors(value?: Partial<GarmentAnchors>): GarmentAnchors {
   const base = createEmptyGarmentAnchors();
   return {
     backNeckline: value?.backNeckline?.trim() ?? base.backNeckline,
@@ -75,22 +76,13 @@ function normalizeGarmentAnchors(value?: Partial<VideoSimpleGarmentAnchors>): Vi
   };
 }
 
-function normalizeWorkflowMode(value: unknown): VideoSimpleWorkflowMode {
-  return value === "two-shot-back-reveal" ? "two-shot-back-reveal" : "single-shot";
-}
-
-function normalizeShotType(value: unknown, workflowMode: VideoSimpleWorkflowMode): VideoSimpleShotType {
-  if (workflowMode === "two-shot-back-reveal" && (value === "shot-a" || value === "shot-b")) return value;
-  return "single";
-}
-
-function cleanWorkflowGroupId(value: unknown) {
-  if (typeof value !== "string") return null;
-  const next = value.trim();
-  return next.length ? next : null;
+function isMotionPreset(value: unknown): value is MotionPreset {
+  return typeof value === "string" && (MOTION_PRESETS as readonly string[]).includes(value);
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+
   try {
     const googleApiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
     const supabaseBucket = process.env.SUPABASE_STORAGE_BUCKET ?? "brand-assets";
@@ -99,74 +91,67 @@ export async function POST(request: Request) {
       return asJson(500, { success: false, error: "Missing GOOGLE_API_KEY or GEMINI_API_KEY." });
     }
 
-    let payload: SimpleVideoGeneratePayload;
+    let payload: GenerateVideoPayload;
     try {
-      payload = (await request.json()) as SimpleVideoGeneratePayload;
+      payload = (await request.json()) as GenerateVideoPayload;
     } catch {
       return asJson(400, { success: false, error: "Invalid JSON body." });
     }
 
     const prompt = payload.prompt?.trim();
-    if (!prompt) {
-      return asJson(400, { success: false, error: "Prompt is required." });
-    }
+    if (!prompt) return asJson(400, { success: false, error: "A prompt is required." });
 
     const durationSeconds = payload.duration_seconds ?? 6;
-    if (!isSupportedDuration(durationSeconds)) {
-      return asJson(400, { success: false, error: "Supported duration values are 4, 6, and 8 seconds." });
+    if (!SUPPORTED_DURATIONS.includes(durationSeconds as (typeof SUPPORTED_DURATIONS)[number])) {
+      return asJson(400, { success: false, error: "Supported durations are 4, 6 and 8 seconds." });
     }
 
     const aspectRatio = payload.aspect_ratio ?? "9:16";
-    if (!isSupportedAspectRatio(aspectRatio)) {
+    if (!SUPPORTED_ASPECT_RATIOS.includes(aspectRatio as (typeof SUPPORTED_ASPECT_RATIOS)[number])) {
       return asJson(400, { success: false, error: "Supported aspect ratios are 16:9 and 9:16." });
     }
 
-    // A retired backend (Veo 2 / Veo 3.0) resolves to its replacement so stored
-    // selections do not 404 against the Gemini API.
-    const backend = resolveActiveBackend(
-      findBackendById(payload.ai_backend_id) ?? getDefaultBackendForType("video"),
-    );
-    const firstFrameUrl = cleanUrl(payload.first_frame_url);
-    const lastFrameUrl = cleanUrl(payload.last_frame_url);
+    const backend = resolveActiveBackend(findBackendById(payload.ai_backend_id) ?? getDefaultBackendForType("video"));
+    const preset: MotionPreset = isMotionPreset(payload.motion_preset) ? payload.motion_preset : "product-turn";
+    const anchors = normalizeAnchors(payload.garment_anchors);
 
-    const motionPreset = isMotionPreset(payload.motion_preset) ? payload.motion_preset : "freeform";
-    const garmentAnchors = normalizeGarmentAnchors(payload.garment_anchors);
-    const referenceImages = normalizeReferenceImagesForProvider(payload.reference_images ?? []);
-    const workflowMode = normalizeWorkflowMode(payload.workflow_mode);
-    const shotType = normalizeShotType(payload.shot_type, workflowMode);
-    const workflowGroupId = cleanWorkflowGroupId(payload.workflow_group_id);
+    // One valid conditioning shape, chosen here rather than assembled ad hoc at
+    // the provider call. The planner is what stops reference images being sent
+    // alongside frame conditioning, which the API rejects.
+    const plan = planConditioning({
+      startFrame: toConditioningImage(payload.start_frame),
+      endFrame: toConditioningImage(payload.end_frame),
+      references: (payload.reference_images ?? [])
+        .map(toConditioningImage)
+        .filter((image): image is ConditioningImage => Boolean(image)),
+      preferred: payload.conditioning_mode,
+    });
 
-    const compiledPrompt =
-      workflowMode === "two-shot-back-reveal"
-        ? buildShotPrompt({
-            creativePrompt: prompt,
-            motionPreset,
-            hasEndFrame: Boolean(lastFrameUrl),
-            referenceImages,
-            garmentAnchors,
-            workflowMode,
-            shotType,
-          })
-        : buildVideoSimplePrompt({
-            creativePrompt: prompt,
-            motionPreset,
-            hasEndFrame: Boolean(lastFrameUrl),
-            referenceImages,
-            garmentAnchors,
-          });
+    const turnIntent = detectsTurnIntent(prompt, preset);
+    const fidelity = assessFidelity(plan, { turnIntent });
 
-    const result = await runVeoVideo({
+    const compiledPrompt = compileVideoPrompt({
+      creativePrompt: prompt,
+      preset,
+      plan,
+      anchors,
+      garmentDescription: payload.garment_description,
+    });
+    const negativePrompt = buildNegativePrompt(payload.negative_prompt);
+
+    const result = await generateVeoVideo({
       apiKey: googleApiKey,
       model: backend.model,
       prompt: compiledPrompt,
-      durationSeconds,
+      negativePrompt,
+      plan,
       aspectRatio,
-      firstFrameUrl,
-      lastFrameUrl,
-      referenceImageUrls: referenceImages.map((item) => item.url),
+      durationSeconds,
+      resolution: payload.resolution,
+      seed: payload.seed,
     });
 
-    const fileName = `${Date.now()}-simple-${durationSeconds}s.mp4`;
+    const fileName = `${Date.now()}-clip-${durationSeconds}s.mp4`;
     const filePath = `video/${fileName}`;
     const uploaded = await uploadGeneratedVideoToSupabase({
       bucket: supabaseBucket,
@@ -178,7 +163,8 @@ export async function POST(request: Request) {
     const videoUrl = uploaded.publicUrl;
 
     const supabase = getSupabaseAdminClient();
-    const garmentAnchorCount = Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length;
+    const anchorCount = Object.values(anchors).filter((value) => value.trim().length > 0).length;
+
     const { data: insertedGeneration, error: insertError } = await supabase
       .from("generations")
       .insert({
@@ -190,66 +176,75 @@ export async function POST(request: Request) {
         asset_url: videoUrl,
         url: videoUrl,
         generation_kind: "video",
-        reference_urls: referenceImages.map((item) => item.url),
+        reference_urls: [plan.startFrame?.url, plan.endFrame?.url, ...plan.references.map((r) => r.url)].filter(
+          Boolean,
+        ),
         video_meta: {
           source: "video-simple",
-          workflowMode,
-          shotType,
-          workflowGroupId,
-          motionPreset,
+          skuCode: payload.sku_code?.trim()?.toUpperCase() ?? null,
+          shotGroupId: payload.shot_group_id ?? null,
+          shotLabel: payload.shot_label ?? null,
+          conditioningMode: plan.mode,
+          conditioningRationale: plan.rationale,
+          startFrameRole: plan.startFrame?.role ?? null,
+          endFrameRole: plan.endFrame?.role ?? null,
+          referenceRoles: plan.references.map((reference) => reference.role ?? null),
+          motionPreset: preset,
           durationSeconds,
           aspectRatio,
-          hasStartFrame: Boolean(firstFrameUrl),
-          hasEndFrame: Boolean(lastFrameUrl),
-          referenceCount: referenceImages.length,
-          garmentAnchorCount,
+          resolution: payload.resolution ?? null,
+          turnIntent,
+          fidelityRisk: fidelity.risk,
+          uncoveredDegrees: fidelity.uncoveredDegrees,
+          garmentAnchorCount: anchorCount,
+          providerModel: result.resolvedModel,
         },
       })
       .select("id")
       .single();
 
-    if (insertError) {
-      throw new Error(`Failed to persist generation: ${insertError.message}`);
-    }
+    if (insertError) throw new Error(`Failed to save the generation record: ${insertError.message}`);
 
     return asJson(200, {
       success: true,
       data: {
         generation_id: insertedGeneration.id,
         video_url: videoUrl,
-        provider_output_uri: result.rawOutputUri,
         provider: "google-veo",
         model: result.resolvedModel,
         requested_model: backend.model,
         duration_seconds: durationSeconds,
         aspect_ratio: aspectRatio,
         compiled_prompt: compiledPrompt,
+        negative_prompt: negativePrompt,
+        conditioning: {
+          mode: plan.mode,
+          rationale: plan.rationale,
+          start_frame_role: plan.startFrame?.role ?? null,
+          end_frame_role: plan.endFrame?.role ?? null,
+          reference_count: plan.references.length,
+          dropped: plan.dropped.map((entry) => ({ url: entry.image.url, reason: entry.reason })),
+        },
+        fidelity,
         controls: {
-          motion_preset: motionPreset,
-          reference_count: referenceImages.length,
-          has_start_frame: Boolean(firstFrameUrl),
-          has_end_frame: Boolean(lastFrameUrl),
-          garment_anchor_count: garmentAnchorCount,
-          workflow_mode: workflowMode,
-          shot_type: shotType,
-          workflow_group_id: workflowGroupId,
+          motion_preset: preset,
+          garment_anchor_count: anchorCount,
+          shot_group_id: payload.shot_group_id ?? null,
+          shot_label: payload.shot_label ?? null,
         },
       },
     });
   } catch (error) {
     if (error instanceof ProviderModelNotFoundError) {
-      return asJson(404, {
-        success: false,
-        error_code: "model-not-found",
-        error: error.message,
-      });
+      return asJson(404, { success: false, error_code: "model-not-found", error: error.message });
     }
 
     if (error instanceof ProviderInvalidArgumentError) {
       return asJson(400, {
         success: false,
         error_code: "rejected-params",
-        error: "The provider rejected these generation settings. Try a shorter duration, fewer reference images, or a simpler motion preset.",
+        error:
+          "The provider rejected these settings. Try a shorter duration, fewer reference images, or a gentler motion preset.",
       });
     }
 
@@ -257,7 +252,7 @@ export async function POST(request: Request) {
       return asJson(503, {
         success: false,
         error_code: error.errorCode,
-        error: "AI video service is busy right now. Please retry.",
+        error: "The video service is busy right now. Please retry.",
       });
     }
 
@@ -275,7 +270,20 @@ export async function POST(request: Request) {
       });
     }
 
-    const message = error instanceof Error ? error.message : "Failed to generate simple video.";
-    return asJson(500, { success: false, error: message });
+    if (error instanceof VideoGenerationOutputError) {
+      return asJson(502, {
+        success: false,
+        error_code: error.code,
+        error: error.message,
+        diagnostics: error.diagnostics,
+      });
+    }
+
+    return asJson(500, {
+      success: false,
+      error: error instanceof Error ? error.message : "Video generation failed.",
+    });
+  } finally {
+    console.log("[studio/video/simple] completed", { elapsedMs: Date.now() - startedAt });
   }
 }

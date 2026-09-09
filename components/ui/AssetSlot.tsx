@@ -18,6 +18,7 @@ export default function AssetSlot({
   url,
   required = false,
   missing = false,
+  hideStatus = false,
   onPick,
   onClear,
   className,
@@ -28,15 +29,19 @@ export default function AssetSlot({
   required?: boolean;
   /** Required but not yet filled — draws the slot in the warning hue. */
   missing?: boolean;
+  /** Suppress the Optional/Required status, e.g. in a row of identical slots. */
+  hideStatus?: boolean;
   onPick: () => void;
   onClear?: () => void;
   className?: string;
 }) {
   return (
     <div className={cn("space-y-2", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+      {/* Fixed height so a badge on one slot does not push its tile lower than
+          its neighbours in the same row. */}
+      <div className="flex min-h-6 flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <span className="min-w-0 text-xs font-medium text-ink">{label}</span>
-        {required ? (
+        {hideStatus ? null : required ? (
           <Badge tone={missing ? "warning" : "neutral"}>{missing ? "Required" : "Set"}</Badge>
         ) : (
           <span className="shrink-0 text-[11px] text-ink-3">Optional</span>
