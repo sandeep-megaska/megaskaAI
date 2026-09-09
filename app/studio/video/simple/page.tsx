@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
-  ArrowLeftRight,
   ArrowRight,
   Check,
   ChevronDown,
@@ -14,18 +13,19 @@ import {
   ExternalLink,
   Film,
   ImageIcon,
-  ImagePlus,
+  Library,
   RefreshCw,
+  Scissors,
+  ShieldCheck,
   Trash2,
   Wand2,
-  X,
 } from "lucide-react";
-import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
 import ActionMenu from "@/components/ui/ActionMenu";
 import Alert from "@/components/ui/Alert";
 import AssetSlot from "@/components/ui/AssetSlot";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import DownloadButton from "@/components/ui/DownloadButton";
 import { SelectField, TextAreaField, TextField } from "@/components/ui/Field";
 import GeneratingPanel from "@/components/ui/GeneratingPanel";
 import MediaFrame from "@/components/ui/MediaFrame";
@@ -34,23 +34,31 @@ import PageShell from "@/components/ui/PageShell";
 import SegmentedControl from "@/components/ui/SegmentedControl";
 import { Badge, Card, EmptyState, SectionHeading, Well } from "@/components/ui/Surface";
 import { revealResults } from "@/components/ui/revealResults";
+import {
+  GARMENT_ROLE_LABELS,
+  isGarmentViewRole,
+  type GarmentViewRole,
+  type ResolvedGarmentView,
+} from "@/lib/garment/roles";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
+import { assessFidelity, planConditioning, type ConditioningImage } from "@/lib/video/veo/conditioning";
 import {
   createEmptyGarmentAnchors,
-  createWorkflowGroupId,
-  type VideoSimpleGarmentAnchors,
-  type VideoSimpleMotionPreset,
-  type VideoSimpleReferenceRole,
-  type VideoSimpleShotType,
-  type VideoSimpleWorkflowMode,
-  validateVideoSimpleControls,
-  VIDEO_SIMPLE_MOTION_PRESETS,
-} from "@/lib/video/simpleControls";
+  detectsTurnIntent,
+  GARMENT_ANCHOR_FIELDS,
+  MOTION_PRESET_HINTS,
+  MOTION_PRESET_LABELS,
+  MOTION_PRESETS,
+  type GarmentAnchors,
+  type MotionPreset,
+} from "@/lib/video/veo/prompt";
 
-type VideoAspectRatio = "16:9" | "9:16";
-type VideoDuration = 4 | 6 | 8;
+type AspectRatio = "16:9" | "9:16";
+type Duration = 4 | 6 | 8;
 
-type SimpleVideoResponse = {
+type FrameAsset = ConditioningImage & { id?: string };
+
+type GenerateResponse = {
   success?: boolean;
   error?: string;
   error_code?: string;
@@ -60,72 +68,34 @@ type SimpleVideoResponse = {
     video_url?: string;
     model?: string;
     duration_seconds?: number;
-    aspect_ratio?: VideoAspectRatio;
+    aspect_ratio?: AspectRatio;
     compiled_prompt?: string;
-    controls?: {
-      motion_preset?: VideoSimpleMotionPreset;
-      reference_count?: number;
-      has_start_frame?: boolean;
-      has_end_frame?: boolean;
-      garment_anchor_count?: number;
-      workflow_mode?: VideoSimpleWorkflowMode;
-      shot_type?: VideoSimpleShotType;
-      workflow_group_id?: string | null;
-    };
+    conditioning?: { mode?: string; rationale?: string };
+    fidelity?: { risk?: "low" | "medium" | "high" };
+    controls?: { shot_label?: string | null };
   };
 };
 
 type PromptBuilderResponse = {
   success?: boolean;
   error?: string;
-  data?: {
-    summary: string;
-    riskLevel: "low" | "medium" | "high";
-    recommendedMode: "single_shot" | "two_shot";
-    imagePrompt: string;
-    videoPrompt: string;
-    negativeConstraints: string[];
-    shotNotes: string[];
-  };
-};
-
-function normalizeUploadLimitError(input: { error?: string; error_code?: string; max_mb?: number }) {
-  if (input.error_code !== "upload-limit-exceeded") return input.error ?? "Failed to generate video.";
-  const maxMb = typeof input.max_mb === "number" ? input.max_mb.toFixed(2) : null;
-  return maxMb
-    ? `Generated video is larger than the upload limit (${maxMb} MB max). Try a shorter duration or simpler motion.`
-    : "Generated video is larger than the upload limit. Try a shorter duration or simpler motion.";
-}
-
-type GalleryImageItem = ImageGenerationAsset;
-
-type FrameAsset = {
-  id: string;
-  url: string;
-  label: string;
-};
-
-type PickerTarget = { kind: "start" | "intermediate" | "end" } | { kind: "reference"; index: number };
-
-type ShotDescriptor = {
-  shotType: Extract<VideoSimpleShotType, "shot-a" | "shot-b">;
-  label: string;
-  flowLabel: string;
-  helper: string;
+  data?: { videoPrompt: string };
 };
 
 type OutputItem = {
   generationId: string;
   videoUrl: string;
-  createdAt: string;
   model: string;
   duration: number;
-  aspectRatio: VideoAspectRatio;
+  aspectRatio: AspectRatio;
   compiledPrompt: string;
-  controls: NonNullable<SimpleVideoResponse["data"]>["controls"];
+  conditioningMode: string;
+  conditioningRationale: string;
+  risk: "low" | "medium" | "high";
+  shotLabel: string | null;
 };
 
-type PersistedSimpleVideoItem = {
+type HistoryItem = {
   id: string;
   prompt: string;
   created_at?: string | null;
@@ -134,161 +104,115 @@ type PersistedSimpleVideoItem = {
   video_meta?: Record<string, unknown> | null;
 };
 
-const SHOT_DESCRIPTORS: ShotDescriptor[] = [
-  {
-    shotType: "shot-a",
-    label: "Shot 1",
-    flowLabel: "Front → Mid",
-    helper: "Start frame to Intermediate Anchor for a controlled partial reveal.",
-  },
-  {
-    shotType: "shot-b",
-    label: "Shot 2",
-    flowLabel: "Mid → Back",
-    helper: "Intermediate Anchor to End frame for the final back reveal.",
-  },
-];
+/** Each member carries a single literal `kind` so the discriminant narrows. */
+type PickerTarget =
+  | { kind: "start" }
+  | { kind: "end" }
+  | { kind: "reference"; index: number };
 
-const REFERENCE_SLOTS: Array<{ label: string; role: VideoSimpleReferenceRole; hint: string }> = [
-  { label: "Front Reference", role: "front", hint: "Primary front garment view" },
-  { label: "Back Reference", role: "back", hint: "Back neckline and strap details" },
-  { label: "Optional Side / 3/4", role: "side", hint: "Optional side or angled continuity" },
-];
+const REFERENCE_SLOT_COUNT = 3;
 
-const GARMENT_ANCHOR_FIELDS: Array<{
-  key: keyof VideoSimpleGarmentAnchors;
-  label: string;
-  placeholder: string;
-}> = [
-  { key: "backNeckline", label: "Back neckline", placeholder: "Deep scoop, no closure" },
-  { key: "strapStructure", label: "Strap structure", placeholder: "Thin crossed straps" },
-  { key: "backCoverage", label: "Back coverage", placeholder: "High-cut, full seat coverage" },
-  { key: "seamLines", label: "Seam lines", placeholder: "Single centre seam" },
-  { key: "fabricFinish", label: "Fabric finish", placeholder: "Matte, slight stretch" },
-  { key: "colorContinuity", label: "Colour continuity", placeholder: "Solid emerald, no print" },
-];
-
-const MOTION_PRESET_LABELS: Record<VideoSimpleMotionPreset, string> = {
-  freeform: "Freeform",
-  "slow-pivot": "Slow pivot",
-  "turn-and-settle": "Turn and settle",
-  "camera-orbit": "Camera orbit",
-  "back-reveal-hold": "Back reveal hold",
-  "over-shoulder-reveal": "Over-shoulder reveal",
+/** How each conditioning mode is described to a seller. */
+const MODE_LABELS: Record<string, string> = {
+  interpolate: "Both ends pinned",
+  "first-frame": "Opening frame pinned",
+  references: "Reference images",
+  text: "Prompt only",
 };
 
-function resolveImageAspectRatio(url: string): Promise<number | null> {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      if (!image.naturalWidth || !image.naturalHeight) {
-        resolve(null);
-        return;
-      }
-      resolve(image.naturalWidth / image.naturalHeight);
-    };
-    image.onerror = () => resolve(null);
-    image.src = url;
-  });
+function modeLabel(mode: string) {
+  return MODE_LABELS[mode] ?? mode.replace(/-/g, " ");
 }
 
-function readMetaString(videoMeta: Record<string, unknown> | null | undefined, key: string) {
-  const value = videoMeta?.[key];
+/** Orientations a seller can label a frame with. */
+const FRAME_ROLE_OPTIONS: GarmentViewRole[] = [
+  "front",
+  "three_quarter_left",
+  "left_profile",
+  "back",
+  "right_profile",
+  "three_quarter_right",
+];
+
+function readMeta(meta: Record<string, unknown> | null | undefined, key: string) {
+  const value = meta?.[key];
   return typeof value === "string" ? value : "";
 }
 
-function readMetaNumber(videoMeta: Record<string, unknown> | null | undefined, key: string, fallback: number) {
-  const value = videoMeta?.[key];
+function readMetaNumber(meta: Record<string, unknown> | null | undefined, key: string, fallback: number) {
+  const value = meta?.[key];
   return typeof value === "number" ? value : fallback;
 }
 
-function asValidAspectRatio(value: string): VideoAspectRatio {
+function asAspectRatio(value: string): AspectRatio {
   return value === "16:9" ? "16:9" : "9:16";
 }
 
-export default function SimpleVideoStudioPage() {
+function createShotGroupId() {
+  return `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export default function VideoProjectPage() {
   const [prompt, setPrompt] = useState("");
-  const [duration, setDuration] = useState<VideoDuration>(6);
-  const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>("9:16");
-  const [workflowMode, setWorkflowMode] = useState<VideoSimpleWorkflowMode>("single-shot");
-  const [workflowGroupId, setWorkflowGroupId] = useState<string>(() => createWorkflowGroupId());
+  const [garmentDescription, setGarmentDescription] = useState("");
+  const [preset, setPreset] = useState<MotionPreset>("product-turn");
+  const [duration, setDuration] = useState<Duration>(6);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
+  const [resolution, setResolution] = useState<"720p" | "1080p">("720p");
 
   const [startFrame, setStartFrame] = useState<FrameAsset | null>(null);
-  const [intermediateFrame, setIntermediateFrame] = useState<FrameAsset | null>(null);
   const [endFrame, setEndFrame] = useState<FrameAsset | null>(null);
-  const [startFrameAspectRatio, setStartFrameAspectRatio] = useState<number | null>(null);
-  const [intermediateFrameAspectRatio, setIntermediateFrameAspectRatio] = useState<number | null>(null);
-  const [endFrameAspectRatio, setEndFrameAspectRatio] = useState<number | null>(null);
+  const [references, setReferences] = useState<Array<FrameAsset | null>>(
+    Array.from({ length: REFERENCE_SLOT_COUNT }, () => null),
+  );
+  const [anchors, setAnchors] = useState<GarmentAnchors>(() => createEmptyGarmentAnchors());
 
-  const [referenceImages, setReferenceImages] = useState<Array<FrameAsset | null>>(REFERENCE_SLOTS.map(() => null));
-  const [motionPreset, setMotionPreset] = useState<VideoSimpleMotionPreset>("freeform");
-  const [garmentAnchors, setGarmentAnchors] = useState<VideoSimpleGarmentAnchors>(() => createEmptyGarmentAnchors());
+  const [skuCode, setSkuCode] = useState("");
+  const [garmentViews, setGarmentViews] = useState<ResolvedGarmentView[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
 
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
-  const [galleryImages, setGalleryImages] = useState<GalleryImageItem[]>([]);
-  const [historyItems, setHistoryItems] = useState<PersistedSimpleVideoItem[]>([]);
+  const [galleryImages, setGalleryImages] = useState<ImageGenerationAsset[]>([]);
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activeShotLabel, setActiveShotLabel] = useState<string | null>(null);
   const [isBuildingPrompt, setIsBuildingPrompt] = useState(false);
-  const [promptBuilderResult, setPromptBuilderResult] = useState<PromptBuilderResponse["data"] | null>(null);
-  const [promptBuilderInlineError, setPromptBuilderInlineError] = useState<string | null>(null);
-  const [activeShot, setActiveShot] = useState<VideoSimpleShotType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const latestOutput = outputs[0] ?? null;
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDeletingHistoryId, setIsDeletingHistoryId] = useState<string | null>(null);
-  const [pendingHistoryDelete, setPendingHistoryDelete] = useState<PersistedSimpleVideoItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
     return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   }, []);
 
-  const activeReferenceImages = useMemo(
-    () =>
-      referenceImages
-        .map((item, index) => (item ? { ...item, role: REFERENCE_SLOTS[index].role } : null))
-        .filter(Boolean) as Array<FrameAsset & { role: VideoSimpleReferenceRole }>,
-    [referenceImages],
+  const activeReferences = useMemo(() => references.filter((item): item is FrameAsset => Boolean(item)), [references]);
+
+  /**
+   * The same planner the server runs, so the page can show which conditioning
+   * shape a request will use — and what the model will have to invent — before
+   * the seller spends a generation finding out.
+   */
+  const plan = useMemo(
+    () => planConditioning({ startFrame, endFrame, references: activeReferences }),
+    [startFrame, endFrame, activeReferences],
   );
 
-  const preflightWarnings = useMemo(
-    () =>
-      validateVideoSimpleControls({
-        prompt,
-        motionPreset,
-        workflowMode,
-        startFrameAspectRatio,
-        intermediateFrameAspectRatio,
-        endFrameAspectRatio,
-        hasIntermediateFrame: Boolean(intermediateFrame),
-        hasEndFrame: Boolean(endFrame),
-        referenceImages: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
-        garmentAnchors,
-      }),
-    [
-      activeReferenceImages,
-      endFrame,
-      endFrameAspectRatio,
-      garmentAnchors,
-      intermediateFrame,
-      intermediateFrameAspectRatio,
-      motionPreset,
-      prompt,
-      startFrameAspectRatio,
-      workflowMode,
-    ],
-  );
+  const turnIntent = useMemo(() => detectsTurnIntent(prompt, preset), [prompt, preset]);
+  const fidelity = useMemo(() => assessFidelity(plan, { turnIntent }), [plan, turnIntent]);
 
   const loadGalleryImages = useCallback(async () => {
     if (!supabase) return;
-    const assets = await loadDistinctImageGenerationAssets(supabase, { queryLimit: 180, maxResults: 90 });
-    setGalleryImages(assets);
+    setGalleryImages(await loadDistinctImageGenerationAssets(supabase, { queryLimit: 180, maxResults: 90 }));
   }, [supabase]);
 
-  const loadSimpleHistory = useCallback(async () => {
+  const loadHistory = useCallback(async () => {
     if (!supabase) return;
     const { data } = await supabase
       .from("generations")
@@ -296,158 +220,149 @@ export default function SimpleVideoStudioPage() {
       .eq("generation_kind", "video")
       .eq("video_meta->>source", "video-simple")
       .order("created_at", { ascending: false })
-      .limit(8);
+      .limit(9);
 
-    setHistoryItems(((data ?? []) as PersistedSimpleVideoItem[]).filter((item) => Boolean(item.asset_url ?? item.url)));
+    setHistoryItems(((data ?? []) as HistoryItem[]).filter((item) => Boolean(item.asset_url ?? item.url)));
   }, [supabase]);
 
   useEffect(() => {
     void loadGalleryImages();
-    void loadSimpleHistory();
-  }, [loadGalleryImages, loadSimpleHistory]);
+    void loadHistory();
+  }, [loadGalleryImages, loadHistory]);
 
-  async function applyFrameSelection(item: GalleryImageItem) {
-    const imageUrl = item.asset_url ?? item.url;
-    if (!imageUrl || !pickerTarget) return;
-    const target = pickerTarget;
+  async function loadGarmentLibrary() {
+    const code = skuCode.trim();
+    if (!code || isLoadingLibrary) return;
 
-    const selection: FrameAsset = {
-      id: item.id,
-      url: imageUrl,
-      label: item.prompt || "Gallery image",
-    };
+    setIsLoadingLibrary(true);
+    setError(null);
+    setLibraryNotice(null);
 
-    const aspect = await resolveImageAspectRatio(imageUrl);
+    try {
+      const response = await fetch(`/api/garment-library?sku_code=${encodeURIComponent(code)}`);
+      const payload = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+        data?: { views?: ResolvedGarmentView[] };
+      };
+      if (!response.ok || !payload.success) throw new Error(payload.error ?? "Could not load the garment library.");
 
-    if (target.kind === "reference") {
-      const referenceIndex = target.index;
-      setReferenceImages((current) => {
+      const views = payload.data?.views ?? [];
+      setGarmentViews(views);
+
+      if (!views.length) {
+        setLibraryNotice(
+          `No saved views for ${code.toUpperCase()} yet. Generate the front and back in the Image Project, then save each one to this SKU.`,
+        );
+        return;
+      }
+
+      // Auto-fill the strongest available setup: a real front and a real back
+      // pin both ends of a turn, which is the whole point of the library.
+      const byRole = new Map(views.map((view) => [view.role, view]));
+      const front = byRole.get("front");
+      const back = byRole.get("back");
+
+      if (front) setStartFrame({ url: front.url, role: "front", id: front.generation_id });
+      if (back) setEndFrame({ url: back.url, role: "back", id: back.generation_id });
+
+      const remaining = views.filter((view) => view.role !== "front" && view.role !== "back");
+      setReferences(
+        Array.from({ length: REFERENCE_SLOT_COUNT }, (_, index) => {
+          const view = remaining[index];
+          return view ? { url: view.url, role: view.role, id: view.generation_id } : null;
+        }),
+      );
+
+      setLibraryNotice(
+        front && back
+          ? `Loaded ${views.length} saved view${views.length === 1 ? "" : "s"}. Front and back are pinned as the clip's endpoints.`
+          : back
+            ? `Loaded ${views.length} saved view${views.length === 1 ? "" : "s"}. No front view saved yet.`
+            : `Loaded ${views.length} saved view${views.length === 1 ? "" : "s"}. No back view saved yet — that is the one that stops the reverse being invented.`,
+      );
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Could not load the garment library.");
+    } finally {
+      setIsLoadingLibrary(false);
+    }
+  }
+
+  function applyPickedImage(item: ImageGenerationAsset) {
+    const url = item.asset_url ?? item.url;
+    if (!url || !pickerTarget) return;
+
+    const asset: FrameAsset = { url, id: item.id, label: item.prompt || "Gallery image" };
+
+    if (pickerTarget.kind === "start") {
+      setStartFrame(asset);
+    } else if (pickerTarget.kind === "end") {
+      setEndFrame(asset);
+    } else {
+      const { index } = pickerTarget;
+      setReferences((current) => {
         const next = [...current];
-        next[referenceIndex] = selection;
+        next[index] = asset;
         return next;
       });
-    } else if (target.kind === "start") {
-      setStartFrame(selection);
-      setStartFrameAspectRatio(aspect);
-    } else if (target.kind === "intermediate") {
-      setIntermediateFrame(selection);
-      setIntermediateFrameAspectRatio(aspect);
-    } else {
-      setEndFrame(selection);
-      setEndFrameAspectRatio(aspect);
     }
 
     setPickerTarget(null);
   }
 
-  function updateGarmentAnchor<K extends keyof VideoSimpleGarmentAnchors>(key: K, value: string) {
-    setGarmentAnchors((current) => ({ ...current, [key]: value }));
-  }
-
-  function moveReferenceImage(index: number, direction: -1 | 1) {
-    const targetIndex = index + direction;
-    if (targetIndex < 0 || targetIndex >= REFERENCE_SLOTS.length) return;
-    setReferenceImages((current) => {
-      const next = [...current];
-      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-      return next;
-    });
-  }
-
-  function resolveShotFrames(shotType: VideoSimpleShotType) {
-    if (workflowMode !== "two-shot-back-reveal") {
-      return {
-        firstFrameUrl: startFrame?.url ?? null,
-        lastFrameUrl: endFrame?.url ?? null,
-      };
-    }
-
-    if (shotType === "shot-a") {
-      return {
-        firstFrameUrl: startFrame?.url ?? null,
-        lastFrameUrl: intermediateFrame?.url ?? null,
-      };
-    }
-
-    return {
-      firstFrameUrl: intermediateFrame?.url ?? null,
-      lastFrameUrl: endFrame?.url ?? null,
-    };
+  function setFrameRole(which: "start" | "end", role: string) {
+    const next = isGarmentViewRole(role) ? role : undefined;
+    if (which === "start") setStartFrame((current) => (current ? { ...current, role: next } : current));
+    else setEndFrame((current) => (current ? { ...current, role: next } : current));
   }
 
   async function handleGeneratePrompt() {
     if (!prompt.trim() || isBuildingPrompt) return;
 
+    setIsBuildingPrompt(true);
+    setError(null);
     try {
-      setIsBuildingPrompt(true);
-      setError(null);
-      setPromptBuilderInlineError(null);
-
       const response = await fetch("/api/prompt-builder", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectType: "video",
-          workflowMode: workflowMode === "two-shot-back-reveal" ? "two_shot" : "single_shot",
+          workflowMode: null,
           userIdea: prompt.trim(),
-          environment: "simple-video",
-          motionPreset,
-          garmentAnchors,
+          environment: "video-clip",
+          motionPreset: preset,
+          garmentAnchors: anchors,
           hasStartFrame: Boolean(startFrame),
           hasEndFrame: Boolean(endFrame),
-          hasReferenceImages: activeReferenceImages.length > 0,
+          hasReferenceImages: activeReferences.length > 0,
         }),
       });
-
       const payload = (await response.json()) as PromptBuilderResponse;
       if (!response.ok || !payload.success || !payload.data) {
-        throw new Error(payload.error ?? "Failed to generate prompt.");
+        throw new Error(payload.error ?? "Could not refine the prompt.");
       }
-
-      setPromptBuilderResult(payload.data);
-      const nextPrompt = payload.data.videoPrompt.trim();
-      if (!nextPrompt) {
-        setPromptBuilderInlineError("Prompt Builder returned an empty video prompt. Please simplify your idea and try again.");
-        return;
-      }
-
-      setPrompt(nextPrompt);
-      if (payload.data.recommendedMode === "two_shot") {
-        setWorkflowMode("two-shot-back-reveal");
-      } else {
-        setWorkflowMode("single-shot");
-      }
+      const next = payload.data.videoPrompt.trim();
+      if (next) setPrompt(next);
     } catch (buildError) {
-      setError(buildError instanceof Error ? buildError.message : "Failed to generate prompt.");
+      setError(buildError instanceof Error ? buildError.message : "Could not refine the prompt.");
     } finally {
       setIsBuildingPrompt(false);
     }
   }
 
-  async function generateShot(shotType: VideoSimpleShotType) {
+  async function generateClip(options?: {
+    startOverride?: FrameAsset | null;
+    endOverride?: FrameAsset | null;
+    shotLabel?: string;
+    shotGroupId?: string;
+  }) {
     if (!prompt.trim()) {
-      setError("Enter a prompt first.");
+      setError("Describe the motion before generating.");
       return;
     }
 
-    if (workflowMode === "two-shot-back-reveal") {
-      if (!intermediateFrame) {
-        setError("Two-shot mode requires an Intermediate Anchor frame.");
-        return;
-      }
-
-      if (shotType === "shot-b" && !endFrame) {
-        setError("Shot 2 requires an End frame.");
-        return;
-      }
-    }
-
-    const { firstFrameUrl, lastFrameUrl } = resolveShotFrames(shotType);
-    const requestWorkflowMode = workflowMode;
-    const requestGroupId = requestWorkflowMode === "two-shot-back-reveal" ? workflowGroupId : null;
-
     setIsGenerating(true);
-    setActiveShot(shotType);
+    setActiveShotLabel(options?.shotLabel ?? null);
     setError(null);
 
     try {
@@ -456,206 +371,152 @@ export default function SimpleVideoStudioPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           prompt: prompt.trim(),
+          garment_description: garmentDescription.trim() || undefined,
           duration_seconds: duration,
           aspect_ratio: aspectRatio,
-          first_frame_url: firstFrameUrl,
-          last_frame_url: lastFrameUrl,
-          motion_preset: motionPreset,
-          workflow_mode: requestWorkflowMode,
-          shot_type: requestWorkflowMode === "two-shot-back-reveal" ? shotType : "single",
-          workflow_group_id: requestGroupId,
-          reference_images: activeReferenceImages.map((item) => ({ url: item.url, role: item.role })),
-          garment_anchors: garmentAnchors,
+          resolution,
+          motion_preset: preset,
+          garment_anchors: anchors,
+          sku_code: skuCode.trim() || null,
+          start_frame: options?.startOverride !== undefined ? options.startOverride : startFrame,
+          end_frame: options?.endOverride !== undefined ? options.endOverride : endFrame,
+          reference_images: activeReferences,
+          shot_label: options?.shotLabel ?? null,
+          shot_group_id: options?.shotGroupId ?? null,
         }),
       });
 
-      const payload = (await response.json()) as SimpleVideoResponse;
+      const payload = (await response.json()) as GenerateResponse;
       if (!response.ok || !payload.success) {
-        throw new Error(normalizeUploadLimitError(payload));
+        throw new Error(
+          payload.error_code === "upload-limit-exceeded" && typeof payload.max_mb === "number"
+            ? `The clip is larger than the ${payload.max_mb.toFixed(0)} MB upload limit. Try a shorter duration or 720p.`
+            : (payload.error ?? "Video generation failed."),
+        );
       }
 
-      const generatedUrl = payload.data?.video_url ?? null;
-      if (!generatedUrl) {
-        throw new Error("Video generation succeeded but no video URL was returned.");
-      }
+      const videoUrl = payload.data?.video_url;
+      if (!videoUrl) throw new Error("Generation succeeded but no video URL came back.");
 
-      const nextOutput: OutputItem = {
-        generationId: payload.data?.generation_id ?? `${Date.now()}`,
-        videoUrl: generatedUrl,
-        createdAt: new Date().toISOString(),
-        model: payload.data?.model ?? "unknown",
-        duration: payload.data?.duration_seconds ?? duration,
-        aspectRatio: payload.data?.aspect_ratio ?? aspectRatio,
-        compiledPrompt: payload.data?.compiled_prompt ?? prompt.trim(),
-        controls: payload.data?.controls,
-      };
-      setOutputs((current) => [nextOutput, ...current]);
+      setOutputs((current) => [
+        {
+          generationId: payload.data?.generation_id ?? `${Date.now()}`,
+          videoUrl,
+          model: payload.data?.model ?? "",
+          duration: payload.data?.duration_seconds ?? duration,
+          aspectRatio: payload.data?.aspect_ratio ?? aspectRatio,
+          compiledPrompt: payload.data?.compiled_prompt ?? "",
+          conditioningMode: payload.data?.conditioning?.mode ?? plan.mode,
+          conditioningRationale: payload.data?.conditioning?.rationale ?? plan.rationale,
+          risk: payload.data?.fidelity?.risk ?? fidelity.risk,
+          shotLabel: payload.data?.controls?.shot_label ?? options?.shotLabel ?? null,
+        },
+        ...current,
+      ]);
       setCopyStatus("idle");
       revealResults("latest-output");
-      if (requestWorkflowMode === "two-shot-back-reveal" && shotType === "shot-b") {
-        setWorkflowGroupId(createWorkflowGroupId());
-      }
-      await loadSimpleHistory();
-    } catch (generationError) {
-      setError(generationError instanceof Error ? generationError.message : "Failed to generate video.");
+      await loadHistory();
+    } catch (generateError) {
+      setError(generateError instanceof Error ? generateError.message : "Video generation failed.");
     } finally {
       setIsGenerating(false);
-      setActiveShot(null);
+      setActiveShotLabel(null);
     }
   }
 
-  function buildDownloadFilename(url: string) {
+  /**
+   * A mid-rotation view, used to split a half-turn into two pinned clips.
+   *
+   * A 180° turn inside one 8-second clip is where garment detail drifts worst.
+   * With a saved 3/4 or profile view the turn becomes two shorter clips that
+   * each begin and end on a real image, so nothing beyond a quarter-turn is
+   * ever invented.
+   */
+  const midTurnView = useMemo(
+    () => garmentViews.find((view) => view.role === "three_quarter_left" || view.role === "left_profile") ?? null,
+    [garmentViews],
+  );
+
+  const canSplitTurn =
+    Boolean(startFrame && endFrame && midTurnView) &&
+    fidelity.uncoveredDegrees !== null &&
+    fidelity.uncoveredDegrees >= 135;
+
+  async function generateSplitTurn() {
+    if (!startFrame || !endFrame || !midTurnView) return;
+    const groupId = createShotGroupId();
+    const mid: FrameAsset = { url: midTurnView.url, role: midTurnView.role, id: midTurnView.generation_id };
+
+    await generateClip({ endOverride: mid, shotLabel: "Shot 1 · front to mid", shotGroupId: groupId });
+    await generateClip({ startOverride: mid, shotLabel: "Shot 2 · mid to back", shotGroupId: groupId });
+  }
+
+  async function handleDownloadVideo() {
+    if (!latestOutput || isDownloading) return;
+    setIsDownloading(true);
     try {
-      const parsedUrl = new URL(url);
-      const pathnameName = parsedUrl.pathname.split("/").pop() || "generated-video.mp4";
-      return pathnameName.includes(".") ? pathnameName : `${pathnameName}.mp4`;
+      const response = await fetch(latestOutput.videoUrl);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = `megaska-clip-${latestOutput.generationId}.mp4`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     } catch {
-      return "generated-video.mp4";
+      setError("Downloading the clip failed. Try the Open link instead.");
+    } finally {
+      setIsDownloading(false);
     }
   }
 
   async function handleCopyVideoUrl() {
-    if (!latestOutput?.videoUrl) return;
+    if (!latestOutput) return;
     try {
       await navigator.clipboard.writeText(latestOutput.videoUrl);
       setCopyStatus("copied");
     } catch {
       setCopyStatus("error");
     }
+    window.setTimeout(() => setCopyStatus("idle"), 2000);
   }
 
-  async function handleDownloadVideo() {
-    if (!latestOutput?.videoUrl) return;
-    setIsDownloading(true);
-    const filename = buildDownloadFilename(latestOutput.videoUrl);
-    try {
-      const isSameOrigin = new URL(latestOutput.videoUrl, window.location.href).origin === window.location.origin;
-      if (isSameOrigin) {
-        const link = document.createElement("a");
-        link.href = latestOutput.videoUrl;
-        link.download = filename;
-        link.rel = "noreferrer";
-        document.body.append(link);
-        link.click();
-        link.remove();
-        return;
-      }
-
-      const response = await fetch(latestOutput.videoUrl);
-      if (!response.ok) {
-        throw new Error("Fetch failed");
-      }
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = filename;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
-    } catch {
-      const link = document.createElement("a");
-      link.href = latestOutput.videoUrl;
-      link.download = filename;
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      document.body.append(link);
-      link.click();
-      link.remove();
-    } finally {
-      setIsDownloading(false);
-    }
-  }
-
-  async function handleDeleteHistoryItem(item: PersistedSimpleVideoItem) {
+  async function handleDeleteHistoryItem(item: HistoryItem) {
     if (isDeletingHistoryId) return;
-
+    setIsDeletingHistoryId(item.id);
     try {
-      setIsDeletingHistoryId(item.id);
       const response = await fetch(`/api/generations/${item.id}`, { method: "DELETE" });
       const payload = (await response.json()) as { success?: boolean; error?: string };
-      if (!response.ok || !payload.success) {
-        throw new Error(payload.error ?? "Failed to delete generated video.");
-      }
+      if (!response.ok || !payload.success) throw new Error(payload.error ?? "Could not delete this clip.");
       setHistoryItems((current) => current.filter((entry) => entry.id !== item.id));
       setOutputs((current) => current.filter((entry) => entry.generationId !== item.id));
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete generated video.");
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete this clip.");
     } finally {
       setIsDeletingHistoryId(null);
-      setPendingHistoryDelete(null);
+      setPendingDelete(null);
     }
   }
 
-  const pickerTargetLabel =
-    pickerTarget?.kind === "reference"
-      ? REFERENCE_SLOTS[pickerTarget.index].label
-      : pickerTarget?.kind === "start"
-        ? "a start frame"
-        : pickerTarget?.kind === "intermediate"
-          ? "an intermediate anchor"
-          : pickerTarget?.kind === "end"
-            ? "an end frame"
-            : "an image";
+  const pickerLabel =
+    pickerTarget?.kind === "start"
+      ? "an opening frame"
+      : pickerTarget?.kind === "end"
+        ? "a closing frame"
+        : "a reference image";
 
-  const isTwoShot = workflowMode === "two-shot-back-reveal";
-  const missingIntermediate = isTwoShot && !intermediateFrame;
-  const missingEndFrame = isTwoShot && !endFrame;
-  const anchorsFilled = Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length;
-  const referenceCount = activeReferenceImages.length;
-
-  /** Frame slots for the current mode. Two-shot adds the required midpoint. */
-  const frameSlots = [
-    {
-      key: "start" as const,
-      label: "Start frame",
-      hint: "The first frame of the clip. Usually your master front view.",
-      value: startFrame,
-      required: false,
-      missing: false,
-    },
-    ...(isTwoShot
-      ? [
-          {
-            key: "intermediate" as const,
-            label: "Intermediate anchor",
-            hint: "A 3/4 rear view. Splits the hard front-to-back turn in two.",
-            value: intermediateFrame,
-            required: true,
-            missing: missingIntermediate,
-          },
-        ]
-      : []),
-    {
-      key: "end" as const,
-      label: "End frame",
-      hint: isTwoShot ? "The final back view. Required for Shot 2." : "Where the clip lands. Leave empty to let motion decide.",
-      value: endFrame,
-      required: isTwoShot,
-      missing: missingEndFrame,
-    },
-  ];
-
-  function clearFrame(key: "start" | "intermediate" | "end") {
-    if (key === "start") {
-      setStartFrame(null);
-      setStartFrameAspectRatio(null);
-    } else if (key === "intermediate") {
-      setIntermediateFrame(null);
-      setIntermediateFrameAspectRatio(null);
-    } else {
-      setEndFrame(null);
-      setEndFrameAspectRatio(null);
-    }
-  }
+  const riskTone = fidelity.risk === "low" ? "success" : fidelity.risk === "medium" ? "warning" : "danger";
+  const anchorsFilled = Object.values(anchors).filter((value) => value.trim().length > 0).length;
+  const referencesUsable = plan.mode === "references";
 
   return (
     <PageShell
       accent="cyan"
       eyebrow="Studio Project"
       title="Video Project"
-      description="Turn your studio images into short clips. Use two-shot mode when a full front-to-back turn drifts."
+      description="Turn saved product views into clips. Pin both ends of a turn and the garment stays real all the way round."
       headerAction={
         <Link
           href="/"
@@ -668,275 +529,239 @@ export default function SimpleVideoStudioPage() {
       }
       rail={
         <div className="space-y-4">
-          {/* Step 1 — mode first, because it decides which frames are required. */}
+          {/* Step 1 — the garment library. This is the fix for invented backs:
+              save the real views once, and every later clip is conditioned on
+              them instead of guessing. */}
           <Card className="space-y-3 p-4">
-            <SectionHeading
-              step={1}
-              title="Workflow"
-              description={
-                isTwoShot
-                  ? "Generate two safer clips through a midpoint anchor, then join them."
-                  : "One clip, start to finish. Best for simple motion."
-              }
-            />
-            <SegmentedControl
-              label="Workflow mode"
-              value={workflowMode}
-              columns={1}
-              onChange={(next) => setWorkflowMode(next)}
-              options={[
-                {
-                  value: "single-shot",
-                  label: "Single shot",
-                  description: "One continuous clip.",
-                },
-                {
-                  value: "two-shot-back-reveal",
-                  label: "Two-shot back reveal",
-                  description: "For difficult front-to-back turns.",
-                },
-              ]}
-            />
-
-            {isTwoShot ? (
-              <Well className="space-y-2 p-3">
-                {SHOT_DESCRIPTORS.map((shot) => (
-                  <div key={shot.shotType} className="flex gap-2.5">
-                    <Badge tone="accent">{shot.label}</Badge>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-ink-2">{shot.flowLabel}</p>
-                      <p className="mt-0.5 text-[11px] leading-snug text-ink-3">{shot.helper}</p>
-                    </div>
-                  </div>
-                ))}
-              </Well>
-            ) : null}
-          </Card>
-
-          {/* Step 2 — prompt. */}
-          <Card className="space-y-3 p-4">
-            <SectionHeading step={2} title="Prompt" />
-
-            <TextAreaField
-              label="Describe the motion"
-              hint="Subject behaviour, camera movement and pacing — not just the scene."
-              value={prompt}
-              maxLength={2000}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Model turns slowly from front to profile, camera holds steady, soft daylight…"
-            />
-
-            <div className="flex items-center gap-2">
+            <SectionHeading step={1} title="Garment" description="Load the verified views saved for this product." />
+            <div className="flex items-end gap-2">
+              <TextField
+                label="SKU code"
+                placeholder="MGSW05"
+                className="flex-1"
+                value={skuCode}
+                onChange={(event) => setSkuCode(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void loadGarmentLibrary();
+                }}
+              />
               <Button
-                size="sm"
-                onClick={() => void handleGeneratePrompt()}
-                loading={isBuildingPrompt}
-                disabled={!prompt.trim()}
-                iconLeft={<Wand2 className="h-3.5 w-3.5" />}
+                onClick={() => void loadGarmentLibrary()}
+                loading={isLoadingLibrary}
+                disabled={!skuCode.trim()}
+                iconLeft={<Library className="h-4 w-4" />}
               >
-                Refine with Prompt Builder
+                Load
               </Button>
-              {promptBuilderResult ? (
-                <Badge
-                  tone={
-                    promptBuilderResult.riskLevel === "high"
-                      ? "danger"
-                      : promptBuilderResult.riskLevel === "medium"
-                        ? "warning"
-                        : "success"
-                  }
-                >
-                  {promptBuilderResult.riskLevel} risk
-                </Badge>
-              ) : null}
             </div>
 
-            {promptBuilderInlineError ? (
-              <Alert tone="warning" onDismiss={() => setPromptBuilderInlineError(null)}>
-                {promptBuilderInlineError}
-              </Alert>
+            {garmentViews.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {garmentViews.map((view) => (
+                  <Badge key={view.id} tone={view.role === "back" ? "success" : "neutral"}>
+                    {GARMENT_ROLE_LABELS[view.role]}
+                  </Badge>
+                ))}
+              </div>
             ) : null}
 
-            {promptBuilderResult?.negativeConstraints?.length ? (
-              <Well className="p-3">
-                <p className="text-xs font-medium text-ink-2">Negative constraints</p>
-                <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
-                  {promptBuilderResult.negativeConstraints.join(" · ")}
-                </p>
-              </Well>
-            ) : null}
+            {libraryNotice ? <Alert tone="info">{libraryNotice}</Alert> : null}
 
-            {promptBuilderResult?.shotNotes?.length ? (
-              <Well className="p-3">
-                <p className="text-xs font-medium text-ink-2">Shot notes</p>
-                <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
-                  {promptBuilderResult.shotNotes.join(" · ")}
-                </p>
-              </Well>
-            ) : null}
+            <TextField
+              label="Garment description"
+              hint="Optional. A short product phrase helps the model name what it is holding constant."
+              placeholder="Emerald ribbed one-piece swimsuit"
+              value={garmentDescription}
+              onChange={(event) => setGarmentDescription(event.target.value)}
+            />
           </Card>
 
-          {/* Step 3 — frames. Required slots now say so before you hit Generate. */}
+          {/* Step 2 — frames. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading
+              step={2}
+              title="Frames"
+              description="Both ends pinned to real images is the strongest setup available."
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <AssetSlot
+                  label="Opening frame"
+                  url={startFrame?.url}
+                  onPick={() => setPickerTarget({ kind: "start" })}
+                  onClear={startFrame ? () => setStartFrame(null) : undefined}
+                />
+                {startFrame ? (
+                  <SelectField
+                    label="Shows"
+                    value={startFrame.role ?? ""}
+                    onChange={(event) => setFrameRole("start", event.target.value)}
+                  >
+                    <option value="">Not specified</option>
+                    {FRAME_ROLE_OPTIONS.map((role) => (
+                      <option key={role} value={role}>
+                        {GARMENT_ROLE_LABELS[role]}
+                      </option>
+                    ))}
+                  </SelectField>
+                ) : null}
+              </div>
+
+              <div className="space-y-2">
+                <AssetSlot
+                  label="Closing frame"
+                  url={endFrame?.url}
+                  required={turnIntent}
+                  missing={turnIntent && !endFrame}
+                  onPick={() => setPickerTarget({ kind: "end" })}
+                  onClear={endFrame ? () => setEndFrame(null) : undefined}
+                />
+                {endFrame ? (
+                  <SelectField
+                    label="Shows"
+                    value={endFrame.role ?? ""}
+                    onChange={(event) => setFrameRole("end", event.target.value)}
+                  >
+                    <option value="">Not specified</option>
+                    {FRAME_ROLE_OPTIONS.map((role) => (
+                      <option key={role} value={role}>
+                        {GARMENT_ROLE_LABELS[role]}
+                      </option>
+                    ))}
+                  </SelectField>
+                ) : null}
+              </div>
+            </div>
+          </Card>
+
+          {/* Step 3 — references, with the provider's exclusivity rule stated
+              rather than hidden. */}
           <Card className="space-y-3 p-4">
             <SectionHeading
               step={3}
-              title="Frames"
-              description="Pulled from your Image Project gallery."
+              title="Reference images"
+              description="Used only when the clip is not pinned to a frame pair."
+              action={
+                activeReferences.length ? (
+                  <Badge tone={referencesUsable ? "accent" : "neutral"}>{activeReferences.length}</Badge>
+                ) : null
+              }
             />
-            <div className="grid grid-cols-2 gap-3">
-              {frameSlots.map((slot) => (
-                <AssetSlot
-                  key={slot.key}
-                  label={slot.label}
-                  hint={slot.hint}
-                  url={slot.value?.url}
-                  required={slot.required}
-                  missing={slot.missing}
-                  onPick={() => setPickerTarget({ kind: slot.key })}
-                  onClear={slot.value ? () => clearFrame(slot.key) : undefined}
-                />
+
+            {!referencesUsable && activeReferences.length ? (
+              <Alert tone="info">
+                The provider does not accept reference images alongside opening and closing frames, so these are not
+                being sent. Pinned frames are the stronger signal — clear one to switch to references.
+              </Alert>
+            ) : null}
+
+            <div className="grid grid-cols-3 gap-3">
+              {references.map((reference, index) => (
+                <div key={index} className={referencesUsable || !activeReferences.length ? undefined : "opacity-45"}>
+                  <AssetSlot
+                    label={`Ref ${index + 1}`}
+                    hideStatus
+                    url={reference?.url}
+                    onPick={() => setPickerTarget({ kind: "reference", index })}
+                    onClear={
+                      reference
+                        ? () =>
+                            setReferences((current) => {
+                              const next = [...current];
+                              next[index] = null;
+                              return next;
+                            })
+                        : undefined
+                    }
+                  />
+                </div>
               ))}
             </div>
           </Card>
 
-          {/* Step 4 — references. */}
+          {/* Step 4 — motion and prompt. */}
           <Card className="space-y-3 p-4">
-            <SectionHeading
-              step={4}
-              title="Reference images"
-              description="Up to three, to hold garment detail through the turn."
-              action={referenceCount ? <Badge tone="accent">{referenceCount}</Badge> : null}
+            <SectionHeading step={4} title="Motion" />
+
+            <SegmentedControl
+              label="Motion preset"
+              value={preset}
+              columns={2}
+              onChange={setPreset}
+              options={MOTION_PRESETS.map((value) => ({
+                value,
+                label: MOTION_PRESET_LABELS[value],
+                description: MOTION_PRESET_HINTS[value],
+              }))}
             />
 
-            <div className="grid grid-cols-3 gap-3">
-              {REFERENCE_SLOTS.map((slot, index) => {
-                const value = referenceImages[index];
-                const neighbours = REFERENCE_SLOTS.map((other, otherIndex) => ({ other, otherIndex })).filter(
-                  (entry) => entry.otherIndex !== index && Math.abs(entry.otherIndex - index) === 1,
-                );
+            <TextAreaField
+              label="Describe the motion"
+              hint="Subject behaviour, camera movement and pacing."
+              value={prompt}
+              maxLength={2000}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Model turns steadily from front to back, camera holds still, soft daylight…"
+            />
 
-                return (
-                  <div key={slot.role} className="space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-ink">{slot.label}</p>
-                        <p className="mt-0.5 text-[11px] leading-snug text-ink-3">{slot.hint}</p>
-                      </div>
-                      {value ? (
-                        <ActionMenu
-                          label={`${slot.label} options`}
-                          items={[
-                            // "Move left/right" said nothing about what it did.
-                            // These slots are roles, so the real action is
-                            // reassigning the image to another role.
-                            ...neighbours.map((entry) => ({
-                              key: `swap-${entry.otherIndex}`,
-                              label: `Swap with ${entry.other.label}`,
-                              icon: <ArrowLeftRight className="h-3.5 w-3.5" />,
-                              onSelect: () =>
-                                moveReferenceImage(index, entry.otherIndex > index ? 1 : -1),
-                            })),
-                            {
-                              key: "remove",
-                              label: "Remove image",
-                              icon: <X className="h-3.5 w-3.5" />,
-                              destructive: true,
-                              onSelect: () =>
-                                setReferenceImages((current) => {
-                                  const next = [...current];
-                                  next[index] = null;
-                                  return next;
-                                }),
-                            },
-                          ]}
-                        />
-                      ) : null}
-                    </div>
-
-                    <div className="overflow-hidden rounded-xl border border-line">
-                      {value ? (
-                        <button
-                          type="button"
-                          onClick={() => setPickerTarget({ kind: "reference", index })}
-                          className="block w-full"
-                          aria-label={`Replace ${slot.label}`}
-                        >
-                          <MediaFrame src={value.url} alt={slot.label} ratio="square" />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setPickerTarget({ kind: "reference", index })}
-                          className="flex aspect-square w-full flex-col items-center justify-center gap-1.5 bg-well text-ink-3 transition-colors hover:bg-raised hover:text-ink-2"
-                        >
-                          <ImagePlus className="h-5 w-5" aria-hidden />
-                          <span className="text-[11px] font-medium">Choose</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <Button
+              size="sm"
+              onClick={() => void handleGeneratePrompt()}
+              loading={isBuildingPrompt}
+              disabled={!prompt.trim()}
+              iconLeft={<Wand2 className="h-3.5 w-3.5" />}
+            >
+              Refine with Prompt Builder
+            </Button>
           </Card>
 
-          {/* Step 5 — output settings. */}
+          {/* Step 5 — output. */}
           <Card className="space-y-3 p-4">
             <SectionHeading step={5} title="Output" />
-
             <div className="grid grid-cols-2 gap-3">
               <SelectField
                 label="Duration"
                 value={duration}
-                onChange={(event) => setDuration(Number(event.target.value) as VideoDuration)}
+                onChange={(event) => setDuration(Number(event.target.value) as Duration)}
               >
                 <option value={4}>4 seconds</option>
                 <option value={6}>6 seconds</option>
                 <option value={8}>8 seconds</option>
               </SelectField>
-
               <SelectField
                 label="Aspect ratio"
                 value={aspectRatio}
-                onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)}
+                onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}
               >
-                <option value="9:16">9:16 — vertical (Reels, TikTok)</option>
+                <option value="9:16">9:16 — vertical</option>
                 <option value="16:9">16:9 — landscape</option>
               </SelectField>
             </div>
-
             <SelectField
-              label="Motion preset"
-              hint={
-                isTwoShot
-                  ? "Two-shot mode already biases prompts toward slower, partial transitions."
-                  : "Presets bias the prompt toward a known-safe camera and subject move."
-              }
-              value={motionPreset}
-              onChange={(event) => setMotionPreset(event.target.value as VideoSimpleMotionPreset)}
+              label="Resolution"
+              hint="1080p is sharper but much larger to store."
+              value={resolution}
+              onChange={(event) => setResolution(event.target.value as "720p" | "1080p")}
             >
-              {VIDEO_SIMPLE_MOTION_PRESETS.map((preset) => (
-                <option key={preset} value={preset}>
-                  {MOTION_PRESET_LABELS[preset]}
-                </option>
-              ))}
+              <option value="720p">720p</option>
+              <option value="1080p">1080p</option>
             </SelectField>
           </Card>
 
-          {/* Advanced, collapsed by default — most runs never touch it. */}
           <Card className="overflow-hidden">
             <details className="group">
               <summary className="flex cursor-pointer items-center justify-between gap-3 p-4 text-sm font-medium text-ink">
                 <span className="flex items-center gap-2">
-                  Garment anchors
+                  Garment details
                   {anchorsFilled ? <Badge tone="accent">{anchorsFilled}</Badge> : null}
                 </span>
                 <ChevronDown className="h-4 w-4 text-ink-3 transition-transform group-open:rotate-180" aria-hidden />
               </summary>
-
               <div className="space-y-3 border-t border-line p-4">
                 <p className="text-xs leading-relaxed text-ink-3">
-                  Name only the details that must survive the turn. Keep each field to a few words.
+                  Name only what must survive the turn. The reference imagery does most of the work; a few words help
+                  where a detail is hard to see.
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {GARMENT_ANCHOR_FIELDS.map((field) => (
@@ -944,24 +769,14 @@ export default function SimpleVideoStudioPage() {
                       key={field.key}
                       label={field.label}
                       placeholder={field.placeholder}
-                      value={garmentAnchors[field.key]}
-                      onChange={(event) => updateGarmentAnchor(field.key, event.target.value)}
+                      value={anchors[field.key]}
+                      onChange={(event) => setAnchors((current) => ({ ...current, [field.key]: event.target.value }))}
                     />
                   ))}
                 </div>
               </div>
             </details>
           </Card>
-
-          {preflightWarnings.length ? (
-            <Alert tone="warning" title="Before you generate">
-              <ul className="list-disc space-y-1 pl-4">
-                {preflightWarnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            </Alert>
-          ) : null}
 
           {error ? (
             <Alert tone="danger" title="Generation failed" onDismiss={() => setError(null)}>
@@ -970,55 +785,101 @@ export default function SimpleVideoStudioPage() {
           ) : null}
 
           <div className="-mx-1 space-y-2 px-1 pb-1 pt-1 xl:sticky xl:bottom-0 xl:bg-gradient-to-t xl:from-canvas xl:from-75% xl:to-transparent xl:pb-2 xl:pt-8">
-            {isTwoShot ? (
-              <div className="grid gap-2">
-                <Button
-                  variant="primary"
-                  size="lg"
-                  block
-                  onClick={() => void generateShot("shot-a")}
-                  loading={isGenerating && activeShot === "shot-a"}
-                  disabled={isGenerating || !prompt.trim() || missingIntermediate}
-                  iconLeft={<Clapperboard className="h-4 w-4" />}
-                >
-                  Generate Shot 1 · Front → Mid
-                </Button>
-                <Button
-                  size="lg"
-                  block
-                  onClick={() => void generateShot("shot-b")}
-                  loading={isGenerating && activeShot === "shot-b"}
-                  disabled={isGenerating || !prompt.trim() || missingIntermediate || missingEndFrame}
-                  iconLeft={<Clapperboard className="h-4 w-4" />}
-                >
-                  Generate Shot 2 · Mid → Back
-                </Button>
-              </div>
-            ) : (
+            <Button
+              variant="primary"
+              size="lg"
+              block
+              onClick={() => void generateClip()}
+              loading={isGenerating && !activeShotLabel}
+              disabled={isGenerating || !prompt.trim()}
+              iconLeft={<Clapperboard className="h-4 w-4" />}
+            >
+              Generate clip
+            </Button>
+
+            {canSplitTurn ? (
               <Button
-                variant="primary"
-                size="lg"
                 block
-                onClick={() => void generateShot("single")}
-                loading={isGenerating}
-                disabled={!prompt.trim()}
-                iconLeft={<Clapperboard className="h-4 w-4" />}
+                onClick={() => void generateSplitTurn()}
+                loading={isGenerating && Boolean(activeShotLabel)}
+                disabled={isGenerating || !prompt.trim()}
+                iconLeft={<Scissors className="h-4 w-4" />}
               >
-                Generate clip
+                Split into two pinned clips
               </Button>
-            )}
+            ) : null}
 
             {!prompt.trim() ? (
-              <p className="text-center text-[11px] text-ink-3">Write a prompt to enable generation.</p>
-            ) : missingIntermediate ? (
-              <p className="text-center text-[11px] text-warning">Two-shot mode needs an intermediate anchor frame.</p>
+              <p className="text-center text-[11px] text-ink-3">Describe the motion to enable generation.</p>
             ) : null}
           </div>
         </div>
       }
     >
-      {/* The result is the point of the page, so on narrow screens it sits
-          above the controls rather than below a 40-field form. */}
+      {/* The fidelity readout leads the canvas: "will the back of my product be
+          real" is the question this app exists to get right, so it is answered
+          before the clip is spent, not after. */}
+      <Card className="space-y-3 p-4">
+        <div className="flex items-start gap-3">
+          <span
+            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
+              riskTone === "success"
+                ? "border-success/40 bg-success/10 text-success"
+                : riskTone === "warning"
+                  ? "border-warning/40 bg-warning/10 text-warning"
+                  : "border-danger/40 bg-danger/10 text-danger"
+            }`}
+            aria-hidden
+          >
+            <ShieldCheck className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-ink">Garment fidelity</h2>
+              <Badge tone={riskTone}>{fidelity.risk} risk</Badge>
+              <Badge>{modeLabel(plan.mode)}</Badge>
+              {fidelity.uncoveredDegrees !== null ? <Badge>{fidelity.uncoveredDegrees}° turn</Badge> : null}
+            </div>
+            <p className="mt-1.5 text-xs leading-relaxed text-ink-3">{plan.rationale}</p>
+          </div>
+        </div>
+
+        {fidelity.findings.length ? (
+          <ul className="space-y-1 text-xs leading-relaxed text-ink-2">
+            {fidelity.findings.map((finding) => (
+              <li key={finding} className="flex gap-2">
+                <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-ink-3" aria-hidden />
+                {finding}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {fidelity.nextBestAction ? (
+          <Well className="flex flex-wrap items-center justify-between gap-2 p-3">
+            <p className="min-w-0 text-xs text-ink-2">
+              <span className="font-medium text-ink">Next best step: </span>
+              {fidelity.nextBestAction}
+            </p>
+            {canSplitTurn ? (
+              <Button size="sm" onClick={() => void generateSplitTurn()} disabled={isGenerating}>
+                Split the turn
+              </Button>
+            ) : null}
+          </Well>
+        ) : null}
+
+        {plan.dropped.length ? (
+          <Alert tone="warning" title="Not sent to the provider">
+            <ul className="space-y-1">
+              {plan.dropped.map((entry) => (
+                <li key={entry.image.url}>{entry.reason}</li>
+              ))}
+            </ul>
+          </Alert>
+        ) : null}
+      </Card>
+
       <section aria-labelledby="latest-output" className="space-y-3">
         <h2 id="latest-output" className="text-lg font-semibold tracking-tight text-ink">
           Latest clip
@@ -1026,40 +887,26 @@ export default function SimpleVideoStudioPage() {
 
         {isGenerating ? (
           <GeneratingPanel
-            title={
-              activeShot === "shot-a"
-                ? "Rendering Shot 1…"
-                : activeShot === "shot-b"
-                  ? "Rendering Shot 2…"
-                  : "Rendering your clip…"
-            }
+            title={activeShotLabel ? `Rendering ${activeShotLabel}…` : "Rendering your clip…"}
             typicalSeconds={90}
           />
         ) : latestOutput ? (
           <Card className="overflow-hidden">
-            <video
-              className="w-full bg-black"
-              src={latestOutput.videoUrl}
-              controls
-              playsInline
-              preload="metadata"
-            />
+            <video className="w-full bg-black" src={latestOutput.videoUrl} controls playsInline preload="metadata" />
             <div className="space-y-3 p-4">
               <div className="flex flex-wrap gap-1.5">
-                <Badge tone="accent">{latestOutput.duration}s</Badge>
+                {latestOutput.shotLabel ? <Badge tone="accent">{latestOutput.shotLabel}</Badge> : null}
+                <Badge>{latestOutput.duration}s</Badge>
                 <Badge>{latestOutput.aspectRatio}</Badge>
-                {latestOutput.controls ? (
-                  <>
-                    <Badge>{MOTION_PRESET_LABELS[latestOutput.controls.motion_preset ?? "freeform"]}</Badge>
-                    <Badge>
-                      {latestOutput.controls.reference_count ?? 0} reference
-                      {(latestOutput.controls.reference_count ?? 0) === 1 ? "" : "s"}
-                    </Badge>
-                    {latestOutput.controls.shot_type === "shot-a" ? <Badge tone="accent">Shot 1</Badge> : null}
-                    {latestOutput.controls.shot_type === "shot-b" ? <Badge tone="accent">Shot 2</Badge> : null}
-                  </>
-                ) : null}
+                <Badge>{modeLabel(latestOutput.conditioningMode)}</Badge>
+                <Badge
+                  tone={latestOutput.risk === "low" ? "success" : latestOutput.risk === "medium" ? "warning" : "danger"}
+                >
+                  {latestOutput.risk} risk
+                </Badge>
               </div>
+
+              <p className="text-xs leading-relaxed text-ink-3">{latestOutput.conditioningRationale}</p>
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -1096,10 +943,10 @@ export default function SimpleVideoStudioPage() {
               {latestOutput.compiledPrompt ? (
                 <details className="group rounded-xl border border-line bg-well">
                   <summary className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-xs text-ink-2">
-                    Compiled request prompt
+                    Prompt sent to the provider
                     <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
                   </summary>
-                  <p className="border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink-3">
+                  <p className="whitespace-pre-wrap border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink-3">
                     {latestOutput.compiledPrompt}
                   </p>
                 </details>
@@ -1110,7 +957,7 @@ export default function SimpleVideoStudioPage() {
           <EmptyState
             icon={<Clapperboard className="h-6 w-6" />}
             title="No clip yet"
-            description="Pick a start frame, describe the motion, then generate. Rendering usually takes around a minute."
+            description="Load a SKU or pick an opening frame, describe the motion, then generate. Rendering takes about a minute."
           />
         )}
       </section>
@@ -1120,7 +967,12 @@ export default function SimpleVideoStudioPage() {
           <h2 id="history" className="text-lg font-semibold tracking-tight text-ink">
             Recent clips
           </h2>
-          <Button size="sm" variant="ghost" onClick={() => void loadSimpleHistory()} iconLeft={<RefreshCw className="h-3.5 w-3.5" />}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void loadHistory()}
+            iconLeft={<RefreshCw className="h-3.5 w-3.5" />}
+          >
             Refresh
           </Button>
         </div>
@@ -1130,33 +982,32 @@ export default function SimpleVideoStudioPage() {
             {historyItems.map((item) => {
               const videoUrl = item.asset_url ?? item.url;
               if (!videoUrl) return null;
-              const videoMeta = item.video_meta ?? {};
-              const workflow = readMetaString(videoMeta, "workflowMode");
-              const shot = readMetaString(videoMeta, "shotType");
-              const savedAspectRatio = asValidAspectRatio(readMetaString(videoMeta, "aspectRatio") || "9:16");
-              const savedDuration = readMetaNumber(videoMeta, "durationSeconds", 6);
+              const meta = item.video_meta ?? {};
+              const mode = readMeta(meta, "conditioningMode");
+              const risk = readMeta(meta, "fidelityRisk");
+              const shotLabel = readMeta(meta, "shotLabel");
+              const sku = readMeta(meta, "skuCode");
 
               return (
                 <Card key={item.id} className="overflow-hidden">
-                  <video
-                    className="w-full bg-black"
-                    src={videoUrl}
-                    controls
-                    preload="metadata"
-                    playsInline
-                  />
+                  <video className="w-full bg-black" src={videoUrl} controls preload="metadata" playsInline />
                   <div className="space-y-2.5 p-3">
                     <div className="flex flex-wrap gap-1.5">
-                      <Badge>{workflow === "two-shot-back-reveal" ? "Two-shot" : "Single"}</Badge>
-                      {shot === "shot-a" ? <Badge tone="accent">Shot 1</Badge> : null}
-                      {shot === "shot-b" ? <Badge tone="accent">Shot 2</Badge> : null}
-                      <Badge>{savedDuration}s</Badge>
-                      <Badge>{savedAspectRatio}</Badge>
+                      {sku ? <Badge tone="accent">{sku}</Badge> : null}
+                      {shotLabel ? <Badge>{shotLabel}</Badge> : null}
+                      {mode ? <Badge>{modeLabel(mode)}</Badge> : null}
+                      {risk ? (
+                        <Badge tone={risk === "low" ? "success" : risk === "medium" ? "warning" : "danger"}>
+                          {risk} risk
+                        </Badge>
+                      ) : null}
+                      <Badge>{readMetaNumber(meta, "durationSeconds", 6)}s</Badge>
+                      <Badge>{asAspectRatio(readMeta(meta, "aspectRatio") || "9:16")}</Badge>
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <DownloadAssetButton
+                      <DownloadButton
                         url={videoUrl}
-                        filenamePrefix={`simple-video-${item.id}`}
+                        filenamePrefix={`megaska-clip-${item.id}`}
                         label="Save"
                         mimeType="video/mp4"
                       />
@@ -1168,7 +1019,7 @@ export default function SimpleVideoStudioPage() {
                             label: "Delete clip",
                             icon: <Trash2 className="h-3.5 w-3.5" />,
                             destructive: true,
-                            onSelect: () => setPendingHistoryDelete(item),
+                            onSelect: () => setPendingDelete(item),
                           },
                         ]}
                       />
@@ -1182,7 +1033,7 @@ export default function SimpleVideoStudioPage() {
           <EmptyState
             icon={<Film className="h-6 w-6" />}
             title="No saved clips yet"
-            description="Every clip you generate is stored here so you can compare takes side by side."
+            description="Every clip is stored here with the conditioning it used, so you can compare takes."
           />
         )}
       </section>
@@ -1190,13 +1041,18 @@ export default function SimpleVideoStudioPage() {
       <Modal
         open={Boolean(pickerTarget)}
         onClose={() => setPickerTarget(null)}
-        title={`Choose ${pickerTargetLabel}`}
+        title={`Choose ${pickerLabel}`}
         description="Images from your Image Project gallery."
         size="xl"
         footer={
           <div className="flex justify-between gap-2">
-            <Button size="sm" variant="ghost" onClick={() => void loadGalleryImages()} iconLeft={<RefreshCw className="h-3.5 w-3.5" />}>
-              Refresh gallery
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void loadGalleryImages()}
+              iconLeft={<RefreshCw className="h-3.5 w-3.5" />}
+            >
+              Refresh
             </Button>
             <Button size="sm" onClick={() => setPickerTarget(null)}>
               Cancel
@@ -1213,7 +1069,7 @@ export default function SimpleVideoStudioPage() {
                 <li key={item.id}>
                   <button
                     type="button"
-                    onClick={() => void applyFrameSelection(item)}
+                    onClick={() => applyPickedImage(item)}
                     className="group block w-full overflow-hidden rounded-xl border border-line text-left transition-colors hover:border-accent"
                   >
                     <MediaFrame src={imageUrl} alt={item.prompt || "Gallery image"} ratio="square" />
@@ -1229,20 +1085,20 @@ export default function SimpleVideoStudioPage() {
           <EmptyState
             icon={<ImageIcon className="h-6 w-6" />}
             title="No gallery images"
-            description="Generate images in the Image Project first — they show up here as frame candidates."
+            description="Generate images in the Image Project first — they appear here as frame candidates."
           />
         )}
       </Modal>
 
       <ConfirmDialog
-        open={Boolean(pendingHistoryDelete)}
+        open={Boolean(pendingDelete)}
         title="Delete this clip?"
-        description="The video file and its generation record are removed permanently. This cannot be undone."
+        description="The video file and its generation record are removed permanently."
         confirmLabel="Delete clip"
-        busy={Boolean(pendingHistoryDelete && isDeletingHistoryId === pendingHistoryDelete.id)}
-        onCancel={() => setPendingHistoryDelete(null)}
+        busy={Boolean(pendingDelete && isDeletingHistoryId === pendingDelete.id)}
+        onCancel={() => setPendingDelete(null)}
         onConfirm={() => {
-          if (pendingHistoryDelete) void handleDeleteHistoryItem(pendingHistoryDelete);
+          if (pendingDelete) void handleDeleteHistoryItem(pendingDelete);
         }}
       />
     </PageShell>

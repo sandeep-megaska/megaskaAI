@@ -18,7 +18,7 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
+import DownloadButton from "@/components/ui/DownloadButton";
 import ActionMenu from "@/components/ui/ActionMenu";
 import Alert from "@/components/ui/Alert";
 import Button from "@/components/ui/Button";
@@ -34,9 +34,8 @@ import { revealResults } from "@/components/ui/revealResults";
 import { cn } from "@/lib/cn";
 import { isGeminiImageModel } from "@/lib/ai/backendFamilies";
 import { STUDIO_ASPECT_RATIO_OPTIONS, type StudioAspectRatio } from "@/lib/studio/aspectRatios";
-import { SKU_TRUTH_ROLES, type SkuTruthRole } from "@/lib/video/v2/skuTruth/types";
-import { buildImageProjectSkuTruthPayload } from "@/lib/video/v2/skuTruth/bridge";
-import { suggestRoleFromMetadata } from "@/lib/video/v2/skuTruth/ui";
+import { GARMENT_ROLE_LABELS, GARMENT_VIEW_ROLES, type GarmentViewRole } from "@/lib/garment/roles";
+import { suggestRoleFromMetadata } from "@/lib/garment/suggestRole";
 import {
   clearStagedImageReferences,
   clearStagedVideoAnchors,
@@ -445,21 +444,22 @@ function HomeContent() {
     try {
       setError(null);
       setIsSavingSkuTruth(true);
-      const res = await fetch("/api/studio/video/v2/sku-truth", {
+      const res = await fetch("/api/garment-library", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildImageProjectSkuTruthPayload({
-          skuCode,
+        body: JSON.stringify({
+          sku_code: skuCode,
           role: skuTruthDialog.role,
-          generationId,
-          truthType: skuTruthDialog.sourceKind,
-        })),
+          generation_id: generationId,
+          source_kind: skuTruthDialog.sourceKind,
+          label: "Saved from Image Project",
+        }),
       });
       const payload = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(payload.error ?? "Failed to save SKU truth.");
 
       setHandoffNotice(
-        `Saved ${skuTruthDialog.sourceKind === "manual_verified_override" ? "manual override" : "verified truth"} for SKU ${skuCode} role ${skuTruthDialog.role}.`,
+        `Saved as the ${skuTruthDialog.role.replace(/_/g, " ")} view for ${skuCode}. The Video Project can now pin clips to it.`,
       );
       setSkuTruthDialog(null);
     } catch (saveError) {
@@ -1043,7 +1043,7 @@ function HomeContent() {
                       >
                         {isMaster ? "Master" : "Use as master"}
                       </Button>
-                      <DownloadAssetButton url={item.url} filenamePrefix={`studio-result-${item.id}`} label="Save" />
+                      <DownloadButton url={item.url} filenamePrefix={`studio-result-${item.id}`} label="Save" />
                     </div>
                   </div>
                 </Card>
@@ -1125,7 +1125,7 @@ function HomeContent() {
                         {isCurrentMaster ? "Master" : "Use as master"}
                       </Button>
 
-                      {src ? <DownloadAssetButton url={src} filenamePrefix={`gallery-${item.id}`} label="Save" /> : null}
+                      {src ? <DownloadButton url={src} filenamePrefix={`gallery-${item.id}`} label="Save" /> : null}
 
                       <ActionMenu
                         label={`More actions for image generated ${formatGeneratedAt(item.created_at)}`}
@@ -1159,7 +1159,7 @@ function HomeContent() {
                           },
                           {
                             key: "sku",
-                            label: "Save as SKU truth",
+                            label: "Save to garment library",
                             icon: <BadgeCheck className="h-3.5 w-3.5" />,
                             onSelect: () => openSkuTruthDialog(item),
                           },
@@ -1230,8 +1230,8 @@ function HomeContent() {
       <Modal
         open={Boolean(skuTruthDialog)}
         onClose={() => setSkuTruthDialog(null)}
-        title="Save as SKU truth"
-        description="Mark this image as the approved reference for a SKU role."
+        title="Save to garment library"
+        description="Save this image as the verified view for one side of a product."
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setSkuTruthDialog(null)}>
@@ -1258,8 +1258,8 @@ function HomeContent() {
                 className="h-20 w-20 shrink-0 rounded-lg border border-line"
               />
               <p className="text-xs leading-relaxed text-ink-3">
-                Verified truth images become the canonical reference the video pipeline checks garment continuity
-                against.
+                Saved views are what the Video Project pins clips to. A verified back view is what stops the reverse
+                of the garment being invented during a turn.
               </p>
             </div>
 
@@ -1287,14 +1287,14 @@ function HomeContent() {
               value={skuTruthDialog.role}
               onChange={(event) =>
                 setSkuTruthDialog((current) =>
-                  current ? { ...current, role: event.target.value as SkuTruthRole } : current,
+                  current ? { ...current, role: event.target.value as GarmentViewRole } : current,
                 )
               }
             >
               <option value="">Select a role…</option>
-              {SKU_TRUTH_ROLES.map((role) => (
+              {GARMENT_VIEW_ROLES.map((role) => (
                 <option key={role} value={role}>
-                  {role}
+                  {GARMENT_ROLE_LABELS[role]}
                 </option>
               ))}
             </SelectField>

@@ -5,11 +5,10 @@ import {
   type AIBackend,
   type AIBackendType,
 } from "@/lib/ai-backends";
-import { isGeminiImageModel, isImagenModel, isVeoModel } from "@/lib/ai/backendFamilies";
+import { isGeminiImageModel, isImagenModel } from "@/lib/ai/backendFamilies";
 import { runGeminiImageGeneration } from "@/lib/ai/adapters/geminiImageAdapter";
 import { runImagenImageGeneration } from "@/lib/ai/adapters/imagenImageAdapter";
 import { runLaoZhangImageGeneration } from "@/lib/ai/adapters/laozhangImageAdapter";
-import { runVeoVideoGeneration } from "@/lib/ai/adapters/veoVideoAdapter";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
 
 export type StudioGenerationType = "image" | "video";
@@ -105,22 +104,8 @@ export async function runStudioGeneration(input: RunStudioGenerationInput): Prom
     throw new Error(`Unsupported image backend family for model '${backend.model}'.`);
   }
 
-  if (!isVeoModel(backend.model)) {
-    throw new Error(`Unsupported video backend family for model '${backend.model}'.`);
-  }
+  throw new Error(
+    "Video generation does not run through this route. Use /api/studio/video/simple, which plans Veo conditioning.",
+  );
 
-  const output = await runVeoVideoGeneration({
-    apiKey: input.apiKey,
-    model: backend.model,
-    prompt: input.prompt,
-    aspectRatio: input.aspectRatio,
-  });
-
-  return {
-    bytes: output.bytes,
-    mimeType: output.mimeType,
-    backend,
-    backendModel: output.model,
-    mediaType: "Video",
-  };
 }
