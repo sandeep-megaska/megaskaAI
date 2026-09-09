@@ -1,8 +1,39 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { Trash2 } from "lucide-react";
+import {
+  ArrowLeftRight,
+  ArrowRight,
+  Check,
+  ChevronDown,
+  Clapperboard,
+  Copy,
+  Download,
+  ExternalLink,
+  Film,
+  ImageIcon,
+  ImagePlus,
+  RefreshCw,
+  Trash2,
+  Wand2,
+  X,
+} from "lucide-react";
+import DownloadAssetButton from "@/app/studio/video/v2/components/DownloadAssetButton";
+import ActionMenu from "@/components/ui/ActionMenu";
+import Alert from "@/components/ui/Alert";
+import AssetSlot from "@/components/ui/AssetSlot";
+import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import { SelectField, TextAreaField, TextField } from "@/components/ui/Field";
+import GeneratingPanel from "@/components/ui/GeneratingPanel";
+import MediaFrame from "@/components/ui/MediaFrame";
+import Modal from "@/components/ui/Modal";
+import PageShell from "@/components/ui/PageShell";
+import SegmentedControl from "@/components/ui/SegmentedControl";
+import { Badge, Card, EmptyState, SectionHeading, Well } from "@/components/ui/Surface";
+import { revealResults } from "@/components/ui/revealResults";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
 import {
   createEmptyGarmentAnchors,
@@ -124,6 +155,19 @@ const REFERENCE_SLOTS: Array<{ label: string; role: VideoSimpleReferenceRole; hi
   { label: "Optional Side / 3/4", role: "side", hint: "Optional side or angled continuity" },
 ];
 
+const GARMENT_ANCHOR_FIELDS: Array<{
+  key: keyof VideoSimpleGarmentAnchors;
+  label: string;
+  placeholder: string;
+}> = [
+  { key: "backNeckline", label: "Back neckline", placeholder: "Deep scoop, no closure" },
+  { key: "strapStructure", label: "Strap structure", placeholder: "Thin crossed straps" },
+  { key: "backCoverage", label: "Back coverage", placeholder: "High-cut, full seat coverage" },
+  { key: "seamLines", label: "Seam lines", placeholder: "Single centre seam" },
+  { key: "fabricFinish", label: "Fabric finish", placeholder: "Matte, slight stretch" },
+  { key: "colorContinuity", label: "Colour continuity", placeholder: "Solid emerald, no print" },
+];
+
 const MOTION_PRESET_LABELS: Record<VideoSimpleMotionPreset, string> = {
   freeform: "Freeform",
   "slow-pivot": "Slow pivot",
@@ -195,6 +239,7 @@ export default function SimpleVideoStudioPage() {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDeletingHistoryId, setIsDeletingHistoryId] = useState<string | null>(null);
+  const [pendingHistoryDelete, setPendingHistoryDelete] = useState<PersistedSimpleVideoItem | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -446,6 +491,7 @@ export default function SimpleVideoStudioPage() {
       };
       setOutputs((current) => [nextOutput, ...current]);
       setCopyStatus("idle");
+      revealResults("latest-output");
       if (requestWorkflowMode === "two-shot-back-reveal" && shotType === "shot-b") {
         setWorkflowGroupId(createWorkflowGroupId());
       }
@@ -524,8 +570,6 @@ export default function SimpleVideoStudioPage() {
 
   async function handleDeleteHistoryItem(item: PersistedSimpleVideoItem) {
     if (isDeletingHistoryId) return;
-    const confirmed = window.confirm("Delete this generated video?");
-    if (!confirmed) return;
 
     try {
       setIsDeletingHistoryId(item.id);
@@ -540,6 +584,7 @@ export default function SimpleVideoStudioPage() {
       setError(deleteError instanceof Error ? deleteError.message : "Failed to delete generated video.");
     } finally {
       setIsDeletingHistoryId(null);
+      setPendingHistoryDelete(null);
     }
   }
 
@@ -547,465 +592,659 @@ export default function SimpleVideoStudioPage() {
     pickerTarget?.kind === "reference"
       ? REFERENCE_SLOTS[pickerTarget.index].label
       : pickerTarget?.kind === "start"
-        ? "start"
+        ? "a start frame"
         : pickerTarget?.kind === "intermediate"
-          ? "intermediate"
+          ? "an intermediate anchor"
           : pickerTarget?.kind === "end"
-            ? "end"
-            : "";
+            ? "an end frame"
+            : "an image";
+
+  const isTwoShot = workflowMode === "two-shot-back-reveal";
+  const missingIntermediate = isTwoShot && !intermediateFrame;
+  const missingEndFrame = isTwoShot && !endFrame;
+  const anchorsFilled = Object.values(garmentAnchors).filter((value) => value.trim().length > 0).length;
+  const referenceCount = activeReferenceImages.length;
+
+  /** Frame slots for the current mode. Two-shot adds the required midpoint. */
+  const frameSlots = [
+    {
+      key: "start" as const,
+      label: "Start frame",
+      hint: "The first frame of the clip. Usually your master front view.",
+      value: startFrame,
+      required: false,
+      missing: false,
+    },
+    ...(isTwoShot
+      ? [
+          {
+            key: "intermediate" as const,
+            label: "Intermediate anchor",
+            hint: "A 3/4 rear view. Splits the hard front-to-back turn in two.",
+            value: intermediateFrame,
+            required: true,
+            missing: missingIntermediate,
+          },
+        ]
+      : []),
+    {
+      key: "end" as const,
+      label: "End frame",
+      hint: isTwoShot ? "The final back view. Required for Shot 2." : "Where the clip lands. Leave empty to let motion decide.",
+      value: endFrame,
+      required: isTwoShot,
+      missing: missingEndFrame,
+    },
+  ];
+
+  function clearFrame(key: "start" | "intermediate" | "end") {
+    if (key === "start") {
+      setStartFrame(null);
+      setStartFrameAspectRatio(null);
+    } else if (key === "intermediate") {
+      setIntermediateFrame(null);
+      setIntermediateFrameAspectRatio(null);
+    } else {
+      setEndFrame(null);
+      setEndFrameAspectRatio(null);
+    }
+  }
 
   return (
-    <main className="min-h-screen bg-zinc-950 p-6 text-zinc-100">
-      <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-          <header className="mb-6 space-y-2">
-            <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Simple Video</p>
-            <h1 className="text-3xl font-semibold">Standalone video generator</h1>
-            <p className="text-sm text-zinc-400">Generate short clips directly from provider APIs, with a two-shot back reveal workflow for difficult turns.</p>
-          </header>
+    <PageShell
+      accent="cyan"
+      eyebrow="Studio Project"
+      title="Video Project"
+      description="Turn your studio images into short clips. Use two-shot mode when a full front-to-back turn drifts."
+      headerAction={
+        <Link
+          href="/"
+          className="inline-flex h-10 items-center gap-2 rounded-xl border border-line-strong px-3.5 text-sm font-medium text-ink-2 transition-colors hover:border-accent/50 hover:text-ink"
+        >
+          <ImageIcon className="h-4 w-4" aria-hidden />
+          Image Project
+          <ArrowRight className="h-4 w-4" aria-hidden />
+        </Link>
+      }
+      rail={
+        <div className="space-y-4">
+          {/* Step 1 — mode first, because it decides which frames are required. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading
+              step={1}
+              title="Workflow"
+              description={
+                isTwoShot
+                  ? "Generate two safer clips through a midpoint anchor, then join them."
+                  : "One clip, start to finish. Best for simple motion."
+              }
+            />
+            <SegmentedControl
+              label="Workflow mode"
+              value={workflowMode}
+              columns={1}
+              onChange={(next) => setWorkflowMode(next)}
+              options={[
+                {
+                  value: "single-shot",
+                  label: "Single shot",
+                  description: "One continuous clip.",
+                },
+                {
+                  value: "two-shot-back-reveal",
+                  label: "Two-shot back reveal",
+                  description: "For difficult front-to-back turns.",
+                },
+              ]}
+            />
 
-          <div className="space-y-4">
-            <label className="block space-y-2">
-              <span className="text-sm font-medium text-zinc-200">Prompt</span>
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                className="h-32 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-cyan-400/50 focus:ring"
-                placeholder="Describe the motion, subject behavior, and camera movement."
-              />
-            </label>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => void handleGeneratePrompt()}
-                disabled={isBuildingPrompt || !prompt.trim()}
-                className="rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
-              >
-                {isBuildingPrompt ? "Generating Prompt..." : "Generate Prompt"}
-              </button>
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-300">
-                {promptBuilderResult
-                  ? `Risk: ${promptBuilderResult.riskLevel} · Recommended: ${promptBuilderResult.recommendedMode}`
-                  : "Prompt Builder improves continuity-safe wording."}
-              </div>
-            </div>
-            {promptBuilderInlineError ? <p className="text-xs text-rose-300">{promptBuilderInlineError}</p> : null}
-
-            <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-              <p className="text-sm font-medium text-zinc-100">Workflow mode</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => setWorkflowMode("single-shot")}
-                  className={`rounded-lg border px-3 py-2 text-sm ${
-                    workflowMode === "single-shot" ? "border-cyan-400/60 bg-cyan-500/15 text-cyan-100" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
-                  }`}
-                >
-                  Single Shot
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWorkflowMode("two-shot-back-reveal")}
-                  className={`rounded-lg border px-3 py-2 text-sm ${
-                    workflowMode === "two-shot-back-reveal" ? "border-cyan-400/60 bg-cyan-500/15 text-cyan-100" : "border-zinc-700 text-zinc-200 hover:bg-zinc-800"
-                  }`}
-                >
-                  Two-Shot Back Reveal
-                </button>
-              </div>
-              {workflowMode === "two-shot-back-reveal" ? (
-                <p className="text-xs text-zinc-400">Use a midpoint anchor to split difficult front-to-back turns into two safer clips.</p>
-              ) : null}
-            </section>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-zinc-200">Duration</span>
-                <select value={duration} onChange={(event) => setDuration(Number(event.target.value) as VideoDuration)} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm">
-                  <option value={4}>4s</option>
-                  <option value={6}>6s</option>
-                  <option value={8}>8s</option>
-                </select>
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-zinc-200">Aspect ratio</span>
-                <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm">
-                  <option value="9:16">9:16</option>
-                  <option value="16:9">16:9</option>
-                </select>
-              </label>
-            </div>
-
-            <div className={`grid gap-4 ${workflowMode === "two-shot-back-reveal" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
-              {[
-                { key: "start", label: "Start frame (optional)", value: startFrame },
-                ...(workflowMode === "two-shot-back-reveal" ? [{ key: "intermediate", label: "Intermediate Anchor frame (required)", value: intermediateFrame }] : []),
-                { key: "end", label: workflowMode === "two-shot-back-reveal" ? "End frame (required for Shot 2)" : "End frame (optional)", value: endFrame },
-              ].map((slot) => (
-                <div key={slot.key} className="space-y-2">
-                  <span className="text-sm font-medium text-zinc-200">{slot.label}</span>
-                  <div className="rounded-xl border border-zinc-700 bg-zinc-950 p-2">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    {slot.value ? <img src={slot.value.url} alt={slot.label} className="h-28 w-full rounded-lg object-cover" /> : <div className="h-28 rounded-lg border border-dashed border-zinc-700" />}
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPickerTarget({ kind: slot.key as "start" | "intermediate" | "end" })}
-                        className="w-full rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
-                      >
-                        Choose from Image Project
-                      </button>
-                      {slot.value ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (slot.key === "start") {
-                              setStartFrame(null);
-                              setStartFrameAspectRatio(null);
-                            } else if (slot.key === "intermediate") {
-                              setIntermediateFrame(null);
-                              setIntermediateFrameAspectRatio(null);
-                            } else {
-                              setEndFrame(null);
-                              setEndFrameAspectRatio(null);
-                            }
-                          }}
-                          className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800"
-                        >
-                          Clear
-                        </button>
-                      ) : null}
+            {isTwoShot ? (
+              <Well className="space-y-2 p-3">
+                {SHOT_DESCRIPTORS.map((shot) => (
+                  <div key={shot.shotType} className="flex gap-2.5">
+                    <Badge tone="accent">{shot.label}</Badge>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-ink-2">{shot.flowLabel}</p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-ink-3">{shot.helper}</p>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </Well>
+            ) : null}
+          </Card>
+
+          {/* Step 2 — prompt. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading step={2} title="Prompt" />
+
+            <TextAreaField
+              label="Describe the motion"
+              hint="Subject behaviour, camera movement and pacing — not just the scene."
+              value={prompt}
+              maxLength={2000}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Model turns slowly from front to profile, camera holds steady, soft daylight…"
+            />
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => void handleGeneratePrompt()}
+                loading={isBuildingPrompt}
+                disabled={!prompt.trim()}
+                iconLeft={<Wand2 className="h-3.5 w-3.5" />}
+              >
+                Refine with Prompt Builder
+              </Button>
+              {promptBuilderResult ? (
+                <Badge
+                  tone={
+                    promptBuilderResult.riskLevel === "high"
+                      ? "danger"
+                      : promptBuilderResult.riskLevel === "medium"
+                        ? "warning"
+                        : "success"
+                  }
+                >
+                  {promptBuilderResult.riskLevel} risk
+                </Badge>
+              ) : null}
             </div>
 
-            {workflowMode === "two-shot-back-reveal" ? (
-              <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-                <p className="text-sm font-medium text-zinc-100">Two-shot mapping</p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {SHOT_DESCRIPTORS.map((shot) => (
-                    <div key={shot.shotType} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2">
-                      <p className="text-xs font-medium text-zinc-200">{shot.label}: {shot.flowLabel}</p>
-                      <p className="mt-1 text-[11px] text-zinc-400">{shot.helper}</p>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[11px] text-zinc-500">Tips: use a 3/4 rear intermediate anchor, keep lighting/framing stable, and keep aspect ratios matched.</p>
-              </section>
+            {promptBuilderInlineError ? (
+              <Alert tone="warning" onDismiss={() => setPromptBuilderInlineError(null)}>
+                {promptBuilderInlineError}
+              </Alert>
             ) : null}
-
-            <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-              <div>
-                <h2 className="text-sm font-medium text-zinc-100">Reference Images (optional)</h2>
-                <p className="text-xs text-zinc-400">Add up to 3 references to improve garment continuity and back-view preservation.</p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {REFERENCE_SLOTS.map((slot, index) => {
-                  const value = referenceImages[index];
-                  return (
-                    <div key={slot.role} className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
-                      <div className="mb-1 text-xs font-medium text-zinc-200">{slot.label}</div>
-                      <p className="mb-2 text-[11px] text-zinc-500">{slot.hint}</p>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {value ? <img src={value.url} alt={slot.label} className="h-20 w-full rounded object-cover" /> : <div className="h-20 rounded border border-dashed border-zinc-700" />}
-                      <div className="mt-2 grid grid-cols-2 gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setPickerTarget({ kind: "reference", index })}
-                          className="col-span-2 rounded-md border border-cyan-500/40 px-2 py-1 text-[11px] text-cyan-100 hover:bg-cyan-500/20"
-                        >
-                          Choose
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveReferenceImage(index, -1)}
-                          disabled={index === 0 || !value}
-                          className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                        >
-                          Move ←
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveReferenceImage(index, 1)}
-                          disabled={index === REFERENCE_SLOTS.length - 1 || !value}
-                          className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                        >
-                          Move →
-                        </button>
-                        {value ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setReferenceImages((current) => {
-                                const next = [...current];
-                                next[index] = null;
-                                return next;
-                              });
-                            }}
-                            className="col-span-2 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
-                          >
-                            Remove
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-zinc-200">Motion preset</span>
-              <select
-                value={motionPreset}
-                onChange={(event) => setMotionPreset(event.target.value as VideoSimpleMotionPreset)}
-                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
-              >
-                {VIDEO_SIMPLE_MOTION_PRESETS.map((preset) => (
-                  <option key={preset} value={preset}>
-                    {MOTION_PRESET_LABELS[preset]}
-                  </option>
-                ))}
-              </select>
-              {workflowMode === "two-shot-back-reveal" ? (
-                <p className="text-xs text-zinc-500">Two-shot mode auto-biases prompts toward slower partial transitions for continuity safety.</p>
-              ) : null}
-            </label>
-
-            <details className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
-              <summary className="cursor-pointer text-sm font-medium text-zinc-200">Garment Anchors (optional)</summary>
-              <p className="mt-2 text-xs text-zinc-400">Add only key garment details you want preserved. Keep each field concise.</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Back neckline / back cut</span>
-                  <input value={garmentAnchors.backNeckline} onChange={(event) => updateGarmentAnchor("backNeckline", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Strap structure</span>
-                  <input value={garmentAnchors.strapStructure} onChange={(event) => updateGarmentAnchor("strapStructure", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Back coverage / silhouette</span>
-                  <input value={garmentAnchors.backCoverage} onChange={(event) => updateGarmentAnchor("backCoverage", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Seam lines / paneling</span>
-                  <input value={garmentAnchors.seamLines} onChange={(event) => updateGarmentAnchor("seamLines", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Fabric finish / texture</span>
-                  <input value={garmentAnchors.fabricFinish} onChange={(event) => updateGarmentAnchor("fabricFinish", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs text-zinc-300">Color / print continuity</span>
-                  <input value={garmentAnchors.colorContinuity} onChange={(event) => updateGarmentAnchor("colorContinuity", event.target.value)} className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs" />
-                </label>
-              </div>
-            </details>
-
-            {preflightWarnings.length ? (
-              <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100">
-                <p className="font-medium">Preflight tips</p>
-                <ul className="list-disc space-y-1 pl-4">
-                  {preflightWarnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {workflowMode === "single-shot" ? (
-              <button
-                type="button"
-                onClick={() => void generateShot("single")}
-                disabled={isGenerating}
-                className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isGenerating ? "Generating..." : "Generate clip"}
-              </button>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => void generateShot("shot-a")}
-                  disabled={isGenerating}
-                  className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isGenerating && activeShot === "shot-a" ? "Generating Shot 1..." : "Generate Shot 1 (Front → Mid)"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void generateShot("shot-b")}
-                  disabled={isGenerating}
-                  className="rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isGenerating && activeShot === "shot-b" ? "Generating Shot 2..." : "Generate Shot 2 (Mid → Back)"}
-                </button>
-              </div>
-            )}
 
             {promptBuilderResult?.negativeConstraints?.length ? (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
-                <p className="font-medium text-zinc-100">Negative constraints</p>
-                <p className="mt-1">{promptBuilderResult.negativeConstraints.join(" · ")}</p>
-              </div>
+              <Well className="p-3">
+                <p className="text-xs font-medium text-ink-2">Negative constraints</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
+                  {promptBuilderResult.negativeConstraints.join(" · ")}
+                </p>
+              </Well>
             ) : null}
 
             {promptBuilderResult?.shotNotes?.length ? (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
-                <p className="font-medium text-zinc-100">Shot notes</p>
-                <p className="mt-1">{promptBuilderResult.shotNotes.join(" · ")}</p>
-              </div>
+              <Well className="p-3">
+                <p className="text-xs font-medium text-ink-2">Shot notes</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
+                  {promptBuilderResult.shotNotes.join(" · ")}
+                </p>
+              </Well>
             ) : null}
+          </Card>
 
-            {error ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
+          {/* Step 3 — frames. Required slots now say so before you hit Generate. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading
+              step={3}
+              title="Frames"
+              description="Pulled from your Image Project gallery."
+            />
+            <div className="grid grid-cols-2 gap-3">
+              {frameSlots.map((slot) => (
+                <AssetSlot
+                  key={slot.key}
+                  label={slot.label}
+                  hint={slot.hint}
+                  url={slot.value?.url}
+                  required={slot.required}
+                  missing={slot.missing}
+                  onPick={() => setPickerTarget({ kind: slot.key })}
+                  onClear={slot.value ? () => clearFrame(slot.key) : undefined}
+                />
+              ))}
+            </div>
+          </Card>
+
+          {/* Step 4 — references. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading
+              step={4}
+              title="Reference images"
+              description="Up to three, to hold garment detail through the turn."
+              action={referenceCount ? <Badge tone="accent">{referenceCount}</Badge> : null}
+            />
+
+            <div className="grid grid-cols-3 gap-3">
+              {REFERENCE_SLOTS.map((slot, index) => {
+                const value = referenceImages[index];
+                const neighbours = REFERENCE_SLOTS.map((other, otherIndex) => ({ other, otherIndex })).filter(
+                  (entry) => entry.otherIndex !== index && Math.abs(entry.otherIndex - index) === 1,
+                );
+
+                return (
+                  <div key={slot.role} className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-ink">{slot.label}</p>
+                        <p className="mt-0.5 text-[11px] leading-snug text-ink-3">{slot.hint}</p>
+                      </div>
+                      {value ? (
+                        <ActionMenu
+                          label={`${slot.label} options`}
+                          items={[
+                            // "Move left/right" said nothing about what it did.
+                            // These slots are roles, so the real action is
+                            // reassigning the image to another role.
+                            ...neighbours.map((entry) => ({
+                              key: `swap-${entry.otherIndex}`,
+                              label: `Swap with ${entry.other.label}`,
+                              icon: <ArrowLeftRight className="h-3.5 w-3.5" />,
+                              onSelect: () =>
+                                moveReferenceImage(index, entry.otherIndex > index ? 1 : -1),
+                            })),
+                            {
+                              key: "remove",
+                              label: "Remove image",
+                              icon: <X className="h-3.5 w-3.5" />,
+                              destructive: true,
+                              onSelect: () =>
+                                setReferenceImages((current) => {
+                                  const next = [...current];
+                                  next[index] = null;
+                                  return next;
+                                }),
+                            },
+                          ]}
+                        />
+                      ) : null}
+                    </div>
+
+                    <div className="overflow-hidden rounded-xl border border-line">
+                      {value ? (
+                        <button
+                          type="button"
+                          onClick={() => setPickerTarget({ kind: "reference", index })}
+                          className="block w-full"
+                          aria-label={`Replace ${slot.label}`}
+                        >
+                          <MediaFrame src={value.url} alt={slot.label} ratio="square" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setPickerTarget({ kind: "reference", index })}
+                          className="flex aspect-square w-full flex-col items-center justify-center gap-1.5 bg-well text-ink-3 transition-colors hover:bg-raised hover:text-ink-2"
+                        >
+                          <ImagePlus className="h-5 w-5" aria-hidden />
+                          <span className="text-[11px] font-medium">Choose</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Step 5 — output settings. */}
+          <Card className="space-y-3 p-4">
+            <SectionHeading step={5} title="Output" />
+
+            <div className="grid grid-cols-2 gap-3">
+              <SelectField
+                label="Duration"
+                value={duration}
+                onChange={(event) => setDuration(Number(event.target.value) as VideoDuration)}
+              >
+                <option value={4}>4 seconds</option>
+                <option value={6}>6 seconds</option>
+                <option value={8}>8 seconds</option>
+              </SelectField>
+
+              <SelectField
+                label="Aspect ratio"
+                value={aspectRatio}
+                onChange={(event) => setAspectRatio(event.target.value as VideoAspectRatio)}
+              >
+                <option value="9:16">9:16 — vertical (Reels, TikTok)</option>
+                <option value="16:9">16:9 — landscape</option>
+              </SelectField>
+            </div>
+
+            <SelectField
+              label="Motion preset"
+              hint={
+                isTwoShot
+                  ? "Two-shot mode already biases prompts toward slower, partial transitions."
+                  : "Presets bias the prompt toward a known-safe camera and subject move."
+              }
+              value={motionPreset}
+              onChange={(event) => setMotionPreset(event.target.value as VideoSimpleMotionPreset)}
+            >
+              {VIDEO_SIMPLE_MOTION_PRESETS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {MOTION_PRESET_LABELS[preset]}
+                </option>
+              ))}
+            </SelectField>
+          </Card>
+
+          {/* Advanced, collapsed by default — most runs never touch it. */}
+          <Card className="overflow-hidden">
+            <details className="group">
+              <summary className="flex cursor-pointer items-center justify-between gap-3 p-4 text-sm font-medium text-ink">
+                <span className="flex items-center gap-2">
+                  Garment anchors
+                  {anchorsFilled ? <Badge tone="accent">{anchorsFilled}</Badge> : null}
+                </span>
+                <ChevronDown className="h-4 w-4 text-ink-3 transition-transform group-open:rotate-180" aria-hidden />
+              </summary>
+
+              <div className="space-y-3 border-t border-line p-4">
+                <p className="text-xs leading-relaxed text-ink-3">
+                  Name only the details that must survive the turn. Keep each field to a few words.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {GARMENT_ANCHOR_FIELDS.map((field) => (
+                    <TextField
+                      key={field.key}
+                      label={field.label}
+                      placeholder={field.placeholder}
+                      value={garmentAnchors[field.key]}
+                      onChange={(event) => updateGarmentAnchor(field.key, event.target.value)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </details>
+          </Card>
+
+          {preflightWarnings.length ? (
+            <Alert tone="warning" title="Before you generate">
+              <ul className="list-disc space-y-1 pl-4">
+                {preflightWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </Alert>
+          ) : null}
+
+          {error ? (
+            <Alert tone="danger" title="Generation failed" onDismiss={() => setError(null)}>
+              {error}
+            </Alert>
+          ) : null}
+
+          <div className="-mx-1 space-y-2 px-1 pb-1 pt-1 xl:sticky xl:bottom-0 xl:bg-gradient-to-t xl:from-canvas xl:from-75% xl:to-transparent xl:pb-2 xl:pt-8">
+            {isTwoShot ? (
+              <div className="grid gap-2">
+                <Button
+                  variant="primary"
+                  size="lg"
+                  block
+                  onClick={() => void generateShot("shot-a")}
+                  loading={isGenerating && activeShot === "shot-a"}
+                  disabled={isGenerating || !prompt.trim() || missingIntermediate}
+                  iconLeft={<Clapperboard className="h-4 w-4" />}
+                >
+                  Generate Shot 1 · Front → Mid
+                </Button>
+                <Button
+                  size="lg"
+                  block
+                  onClick={() => void generateShot("shot-b")}
+                  loading={isGenerating && activeShot === "shot-b"}
+                  disabled={isGenerating || !prompt.trim() || missingIntermediate || missingEndFrame}
+                  iconLeft={<Clapperboard className="h-4 w-4" />}
+                >
+                  Generate Shot 2 · Mid → Back
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="primary"
+                size="lg"
+                block
+                onClick={() => void generateShot("single")}
+                loading={isGenerating}
+                disabled={!prompt.trim()}
+                iconLeft={<Clapperboard className="h-4 w-4" />}
+              >
+                Generate clip
+              </Button>
+            )}
+
+            {!prompt.trim() ? (
+              <p className="text-center text-[11px] text-ink-3">Write a prompt to enable generation.</p>
+            ) : missingIntermediate ? (
+              <p className="text-center text-[11px] text-warning">Two-shot mode needs an intermediate anchor frame.</p>
+            ) : null}
           </div>
-        </section>
+        </div>
+      }
+    >
+      {/* The result is the point of the page, so on narrow screens it sits
+          above the controls rather than below a 40-field form. */}
+      <section aria-labelledby="latest-output" className="space-y-3">
+        <h2 id="latest-output" className="text-lg font-semibold tracking-tight text-ink">
+          Latest clip
+        </h2>
 
-        <aside className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-          <header>
-            <h2 className="text-lg font-semibold">Output panel</h2>
-            <p className="text-sm text-zinc-400">Latest result and recent simple video history.</p>
-          </header>
+        {isGenerating ? (
+          <GeneratingPanel
+            title={
+              activeShot === "shot-a"
+                ? "Rendering Shot 1…"
+                : activeShot === "shot-b"
+                  ? "Rendering Shot 2…"
+                  : "Rendering your clip…"
+            }
+            typicalSeconds={90}
+          />
+        ) : latestOutput ? (
+          <Card className="overflow-hidden">
+            <video
+              className="w-full bg-black"
+              src={latestOutput.videoUrl}
+              controls
+              playsInline
+              preload="metadata"
+            />
+            <div className="space-y-3 p-4">
+              <div className="flex flex-wrap gap-1.5">
+                <Badge tone="accent">{latestOutput.duration}s</Badge>
+                <Badge>{latestOutput.aspectRatio}</Badge>
+                {latestOutput.controls ? (
+                  <>
+                    <Badge>{MOTION_PRESET_LABELS[latestOutput.controls.motion_preset ?? "freeform"]}</Badge>
+                    <Badge>
+                      {latestOutput.controls.reference_count ?? 0} reference
+                      {(latestOutput.controls.reference_count ?? 0) === 1 ? "" : "s"}
+                    </Badge>
+                    {latestOutput.controls.shot_type === "shot-a" ? <Badge tone="accent">Shot 1</Badge> : null}
+                    {latestOutput.controls.shot_type === "shot-b" ? <Badge tone="accent">Shot 2</Badge> : null}
+                  </>
+                ) : null}
+              </div>
 
-          {isGenerating ? <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-300">Generating clip… this can take a minute.</div> : null}
-
-          {!isGenerating && latestOutput ? (
-            <div className="space-y-3">
-              <video className="w-full rounded-xl border border-zinc-700 bg-black" src={latestOutput.videoUrl} controls playsInline />
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={() => void handleDownloadVideo()}
-                  disabled={isDownloading}
-                  className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  loading={isDownloading}
+                  iconLeft={<Download className="h-3.5 w-3.5" />}
                 >
-                  {isDownloading ? "Downloading..." : "Download video"}
-                </button>
-                <button
-                  type="button"
+                  Download
+                </Button>
+                <Button
+                  size="sm"
                   onClick={() => void handleCopyVideoUrl()}
-                  className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
+                  iconLeft={
+                    copyStatus === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />
+                  }
                 >
-                  {copyStatus === "copied" ? "URL copied" : copyStatus === "error" ? "Copy failed" : "Copy video URL"}
-                </button>
-                <a href={latestOutput.videoUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
-                  Open video URL
+                  {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy link"}
+                </Button>
+                <a
+                  href={latestOutput.videoUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line-strong px-2.5 text-xs text-ink-2 transition-colors hover:bg-raised hover:text-ink"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                  Open
                 </a>
               </div>
-              <p className="text-xs text-zinc-400">
-                {latestOutput.model} · {latestOutput.duration}s · {latestOutput.aspectRatio}
-              </p>
-              {latestOutput.controls ? (
-                <div className="flex flex-wrap gap-2 text-[11px] text-zinc-300">
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Preset: {MOTION_PRESET_LABELS[latestOutput.controls.motion_preset ?? "freeform"]}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Refs: {latestOutput.controls.reference_count ?? 0}</span>
-                  <span className="rounded-full border border-zinc-700 px-2 py-0.5">Mode: {latestOutput.controls.workflow_mode === "two-shot-back-reveal" ? "Two-Shot" : "Single"}</span>
-                  {latestOutput.controls.shot_type === "shot-a" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 1</span> : null}
-                  {latestOutput.controls.shot_type === "shot-b" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 2</span> : null}
-                </div>
-              ) : null}
+
+              <p className="font-mono text-[11px] text-ink-3">{latestOutput.model}</p>
+
               {latestOutput.compiledPrompt ? (
-                <details className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
-                  <summary className="cursor-pointer text-xs text-zinc-300">Compiled request prompt</summary>
-                  <p className="mt-2 text-xs text-zinc-400">{latestOutput.compiledPrompt}</p>
+                <details className="group rounded-xl border border-line bg-well">
+                  <summary className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-xs text-ink-2">
+                    Compiled request prompt
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
+                  </summary>
+                  <p className="border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink-3">
+                    {latestOutput.compiledPrompt}
+                  </p>
                 </details>
               ) : null}
             </div>
-          ) : null}
+          </Card>
+        ) : (
+          <EmptyState
+            icon={<Clapperboard className="h-6 w-6" />}
+            title="No clip yet"
+            description="Pick a start frame, describe the motion, then generate. Rendering usually takes around a minute."
+          />
+        )}
+      </section>
 
-          {!isGenerating && !latestOutput ? <div className="rounded-xl border border-zinc-700 bg-zinc-950/60 p-4 text-sm text-zinc-400">No output yet. Generate a clip to populate this panel.</div> : null}
-
-          <section className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-zinc-100">Recent simple history</h3>
-              <button type="button" onClick={() => void loadSimpleHistory()} className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800">
-                Refresh
-              </button>
-            </div>
-            <div className="space-y-2">
-              {historyItems.length ? (
-                historyItems.map((item) => {
-                  const videoUrl = item.asset_url ?? item.url;
-                  if (!videoUrl) return null;
-                  const videoMeta = item.video_meta ?? {};
-                  const workflow = readMetaString(videoMeta, "workflowMode");
-                  const shot = readMetaString(videoMeta, "shotType");
-                  const savedAspectRatio = asValidAspectRatio(readMetaString(videoMeta, "aspectRatio") || "9:16");
-                  const savedDuration = readMetaNumber(videoMeta, "durationSeconds", 6);
-                  return (
-                    <article key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2">
-                      <video className="w-full rounded border border-zinc-800 bg-black" src={videoUrl} controls preload="metadata" playsInline />
-                      <div className="mt-2 flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteHistoryItem(item)}
-                          disabled={isDeletingHistoryId === item.id}
-                          className="inline-flex items-center gap-1 rounded border border-rose-500/40 px-2 py-1 text-[10px] text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          {isDeletingHistoryId === item.id ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-zinc-300">
-                        {workflow === "two-shot-back-reveal" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Two-Shot</span> : <span className="rounded-full border border-zinc-700 px-2 py-0.5">Single</span>}
-                        {shot === "shot-a" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 1 · Front → Mid</span> : null}
-                        {shot === "shot-b" ? <span className="rounded-full border border-zinc-700 px-2 py-0.5">Shot 2 · Mid → Back</span> : null}
-                        <span className="rounded-full border border-zinc-700 px-2 py-0.5">{savedDuration}s</span>
-                        <span className="rounded-full border border-zinc-700 px-2 py-0.5">{savedAspectRatio}</span>
-                      </div>
-                    </article>
-                  );
-                })
-              ) : (
-                <p className="text-xs text-zinc-500">No saved simple-video generations yet.</p>
-              )}
-            </div>
-          </section>
-        </aside>
-      </div>
-
-      {pickerTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-          <div className="w-full max-w-4xl rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-zinc-100">Choose {pickerTargetLabel} from Image Project</h2>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => void loadGalleryImages()} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-                  Refresh
-                </button>
-                <button type="button" onClick={() => setPickerTarget(null)} className="rounded-md border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="max-h-[60vh] overflow-y-auto pr-1">
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {galleryImages.map((item) => {
-                  const imageUrl = item.asset_url ?? item.url;
-                  if (!imageUrl) return null;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => void applyFrameSelection(item)}
-                      className="rounded border border-white/10 p-1 text-left hover:border-cyan-400/60"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={imageUrl} alt="Gallery" className="h-28 w-full rounded object-cover" />
-                      <p className="mt-1 line-clamp-2 text-[10px] text-zinc-300">{item.prompt || "Gallery image"}</p>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+      <section aria-labelledby="history" className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="history" className="text-lg font-semibold tracking-tight text-ink">
+            Recent clips
+          </h2>
+          <Button size="sm" variant="ghost" onClick={() => void loadSimpleHistory()} iconLeft={<RefreshCw className="h-3.5 w-3.5" />}>
+            Refresh
+          </Button>
         </div>
-      ) : null}
-    </main>
+
+        {historyItems.length ? (
+          <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
+            {historyItems.map((item) => {
+              const videoUrl = item.asset_url ?? item.url;
+              if (!videoUrl) return null;
+              const videoMeta = item.video_meta ?? {};
+              const workflow = readMetaString(videoMeta, "workflowMode");
+              const shot = readMetaString(videoMeta, "shotType");
+              const savedAspectRatio = asValidAspectRatio(readMetaString(videoMeta, "aspectRatio") || "9:16");
+              const savedDuration = readMetaNumber(videoMeta, "durationSeconds", 6);
+
+              return (
+                <Card key={item.id} className="overflow-hidden">
+                  <video
+                    className="w-full bg-black"
+                    src={videoUrl}
+                    controls
+                    preload="metadata"
+                    playsInline
+                  />
+                  <div className="space-y-2.5 p-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge>{workflow === "two-shot-back-reveal" ? "Two-shot" : "Single"}</Badge>
+                      {shot === "shot-a" ? <Badge tone="accent">Shot 1</Badge> : null}
+                      {shot === "shot-b" ? <Badge tone="accent">Shot 2</Badge> : null}
+                      <Badge>{savedDuration}s</Badge>
+                      <Badge>{savedAspectRatio}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <DownloadAssetButton
+                        url={videoUrl}
+                        filenamePrefix={`simple-video-${item.id}`}
+                        label="Save"
+                        mimeType="video/mp4"
+                      />
+                      <ActionMenu
+                        label="Clip actions"
+                        items={[
+                          {
+                            key: "delete",
+                            label: "Delete clip",
+                            icon: <Trash2 className="h-3.5 w-3.5" />,
+                            destructive: true,
+                            onSelect: () => setPendingHistoryDelete(item),
+                          },
+                        ]}
+                      />
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<Film className="h-6 w-6" />}
+            title="No saved clips yet"
+            description="Every clip you generate is stored here so you can compare takes side by side."
+          />
+        )}
+      </section>
+
+      <Modal
+        open={Boolean(pickerTarget)}
+        onClose={() => setPickerTarget(null)}
+        title={`Choose ${pickerTargetLabel}`}
+        description="Images from your Image Project gallery."
+        size="xl"
+        footer={
+          <div className="flex justify-between gap-2">
+            <Button size="sm" variant="ghost" onClick={() => void loadGalleryImages()} iconLeft={<RefreshCw className="h-3.5 w-3.5" />}>
+              Refresh gallery
+            </Button>
+            <Button size="sm" onClick={() => setPickerTarget(null)}>
+              Cancel
+            </Button>
+          </div>
+        }
+      >
+        {galleryImages.length ? (
+          <ul className="grid gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {galleryImages.map((item) => {
+              const imageUrl = item.asset_url ?? item.url;
+              if (!imageUrl) return null;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => void applyFrameSelection(item)}
+                    className="group block w-full overflow-hidden rounded-xl border border-line text-left transition-colors hover:border-accent"
+                  >
+                    <MediaFrame src={imageUrl} alt={item.prompt || "Gallery image"} ratio="square" />
+                    <p className="line-clamp-2 px-2 py-1.5 text-[11px] leading-snug text-ink-3 transition-colors group-hover:text-ink-2">
+                      {item.prompt || "Gallery image"}
+                    </p>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <EmptyState
+            icon={<ImageIcon className="h-6 w-6" />}
+            title="No gallery images"
+            description="Generate images in the Image Project first — they show up here as frame candidates."
+          />
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(pendingHistoryDelete)}
+        title="Delete this clip?"
+        description="The video file and its generation record are removed permanently. This cannot be undone."
+        confirmLabel="Delete clip"
+        busy={Boolean(pendingHistoryDelete && isDeletingHistoryId === pendingHistoryDelete.id)}
+        onCancel={() => setPendingHistoryDelete(null)}
+        onConfirm={() => {
+          if (pendingHistoryDelete) void handleDeleteHistoryItem(pendingHistoryDelete);
+        }}
+      />
+    </PageShell>
   );
 }

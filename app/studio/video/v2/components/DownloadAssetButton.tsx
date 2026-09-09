@@ -263,12 +263,12 @@ export default function DownloadAssetButton({
 
   return (
     <div ref={containerRef} className="relative inline-flex flex-col items-start" onMouseDown={stopEvent} onClick={stopEvent}>
-      <div className="inline-flex overflow-hidden rounded border border-zinc-700 bg-zinc-950 text-xs shadow-sm shadow-black/40">
+      <div className="inline-flex h-8 overflow-hidden rounded-lg border border-line-strong bg-raised text-xs">
         <button
           type="button"
           onClick={() => onSelectOption("original")}
           disabled={downloading || !hasUrl}
-          className="px-2 py-1 text-zinc-100 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+          className="px-2.5 text-ink-2 transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
           title={!hasUrl ? "Missing asset URL" : undefined}
         >
           {downloading ? "Downloading..." : label}
@@ -279,7 +279,7 @@ export default function DownloadAssetButton({
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((value) => !value)}
           disabled={downloading || !hasUrl}
-          className="border-l border-zinc-700 px-2 py-1 text-zinc-300 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+          className="border-l border-line-strong px-2 text-ink-3 transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
           title={!hasUrl ? "Missing asset URL" : "Download options"}
         >
           ▾
@@ -289,13 +289,13 @@ export default function DownloadAssetButton({
       {menuOpen ? (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+0.375rem)] z-20 min-w-44 rounded-lg border border-zinc-700 bg-zinc-950/95 p-1 text-xs shadow-xl shadow-black/50 backdrop-blur"
+          className="absolute right-0 top-[calc(100%+0.375rem)] z-30 min-w-44 rounded-xl border border-line bg-raised p-1 text-xs shadow-overlay"
         >
           <button
             type="button"
             role="menuitem"
             onClick={() => onSelectOption("original")}
-            className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+            className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink-2 transition-colors hover:bg-surface hover:text-ink"
           >
             Download original
           </button>
@@ -305,7 +305,7 @@ export default function DownloadAssetButton({
                 type="button"
                 role="menuitem"
                 onClick={() => onSelectOption("mp4")}
-                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+                className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink-2 transition-colors hover:bg-surface hover:text-ink"
               >
                 Download as MP4
               </button>
@@ -313,7 +313,7 @@ export default function DownloadAssetButton({
                 type="button"
                 role="menuitem"
                 onClick={() => onSelectOption("open")}
-                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+                className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink-2 transition-colors hover:bg-surface hover:text-ink"
               >
                 Open in new tab
               </button>
@@ -324,7 +324,7 @@ export default function DownloadAssetButton({
                 type="button"
                 role="menuitem"
                 onClick={() => onSelectOption("jpg")}
-                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+                className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink-2 transition-colors hover:bg-surface hover:text-ink"
               >
                 Download as JPG
               </button>
@@ -332,7 +332,7 @@ export default function DownloadAssetButton({
                 type="button"
                 role="menuitem"
                 onClick={() => onSelectOption("png")}
-                className="block w-full rounded-md px-2 py-1.5 text-left text-zinc-100 transition hover:bg-zinc-900"
+                className="block w-full rounded-lg px-2.5 py-1.5 text-left text-ink-2 transition-colors hover:bg-surface hover:text-ink"
               >
                 Download as PNG
               </button>
@@ -341,7 +341,7 @@ export default function DownloadAssetButton({
         </div>
       ) : null}
 
-      {errorMessage ? <p className="mt-1 text-[11px] text-rose-300">{errorMessage}</p> : null}
+      {errorMessage ? <p className="mt-1 text-[11px] text-danger">{errorMessage}</p> : null}
     </div>
   );
 }
