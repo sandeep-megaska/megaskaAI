@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 
 import { buildMoreViewsPrompt } from "../lib/studio/prompts.ts";
 import { resolveTarget } from "../app/api/assets/download/route.ts";
+import {
+  describeExtractionFailure,
+  FrameExtractionError,
+  frameAttemptTimes,
+} from "../lib/video/extractLastFrame.ts";
 
 /* ---------------------------------------------------------------------------
  * "More views" must reproduce the whole photograph, not just the product.
@@ -84,4 +89,48 @@ test("the configured storage host is allowed but never gets the key", (t) => {
   assert.equal(target.useGoogleKey, false);
 
   assert.equal(resolveTarget("https://other.supabase.co/storage/v1/object/public/x.mp4"), null);
+});
+
+/* ---------------------------------------------------------------------------
+ * Continuing a clip from its own final frame.
+ *
+ * The end-to-end decode path is verified in a browser (a recorded clip whose
+ * last second is a known colour comes back as that colour, not as the earlier
+ * colour and not as black). These cover the pure decision logic around it.
+ * ------------------------------------------------------------------------ */
+
+test("seek attempts run from the end backwards", () => {
+  const times = frameAttemptTimes(8);
+  assert.deepEqual(times, [7.92, 7.8, 7.5]);
+  assert.ok(times[0] > times[1] && times[1] > times[2], "attempts must walk backwards");
+});
+
+test("a clip shorter than the offsets still produces valid seeks", () => {
+  for (const duration of [0.3, 0.05, 0]) {
+    const times = frameAttemptTimes(duration);
+    assert.ok(times.length > 0);
+    assert.ok(
+      times.every((time) => time >= 0 && time <= duration),
+      `times out of range for duration ${duration}: ${times}`,
+    );
+  }
+});
+
+test("duplicate seek times are collapsed", () => {
+  assert.deepEqual(frameAttemptTimes(0), [0]);
+});
+
+test("a CORS failure is explained as a bucket setting, not a retry", () => {
+  const message = describeExtractionFailure(new FrameExtractionError("tainted", "x"));
+  assert.match(message, /CORS/i);
+  assert.match(message, /public read access/i);
+});
+
+test("a clip ending on black says so plainly", () => {
+  assert.match(describeExtractionFailure(new FrameExtractionError("blank", "x")), /ends on black/i);
+});
+
+test("an unknown failure still yields a message", () => {
+  assert.match(describeExtractionFailure(new Error("boom")), /boom/);
+  assert.match(describeExtractionFailure("nope"), /could not be extracted/i);
 });

@@ -16,6 +16,7 @@ import {
   Library,
   RefreshCw,
   Scissors,
+  SkipForward,
   ShieldCheck,
   Trash2,
   Wand2,
@@ -41,6 +42,7 @@ import {
   type ResolvedGarmentView,
 } from "@/lib/garment/roles";
 import { loadDistinctImageGenerationAssets, type ImageGenerationAsset } from "@/lib/studio/imageGenerationAssets";
+import { describeExtractionFailure, extractLastFrame } from "@/lib/video/extractLastFrame";
 import { assessFidelity, planConditioning, type ConditioningImage } from "@/lib/video/veo/conditioning";
 import {
   createEmptyGarmentAnchors,
@@ -186,6 +188,7 @@ export default function VideoProjectPage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDeletingHistoryId, setIsDeletingHistoryId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const [continuingFromId, setContinuingFromId] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -449,6 +452,54 @@ export default function VideoProjectPage() {
 
     await generateClip({ endOverride: mid, shotLabel: "Shot 1 · front to mid", shotGroupId: groupId });
     await generateClip({ startOverride: mid, shotLabel: "Shot 2 · mid to back", shotGroupId: groupId });
+  }
+
+  /**
+   * Chain a new clip onto the end of an existing one.
+   *
+   * Veo caps a single clip at 8 seconds, so a longer sequence has to be built
+   * from several. Taking the real closing frame as the next clip's opening
+   * frame means the join is pinned to an actual rendered image rather than to a
+   * description of one, which is the same principle the whole conditioning
+   * planner is built on.
+   *
+   * The old end frame is cleared deliberately: it described where the previous
+   * clip finished, and keeping it would make the new clip loop back to a pose
+   * it is starting from.
+   */
+  async function continueFromClip(input: { id: string; videoUrl: string; aspectRatio?: AspectRatio }) {
+    if (continuingFromId) return;
+
+    setContinuingFromId(input.id);
+    setError(null);
+
+    try {
+      const frame = await extractLastFrame(input.videoUrl);
+
+      const form = new FormData();
+      form.append("file", new File([frame.blob], `continuation-${input.id}.png`, { type: "image/png" }));
+      const response = await fetch("/api/upload", { method: "POST", body: form });
+      const payload = (await response.json()) as { success?: boolean; public_url?: string; error?: string };
+      if (!response.ok || !payload.success || !payload.public_url) {
+        throw new Error(payload.error ?? "The extracted frame could not be saved.");
+      }
+
+      setStartFrame({
+        url: payload.public_url,
+        label: "Closing frame of the previous clip",
+      });
+      setEndFrame(null);
+      if (input.aspectRatio) setAspectRatio(input.aspectRatio);
+
+      setLibraryNotice(
+        "The previous clip's closing frame is now the opening frame. Add a closing frame to pin where this one lands.",
+      );
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (extractionError) {
+      setError(describeExtractionFailure(extractionError));
+    } finally {
+      setContinuingFromId(null);
+    }
   }
 
   async function handleDownloadVideo() {
@@ -927,6 +978,21 @@ export default function VideoProjectPage() {
                 >
                   {copyStatus === "copied" ? "Copied" : copyStatus === "error" ? "Copy failed" : "Copy link"}
                 </Button>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    void continueFromClip({
+                      id: latestOutput.generationId,
+                      videoUrl: latestOutput.videoUrl,
+                      aspectRatio: latestOutput.aspectRatio,
+                    })
+                  }
+                  loading={continuingFromId === latestOutput.generationId}
+                  disabled={Boolean(continuingFromId)}
+                  iconLeft={<SkipForward className="h-3.5 w-3.5" />}
+                >
+                  Continue from here
+                </Button>
                 <a
                   href={latestOutput.videoUrl}
                   target="_blank"
@@ -1014,6 +1080,18 @@ export default function VideoProjectPage() {
                       <ActionMenu
                         label="Clip actions"
                         items={[
+                          {
+                            key: "continue",
+                            label: "Continue from this clip",
+                            icon: <SkipForward className="h-3.5 w-3.5" />,
+                            disabled: Boolean(continuingFromId),
+                            onSelect: () =>
+                              void continueFromClip({
+                                id: item.id,
+                                videoUrl,
+                                aspectRatio: asAspectRatio(readMeta(meta, "aspectRatio") || "9:16"),
+                              }),
+                          },
                           {
                             key: "delete",
                             label: "Delete clip",
