@@ -270,6 +270,8 @@ export async function POST(request: Request) {
         size_mb: Number(error.sizeMb.toFixed(2)),
         max_bytes: error.maxBytes,
         max_mb: Number(error.maxMb.toFixed(2)),
+        limit_source: error.limitSource,
+        limit_known: error.limitKnown,
       });
     }
 

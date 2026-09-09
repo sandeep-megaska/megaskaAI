@@ -10,21 +10,82 @@ export class UploadSizeLimitError extends Error {
   readonly maxBytes: number;
   readonly sizeMb: number;
   readonly maxMb: number;
+  /** Which limit rejected the object: this app's own guard, or Supabase Storage. */
+  readonly limitSource: "app" | "storage";
+  /** False when Supabase rejected the object but its ceiling could not be read. */
+  readonly limitKnown: boolean;
 
-  constructor(input: { sizeBytes: number; maxBytes: number }) {
+  constructor(input: {
+    sizeBytes: number;
+    maxBytes: number;
+    limitSource?: "app" | "storage";
+    limitKnown?: boolean;
+  }) {
     const sizeMb = bytesToMb(input.sizeBytes);
     const maxMb = bytesToMb(input.maxBytes);
-    super(
-      `Video file is too large to upload (${input.sizeBytes} bytes / ${sizeMb.toFixed(
-        2,
-      )} MB). Max allowed is ${input.maxBytes} bytes / ${maxMb.toFixed(2)} MB.`,
-    );
+    const limitSource = input.limitSource ?? "app";
+    const limitKnown = input.limitKnown ?? true;
+    const size = `${input.sizeBytes} bytes / ${sizeMb.toFixed(2)} MB`;
+    const max = `${input.maxBytes} bytes / ${maxMb.toFixed(2)} MB`;
+
+    let detail: string;
+    if (limitSource === "app") {
+      detail = `Max allowed is ${max}.`;
+    } else if (limitKnown) {
+      detail = `Supabase Storage allows ${max} per object in this bucket. Raise the bucket's file size limit, and the project's global upload limit, in Supabase Storage settings.`;
+    } else {
+      detail =
+        "Supabase Storage rejected it as too large. Raise the bucket's file size limit, and the project's global upload limit, in Supabase Storage settings.";
+    }
+
+    super(`Video file is too large to upload (${size}). ${detail}`);
     this.name = "UploadSizeLimitError";
     this.sizeBytes = input.sizeBytes;
     this.maxBytes = input.maxBytes;
     this.sizeMb = sizeMb;
     this.maxMb = maxMb;
+    this.limitSource = limitSource;
+    this.limitKnown = limitKnown;
   }
+}
+
+/**
+ * Supabase Storage answers an oversized object with HTTP 413 EntityTooLarge and
+ * the message "The object exceeded the maximum allowed size". The JS client
+ * surfaces that as a plain error, so match on both shapes.
+ */
+function isStorageSizeLimitError(error: { message?: string; statusCode?: string; status?: number } | null) {
+  if (!error) return false;
+  const status = Number(error.statusCode ?? error.status ?? 0);
+  if (status === 413) return true;
+  return /exceeded the maximum allowed size|entity ?too ?large|payload too large/i.test(error.message ?? "");
+}
+
+/**
+ * The bucket's own per-object limit, so a rejection can name the real ceiling
+ * rather than this app's guess. Returns null when it cannot be read (missing
+ * permission, or a null limit meaning "inherit the project global limit").
+ */
+async function readBucketSizeLimit(bucket: string): Promise<number | null> {
+  try {
+    const supabase = getSupabaseAdminClient();
+    const { data, error } = await supabase.storage.getBucket(bucket);
+    if (error || !data) return null;
+    const limit = (data as { file_size_limit?: number | null }).file_size_limit;
+    return typeof limit === "number" && limit > 0 ? limit : null;
+  } catch {
+    return null;
+  }
+}
+
+async function storageSizeLimitError(bucket: string, sizeBytes: number) {
+  const bucketLimit = await readBucketSizeLimit(bucket);
+  return new UploadSizeLimitError({
+    sizeBytes,
+    maxBytes: bucketLimit ?? getVideoUploadThresholds().maxBytes,
+    limitSource: "storage",
+    limitKnown: bucketLimit !== null,
+  });
 }
 
 function bytesToMb(bytes: number) {
@@ -111,7 +172,12 @@ export async function uploadGeneratedVideoToSupabase(input: {
       contentType,
       upsert: false,
     });
-    if (error) throw new Error(`Supabase upload failed: ${error.message}`);
+    if (error) {
+      if (isStorageSizeLimitError(error)) {
+        throw await storageSizeLimitError(input.bucket, sizeBytes);
+      }
+      throw new Error(`Supabase upload failed: ${error.message}`);
+    }
   }
 
   const supabase = getSupabaseAdminClient();
@@ -147,6 +213,9 @@ async function uploadViaTusResumable(input: { bucket: string; filePath: string; 
 
   if (!createResponse.ok) {
     const body = await createResponse.text();
+    if (isStorageSizeLimitError({ message: body, status: createResponse.status })) {
+      throw await storageSizeLimitError(input.bucket, input.bytes.length);
+    }
     throw new Error(`Supabase resumable upload init failed (${createResponse.status}): ${body.slice(0, 240)}`);
   }
 
@@ -168,6 +237,9 @@ async function uploadViaTusResumable(input: { bucket: string; filePath: string; 
 
   if (!patchResponse.ok) {
     const body = await patchResponse.text();
+    if (isStorageSizeLimitError({ message: body, status: patchResponse.status })) {
+      throw await storageSizeLimitError(input.bucket, input.bytes.length);
+    }
     throw new Error(`Supabase resumable upload patch failed (${patchResponse.status}): ${body.slice(0, 240)}`);
   }
 }
