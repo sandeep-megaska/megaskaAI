@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ImageIcon, Video, Wallet } from "lucide-react";
+import { ChevronDown, ImageIcon, PanelsTopLeft, Video, Wallet } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 type GoogleBillingStatus = "ok" | "not_configured" | "error" | "no_data";
@@ -26,7 +26,7 @@ type CostSummary = {
 
 const navItems = [
   { href: "/", label: "Image Project", icon: ImageIcon, accent: "violet" as const },
-  { href: "/video/simple", label: "Video Project", icon: Video, accent: "cyan" as const },
+  { href: "/video/simple", label: "Video Project", icon: Video, accent: "cyan" as const },\n  { href: "/studio/infographic", label: "Infographic Studio", icon: PanelsTopLeft, accent: "violet" as const },
   // Kept for future use:
   // { href: "/models", label: "Models" },
   // { href: "/garments", label: "Garments" },
