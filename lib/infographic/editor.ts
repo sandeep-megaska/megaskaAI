@@ -22,6 +22,15 @@ export type EditorTextElement = EditorBaseElement & {
   fontWeight: number;
   color: string;
   align: "left" | "center" | "right";
+  italic: boolean;
+  uppercase: boolean;
+  lineHeight: number;
+  letterSpacing: number;
+  backgroundColor: string;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowX: number;
+  shadowY: number;
 };
 
 export type EditorShapeElement = EditorBaseElement & {
@@ -36,6 +45,12 @@ export type EditorImageElement = EditorBaseElement & {
   kind: "image";
   src: string;
   fit: "contain" | "cover";
+  cropX: number;
+  cropY: number;
+  cropZoom: number;
+  borderRadius: number;
+  flipX: boolean;
+  flipY: boolean;
 };
 
 export type EditorElement = EditorTextElement | EditorShapeElement | EditorImageElement;
@@ -87,4 +102,28 @@ export function clampZoom(value: number) {
 
 export function snapValue(value: number, grid = 10, enabled = true) {
   return enabled ? Math.round(value / grid) * grid : value;
+}
+
+
+export type AlignmentGuide = { axis: "x" | "y"; value: number };
+
+export function clampCropOffset(value: number) {
+  return Math.max(-100, Math.min(100, value));
+}
+
+export function clampCropZoom(value: number) {
+  return Math.max(1, Math.min(4, value));
+}
+
+export function alignmentGuides(element: EditorElement, doc: EditorDocument, threshold = 8): AlignmentGuide[] {
+  const guides: AlignmentGuide[] = [];
+  const centerX = element.x + element.width / 2;
+  const centerY = element.y + element.height / 2;
+  const candidatesX = [0, doc.width / 2, doc.width];
+  const candidatesY = [0, doc.height / 2, doc.height];
+  const edgesX = [element.x, centerX, element.x + element.width];
+  const edgesY = [element.y, centerY, element.y + element.height];
+  for (const candidate of candidatesX) if (edgesX.some((value) => Math.abs(value - candidate) <= threshold)) guides.push({ axis: "x", value: candidate });
+  for (const candidate of candidatesY) if (edgesY.some((value) => Math.abs(value - candidate) <= threshold)) guides.push({ axis: "y", value: candidate });
+  return guides;
 }
