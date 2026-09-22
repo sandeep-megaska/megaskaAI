@@ -1,138 +1,133 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Circle, Download, ImagePlus, LayoutTemplate, Minus, Plus, RectangleHorizontal, RefreshCw, Square, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowDown, ArrowUp, Circle, Copy, Download, Eye, EyeOff, ImagePlus, Lock, Minus,
+  MousePointer2, Redo2, RotateCw, Square, Trash2, Type, Undo2, Unlock, ZoomIn, ZoomOut,
+} from "lucide-react";
 import PageShell from "@/components/ui/PageShell";
 import Button from "@/components/ui/Button";
 import { Card, SectionHeading, Well } from "@/components/ui/Surface";
+import { FONT_OPTIONS, MARKETPLACE_PRESETS, clampCanvasDimension, type MarketplacePresetId } from "@/lib/infographic/layout";
 import {
-  DEFAULT_INFOGRAPHIC_STYLE,
-  FONT_OPTIONS,
-  INFOGRAPHIC_TEMPLATES,
-  MARKETPLACE_PRESETS,
-  clampCanvasDimension,
-  normalizeFeatureLabel,
-  scaleFromDesign,
-  splitFeatureLabel,
-  type InfographicShape,
-  type InfographicStyle,
-  type InfographicTemplate,
-  type MarketplacePresetId,
-  type ShapeKind,
-} from "@/lib/infographic/layout";
+  clampZoom, createId, duplicateElement, moveElement, reorderElement, resizeElement, rotateElement, snapValue,
+  type EditorDocument, type EditorElement, type EditorImageElement, type EditorShapeElement, type EditorTextElement,
+} from "@/lib/infographic/editor";
 
-type LocalImage = { file: File; url: string };
-type FeatureState = { label: string; image: LocalImage | null };
-const DEFAULT_FEATURES = ["Easy full-zip closure", "Flowy coverage", "Secure inner fit"];
+type History = { past: EditorDocument[]; present: EditorDocument; future: EditorDocument[] };
+type DragState = { id:string; mode:"move"|"resize"|"rotate"; startX:number; startY:number; original:EditorElement };
 
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Could not load an image used by the infographic."));
-    image.src = src;
-  });
-}
-function drawCover(ctx: CanvasRenderingContext2D, image: HTMLImageElement, x:number,y:number,w:number,h:number) {
-  const scale=Math.max(w/image.naturalWidth,h/image.naturalHeight), sw=w/scale, sh=h/scale;
-  ctx.drawImage(image,(image.naturalWidth-sw)/2,(image.naturalHeight-sh)/2,sw,sh,x,y,w,h);
-}
-function drawContain(ctx: CanvasRenderingContext2D,image:HTMLImageElement,x:number,y:number,w:number,h:number){
-  const scale=Math.min(w/image.naturalWidth,h/image.naturalHeight), dw=image.naturalWidth*scale, dh=image.naturalHeight*scale;
-  ctx.drawImage(image,x+(w-dw)/2,y+(h-dh)/2,dw,dh);
-}
-function drawLabel(ctx:CanvasRenderingContext2D,text:string,x:number,y:number,style:InfographicStyle,scale:number,align:CanvasTextAlign="right",maxChars=19){
-  const lines=splitFeatureLabel(text,maxChars), size=style.fontSize*scale, lineHeight=size*1.12;
-  ctx.save(); ctx.fillStyle=style.textColor; ctx.font=`${style.fontWeight} ${size}px ${style.fontFamily}`; ctx.textAlign=align; ctx.textBaseline="middle";
-  const start=y-((lines.length-1)*lineHeight)/2; lines.forEach((line,i)=>ctx.fillText(line,x,start+i*lineHeight)); ctx.restore();
-}
-function drawLine(ctx:CanvasRenderingContext2D,x1:number,y:number,x2:number,dot:number,style:InfographicStyle,scale:number){
-  ctx.save(); ctx.strokeStyle=style.accentColor; ctx.fillStyle=style.accentColor; ctx.lineWidth=5*scale;
-  ctx.beginPath();ctx.moveTo(x1,y);ctx.lineTo(x2,y);ctx.stroke();ctx.beginPath();ctx.arc(dot,y,14*scale,0,Math.PI*2);ctx.fill();ctx.restore();
-}
-function drawShapes(ctx:CanvasRenderingContext2D,shapes:InfographicShape[],sx:number,sy:number){
-  for(const shape of shapes){ const x=shape.x*sx,y=shape.y*sy,w=shape.width*sx,h=shape.height*sy; ctx.save();ctx.globalAlpha=shape.opacity;ctx.fillStyle=shape.fill;ctx.strokeStyle=shape.stroke;ctx.lineWidth=shape.strokeWidth*sx;
-    if(shape.kind==="circle"){ctx.beginPath();ctx.ellipse(x+w/2,y+h/2,w/2,h/2,0,0,Math.PI*2);ctx.fill();ctx.stroke();}
-    else if(shape.kind==="line"){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w,y+h);ctx.stroke();}
-    else {ctx.beginPath(); if(shape.kind==="rounded")ctx.roundRect(x,y,w,h,Math.min(30*sx,w/4,h/4)); else ctx.rect(x,y,w,h);ctx.fill();ctx.stroke();} ctx.restore();
-  }
-}
-async function drawLogo(ctx:CanvasRenderingContext2D,w:number){
-  try{const logo=await loadImage("/logo_megaska.png");const s=w/2000;ctx.save();ctx.fillStyle="#f3f516";ctx.beginPath();ctx.roundRect(76*s,70*s,150*s,150*s,22*s);ctx.fill();drawContain(ctx,logo,90*s,84*s,122*s,122*s);ctx.restore();}catch{}
-}
+const initialDocument: EditorDocument = { width:2000, height:2000, background:"#ffffff", elements:[] };
+const makeHistory=(present:EditorDocument):History=>({past:[],present,future:[]});
+
+function imageFile(file:File){ return { src:URL.createObjectURL(file), name:file.name }; }
 
 export default function InfographicStudioPage(){
-  const canvasRef=useRef<HTMLCanvasElement>(null);
-  const [hero,setHero]=useState<LocalImage|null>(null);
-  const [features,setFeatures]=useState<FeatureState[]>(DEFAULT_FEATURES.map(label=>({label,image:null})));
-  const [template,setTemplate]=useState<InfographicTemplate>("hero-details");
+  const [history,setHistory]=useState<History>(()=>makeHistory(initialDocument));
+  const doc=history.present;
+  const [selectedId,setSelectedId]=useState<string|null>(null);
   const [preset,setPreset]=useState<MarketplacePresetId>("amazon-square");
-  const [canvasWidth,setCanvasWidth]=useState(2000),[canvasHeight,setCanvasHeight]=useState(2000);
-  const [style,setStyle]=useState<InfographicStyle>(DEFAULT_INFOGRAPHIC_STYLE);
-  const [variant,setVariant]=useState("");
-  const [shapes,setShapes]=useState<InfographicShape[]>([]);
-  const [status,setStatus]=useState("Upload a product image to begin."),[busy,setBusy]=useState(false);
+  const [zoom,setZoom]=useState(.38);
+  const [snap,setSnap]=useState(true);
+  const [drag,setDrag]=useState<DragState|null>(null);
+  const [status,setStatus]=useState("Add an image, text or shape to begin.");
+  const canvasRef=useRef<HTMLDivElement>(null);
 
-  const choosePreset=(id:MarketplacePresetId)=>{
-    setPreset(id); const p=MARKETPLACE_PRESETS.find(item=>item.id===id); if(p&&id!=="custom"){setCanvasWidth(p.width);setCanvasHeight(p.height);}
-  };
-  const setLocalImage=useCallback((file:File|undefined,target:"hero"|number)=>{
-    if(!file?.type.startsWith("image/"))return; const next={file,url:URL.createObjectURL(file)};
-    if(target==="hero"){setHero(old=>{if(old)URL.revokeObjectURL(old.url);return next;});return;}
-    setFeatures(old=>old.map((f,i)=>i===target?{...f,image:next}:f));
+  const selected=useMemo(()=>doc.elements.find(e=>e.id===selectedId)??null,[doc.elements,selectedId]);
+  const commit=useCallback((next:EditorDocument)=>{
+    setHistory(h=>({past:[...h.past.slice(-49),h.present],present:next,future:[]}));
   },[]);
-  const addShape=(kind:ShapeKind)=>setShapes(old=>[...old,{id:crypto.randomUUID(),kind,x:700,y:700,width:kind==="line"?500:400,height:kind==="line"?0:220,fill:"#ffffff",stroke:style.accentColor,strokeWidth:6,opacity:.9}]);
+  const patchElement=useCallback((id:string, patch:Partial<EditorElement>, record=true)=>{
+    const next={...doc,elements:doc.elements.map(e=>e.id===id?({...e,...patch} as EditorElement):e)};
+    if(record) commit(next); else setHistory(h=>({...h,present:next}));
+  },[doc,commit]);
+  const undo=()=>setHistory(h=>h.past.length?{past:h.past.slice(0,-1),present:h.past[h.past.length-1],future:[h.present,...h.future]}:h);
+  const redo=()=>setHistory(h=>h.future.length?{past:[...h.past,h.present],present:h.future[0],future:h.future.slice(1)}:h);
 
-  const render=useCallback(async()=>{
-    if(!hero||!canvasRef.current){setStatus("Upload a hero product image first.");return;} setBusy(true);
-    try{
-      const canvas=canvasRef.current,ctx=canvas.getContext("2d");if(!ctx)throw new Error("Canvas unavailable.");
-      const W=clampCanvasDimension(canvasWidth),H=clampCanvasDimension(canvasHeight),sx=W/2000,sy=H/2000,s=Math.min(sx,sy);
-      canvas.width=W;canvas.height=H;ctx.fillStyle=style.backgroundColor;ctx.fillRect(0,0,W,H);
-      const hi=await loadImage(hero.url),details=await Promise.all(features.map(f=>loadImage(f.image?.url??hero.url)));
-      const labels=features.map((f,i)=>normalizeFeatureLabel(f.label,DEFAULT_FEATURES[i]));
-      if(template==="hero-details"){
-        drawContain(ctx,hi,40*sx,120*sy,1190*sx,1780*sy);
-        [70,620,1170].forEach((baseY,i)=>{const x=1420*sx,y=baseY*sy,w=500*sx,h=455*sy;ctx.fillStyle="#f4f4f4";ctx.fillRect(x,y,w,h);drawCover(ctx,details[i],x,y,w,h);drawLabel(ctx,labels[i],1355*sx,y+h/2,style,s,"right");drawLine(ctx,1375*sx,y+h/2,1565*sx,1565*sx,style,s);});
-      } else if(template==="center-callouts"){
-        drawContain(ctx,hi,410*sx,170*sy,1180*sx,1660*sy);
-        const pos=[[320,520,"right",340,650,650],[1680,940,"left",1350,1660,1350],[320,1370,"right",340,650,650]] as const;
-        pos.forEach((p,i)=>{drawLabel(ctx,labels[i],p[0]*sx,p[1]*sy,style,s,p[2],17);drawLine(ctx,p[3]*sx,p[1]*sy,p[4]*sx,p[5]*sx,style,s);});
-      } else {
-        drawContain(ctx,hi,190*sx,70*sy,1620*sx,1120*sy);
-        features.forEach((_,i)=>{const x=(68+i*632)*sx,y=1280*sy,w=600*sx;ctx.fillStyle="#f3f3f3";ctx.fillRect(x,y,w,500*sy);drawCover(ctx,details[i],x,y,w,370*sy);ctx.fillStyle="#fff";ctx.fillRect(x,y+370*sy,w,130*sy);drawLabel(ctx,labels[i],x+w/2,y+435*sy,style,s,"center",18);});
-      }
-      drawShapes(ctx,shapes,sx,sy); await drawLogo(ctx,W);
-      ctx.fillStyle=style.textColor;ctx.font=`800 ${58*s}px ${style.fontFamily}`;ctx.textAlign="right";ctx.fillText((variant||"MEGASKA").toUpperCase(),W-70*sx,H-65*sy);
-      setStatus(`Ready · ${W} × ${H}px · verify marketplace requirements and product claims before upload.`);
-    }catch(e){setStatus(e instanceof Error?e.message:"Render failed.");}finally{setBusy(false);}
-  },[hero,features,template,canvasWidth,canvasHeight,style,variant,shapes]);
+  const addText=()=>{
+    const e:EditorTextElement={id:createId("text"),name:"Heading",kind:"text",x:240,y:240,width:900,height:180,rotation:0,opacity:1,visible:true,locked:false,text:"PRODUCT FEATURE",fontFamily:"Arial, Helvetica, sans-serif",fontSize:92,fontWeight:800,color:"#111111",align:"left"};
+    commit({...doc,elements:[...doc.elements,e]});setSelectedId(e.id);
+  };
+  const addShape=(shape:EditorShapeElement["shape"])=>{
+    const e:EditorShapeElement={id:createId("shape"),name:shape,kind:"shape",shape,x:500,y:500,width:500,height:280,rotation:0,opacity:1,visible:true,locked:false,fill:shape==="line"?"transparent":"#f3f516",stroke:"#111111",strokeWidth:4};
+    commit({...doc,elements:[...doc.elements,e]});setSelectedId(e.id);
+  };
+  const addImage=(file?:File)=>{
+    if(!file?.type.startsWith("image/"))return;const asset=imageFile(file);
+    const e:EditorImageElement={id:createId("image"),name:asset.name,kind:"image",x:220,y:220,width:1100,height:1450,rotation:0,opacity:1,visible:true,locked:false,src:asset.src,fit:"contain"};
+    commit({...doc,elements:[...doc.elements,e]});setSelectedId(e.id);
+  };
+  const removeSelected=()=>{if(!selected||selected.locked)return;commit({...doc,elements:doc.elements.filter(e=>e.id!==selected.id)});setSelectedId(null);};
+  const duplicateSelected=()=>{if(!selected)return;const e=duplicateElement(selected);commit({...doc,elements:[...doc.elements,e]});setSelectedId(e.id);};
+  const reorder=(direction:"forward"|"backward")=>selected&&commit({...doc,elements:reorderElement(doc.elements,selected.id,direction)});
+  const choosePreset=(id:MarketplacePresetId)=>{
+    setPreset(id);const p=MARKETPLACE_PRESETS.find(x=>x.id===id);if(p&&id!=="custom")commit({...doc,width:p.width,height:p.height});
+  };
 
-  useEffect(()=>{if(hero)void render();},[hero,template,preset,style,shapes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const beginPointer=(event:React.PointerEvent,id:string,mode:DragState["mode"])=>{
+    event.stopPropagation();const element=doc.elements.find(e=>e.id===id);if(!element||element.locked)return;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    setSelectedId(id);setDrag({id,mode,startX:event.clientX,startY:event.clientY,original:element});
+  };
+  const pointerMove=(event:React.PointerEvent)=>{
+    if(!drag)return;const dx=(event.clientX-drag.startX)/zoom,dy=(event.clientY-drag.startY)/zoom;
+    if(drag.mode==="move"){const moved=moveElement(drag.original,snapValue(dx,10,snap),snapValue(dy,10,snap));patchElement(drag.id,{x:moved.x,y:moved.y},false);}
+    if(drag.mode==="resize"){const resized=resizeElement(drag.original,snapValue(drag.original.width+dx,10,snap),snapValue(drag.original.height+dy,10,snap));patchElement(drag.id,{width:resized.width,height:resized.height},false);}
+    if(drag.mode==="rotate"){const rotated=rotateElement(drag.original,drag.original.rotation+dx/2);patchElement(drag.id,{rotation:rotated.rotation},false);}
+  };
+  const pointerUp=()=>{if(!drag)return;setHistory(h=>({past:[...h.past.slice(-49),{...h.present,elements:h.present.elements.map(e=>e.id===drag.id?drag.original:e)}],present:h.present,future:[]}));setDrag(null);};
 
-  const download=(type:"png"|"jpeg")=>{const c=canvasRef.current;if(!c||!hero)return;c.toBlob(blob=>{if(!blob)return;const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=`megaska-infographic-${canvasWidth}x${canvasHeight}.${type==="png"?"png":"jpg"}`;a.click();URL.revokeObjectURL(u);},`image/${type}`,.94);};
+  useEffect(()=>{
+    const key=(e:KeyboardEvent)=>{
+      const target=e.target as HTMLElement;if(["INPUT","TEXTAREA","SELECT"].includes(target.tagName))return;
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?redo():undo();return;}
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="d"){e.preventDefault();duplicateSelected();return;}
+      if((e.key==="Delete"||e.key==="Backspace")&&selected){e.preventDefault();removeSelected();return;}
+      if(selected&&["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key)){e.preventDefault();const step=e.shiftKey?10:1;const dx=e.key==="ArrowLeft"?-step:e.key==="ArrowRight"?step:0,dy=e.key==="ArrowUp"?-step:e.key==="ArrowDown"?step:0;const moved=moveElement(selected,dx,dy);patchElement(selected.id,{x:moved.x,y:moved.y});}
+    };window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);
+  });
+
+  const exportImage=async()=>{
+    const canvas=document.createElement("canvas");canvas.width=doc.width;canvas.height=doc.height;const ctx=canvas.getContext("2d");if(!ctx)return;
+    ctx.fillStyle=doc.background;ctx.fillRect(0,0,doc.width,doc.height);
+    for(const e of doc.elements){if(!e.visible)continue;ctx.save();ctx.globalAlpha=e.opacity;ctx.translate(e.x+e.width/2,e.y+e.height/2);ctx.rotate(e.rotation*Math.PI/180);ctx.translate(-e.width/2,-e.height/2);
+      if(e.kind==="shape"){ctx.fillStyle=e.fill;ctx.strokeStyle=e.stroke;ctx.lineWidth=e.strokeWidth;if(e.shape==="circle"){ctx.beginPath();ctx.ellipse(e.width/2,e.height/2,e.width/2,e.height/2,0,0,Math.PI*2);ctx.fill();ctx.stroke();}else if(e.shape==="line"){ctx.beginPath();ctx.moveTo(0,e.height/2);ctx.lineTo(e.width,e.height/2);ctx.stroke();}else{ctx.beginPath();e.shape==="rounded"?ctx.roundRect(0,0,e.width,e.height,40):ctx.rect(0,0,e.width,e.height);ctx.fill();ctx.stroke();}}
+      if(e.kind==="text"){ctx.fillStyle=e.color;ctx.font=`${e.fontWeight} ${e.fontSize}px ${e.fontFamily}`;ctx.textBaseline="top";ctx.textAlign=e.align;const x=e.align==="left"?0:e.align==="center"?e.width/2:e.width;ctx.fillText(e.text,x,0,e.width);}
+      if(e.kind==="image"){const img=new Image();img.src=e.src;await img.decode();const scale=e.fit==="contain"?Math.min(e.width/img.naturalWidth,e.height/img.naturalHeight):Math.max(e.width/img.naturalWidth,e.height/img.naturalHeight);const w=img.naturalWidth*scale,h=img.naturalHeight*scale;ctx.save();ctx.beginPath();ctx.rect(0,0,e.width,e.height);ctx.clip();ctx.drawImage(img,(e.width-w)/2,(e.height-h)/2,w,h);ctx.restore();}
+      ctx.restore();
+    }
+    canvas.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`megaska-creative-${doc.width}x${doc.height}.png`;a.click();URL.revokeObjectURL(url);},"image/png");setStatus("PNG exported.");
+  };
+
+  const inspector=selected?<Card className="p-4"><SectionHeading title="Properties" description={selected.name}/>
+    <label className="mt-3 block text-xs text-ink-3">Name<input value={selected.name} onChange={e=>patchElement(selected.id,{name:e.target.value})} className="mt-1 w-full rounded border border-line bg-well px-2 py-2 text-sm"/></label>
+    <div className="mt-2 grid grid-cols-2 gap-2">{(["x","y","width","height","rotation"] as const).map(k=><label key={k} className="text-xs text-ink-3">{k}<input type="number" value={Math.round(selected[k])} onChange={e=>patchElement(selected.id,{[k]:Number(e.target.value)})} className="mt-1 w-full rounded border border-line bg-well px-2 py-2 text-sm"/></label>)}</div>
+    <label className="mt-2 block text-xs text-ink-3">Opacity {Math.round(selected.opacity*100)}%<input type="range" min="0" max="1" step=".05" value={selected.opacity} onChange={e=>patchElement(selected.id,{opacity:Number(e.target.value)})} className="w-full"/></label>
+    {selected.kind==="text"?<><textarea value={selected.text} onChange={e=>patchElement(selected.id,{text:e.target.value})} className="mt-3 w-full rounded border border-line bg-well p-2 text-sm"/><select value={selected.fontFamily} onChange={e=>patchElement(selected.id,{fontFamily:e.target.value})} className="mt-2 w-full rounded border border-line bg-well px-2 py-2 text-sm">{FONT_OPTIONS.map(f=><option key={f.label} value={f.value}>{f.label}</option>)}</select><div className="mt-2 grid grid-cols-2 gap-2"><input type="number" value={selected.fontSize} onChange={e=>patchElement(selected.id,{fontSize:Number(e.target.value)})} className="rounded border border-line bg-well px-2 py-2"/><input type="color" value={selected.color} onChange={e=>patchElement(selected.id,{color:e.target.value})} className="h-10 w-full"/></div></>:null}
+    {selected.kind==="shape"?<div className="mt-3 flex gap-3"><label className="text-xs">Fill<input type="color" value={selected.fill==="transparent"?"#ffffff":selected.fill} onChange={e=>patchElement(selected.id,{fill:e.target.value})}/></label><label className="text-xs">Stroke<input type="color" value={selected.stroke} onChange={e=>patchElement(selected.id,{stroke:e.target.value})}/></label></div>:null}
+    {selected.kind==="image"?<select value={selected.fit} onChange={e=>patchElement(selected.id,{fit:e.target.value as "contain"|"cover"})} className="mt-3 w-full rounded border border-line bg-well px-2 py-2 text-sm"><option value="contain">Contain</option><option value="cover">Cover / crop</option></select>:null}
+  </Card>:<Card className="p-4"><SectionHeading title="Properties" description="Select an object on the canvas."/></Card>;
 
   const rail=<div className="space-y-4">
-    <Card className="p-4"><SectionHeading title="1. Canvas" description="Marketplace presets are editable working sizes, not policy guarantees."/>
-      <select value={preset} onChange={e=>choosePreset(e.target.value as MarketplacePresetId)} className="mt-3 w-full rounded-lg border border-line bg-well px-3 py-2 text-sm">{MARKETPLACE_PRESETS.map(p=><option key={p.id} value={p.id}>{p.label} · {p.width}×{p.height}</option>)}</select>
-      <div className="mt-2 grid grid-cols-2 gap-2"><input aria-label="Canvas width" type="number" min={500} max={5000} value={canvasWidth} onChange={e=>{setPreset("custom");setCanvasWidth(Number(e.target.value));}} className="rounded-lg border border-line bg-well px-3 py-2 text-sm"/><input aria-label="Canvas height" type="number" min={500} max={5000} value={canvasHeight} onChange={e=>{setPreset("custom");setCanvasHeight(Number(e.target.value));}} className="rounded-lg border border-line bg-well px-3 py-2 text-sm"/></div>
-    </Card>
-    <Card className="p-4"><SectionHeading title="2. Product & template" description="Use approved photography; generate close-ups separately in Image Project."/>
-      <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-line-strong bg-well px-3 py-4 text-sm"><ImagePlus className="h-4 w-4"/>{hero?"Replace hero":"Upload hero"}<input className="sr-only" type="file" accept="image/*" onChange={e=>setLocalImage(e.target.files?.[0],"hero")}/></label>
-      <select value={template} onChange={e=>setTemplate(e.target.value as InfographicTemplate)} className="mt-2 w-full rounded-lg border border-line bg-well px-3 py-2 text-sm">{INFOGRAPHIC_TEMPLATES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}</select>
-    </Card>
-    <Card className="p-4"><SectionHeading title="3. Typography & color" description="Control the visual system without regenerating the product."/>
-      <select value={style.fontFamily} onChange={e=>setStyle(v=>({...v,fontFamily:e.target.value}))} className="mt-3 w-full rounded-lg border border-line bg-well px-3 py-2 text-sm">{FONT_OPTIONS.map(f=><option key={f.label} value={f.value}>{f.label}</option>)}</select>
-      <div className="mt-2 grid grid-cols-2 gap-2"><label className="text-xs text-ink-3">Size<input type="number" min={24} max={110} value={style.fontSize} onChange={e=>setStyle(v=>({...v,fontSize:Number(e.target.value)}))} className="mt-1 w-full rounded-lg border border-line bg-well px-2 py-2"/></label><label className="text-xs text-ink-3">Weight<select value={style.fontWeight} onChange={e=>setStyle(v=>({...v,fontWeight:Number(e.target.value)}))} className="mt-1 w-full rounded-lg border border-line bg-well px-2 py-2"><option value="400">Regular</option><option value="600">Semi bold</option><option value="700">Bold</option><option value="800">Extra bold</option></select></label></div>
-      <div className="mt-3 grid grid-cols-3 gap-2">{([["Text","textColor"],["Accent","accentColor"],["Canvas","backgroundColor"]] as const).map(([label,key])=><label key={key} className="text-xs text-ink-3">{label}<input type="color" value={style[key]} onChange={e=>setStyle(v=>({...v,[key]:e.target.value}))} className="mt-1 h-9 w-full rounded border border-line"/></label>)}</div>
-    </Card>
-    <Card className="p-4"><SectionHeading title="4. Feature callouts" description="Add optional close-up images from Image Project."/><div className="mt-3 space-y-3">{features.map((f,i)=><Well key={i} className="p-2"><input value={f.label} maxLength={64} onChange={e=>setFeatures(old=>old.map((x,j)=>j===i?{...x,label:e.target.value}:x))} className="w-full rounded-lg border border-line bg-surface px-2 py-2 text-sm"/><label className="mt-2 inline-flex cursor-pointer items-center gap-1 text-xs"><ImagePlus className="h-3 w-3"/>{f.image?"Replace detail":"Detail image"}<input className="sr-only" type="file" accept="image/*" onChange={e=>setLocalImage(e.target.files?.[0],i)}/></label></Well>)}</div><input value={variant} onChange={e=>setVariant(e.target.value)} placeholder="Variant / color label" className="mt-3 w-full rounded-lg border border-line bg-well px-3 py-2 text-sm"/></Card>
-    <Card className="p-4"><SectionHeading title="5. Shapes" description="Add simple graphic elements; they render above the template."/><div className="mt-3 flex flex-wrap gap-2"><Button variant="secondary" onClick={()=>addShape("rectangle")}><RectangleHorizontal className="h-4 w-4"/>Rectangle</Button><Button variant="secondary" onClick={()=>addShape("rounded")}><Square className="h-4 w-4"/>Rounded</Button><Button variant="secondary" onClick={()=>addShape("circle")}><Circle className="h-4 w-4"/>Circle</Button><Button variant="secondary" onClick={()=>addShape("line")}><Minus className="h-4 w-4"/>Line</Button></div>{shapes.map((sh,i)=><Well key={sh.id} className="mt-2 p-2"><div className="flex items-center justify-between text-xs"><span>{sh.kind} {i+1}</span><button onClick={()=>setShapes(v=>v.filter(x=>x.id!==sh.id))}><X className="h-3 w-3"/></button></div><div className="mt-2 grid grid-cols-2 gap-1">{(["x","y","width","height"] as const).map(k=><input key={k} aria-label={k} type="number" value={Math.round(sh[k])} onChange={e=>setShapes(v=>v.map(x=>x.id===sh.id?{...x,[k]:Number(e.target.value)}:x))} className="w-full rounded border border-line bg-surface px-2 py-1 text-xs"/>)}</div><div className="mt-2 flex gap-2"><input aria-label="Shape fill" type="color" value={sh.fill} onChange={e=>setShapes(v=>v.map(x=>x.id===sh.id?{...x,fill:e.target.value}:x))}/><input aria-label="Shape stroke" type="color" value={sh.stroke} onChange={e=>setShapes(v=>v.map(x=>x.id===sh.id?{...x,stroke:e.target.value}:x))}/></div></Well>)}</Card>
-    <div className="flex flex-wrap gap-2"><Button onClick={()=>void render()} disabled={!hero||busy}>{busy?<RefreshCw className="h-4 w-4 animate-spin"/>:<RefreshCw className="h-4 w-4"/>}Render</Button><Button variant="secondary" onClick={()=>download("png")} disabled={!hero}><Download className="h-4 w-4"/>PNG</Button><Button variant="secondary" onClick={()=>download("jpeg")} disabled={!hero}><Download className="h-4 w-4"/>JPG</Button></div>
+    <Card className="p-4"><SectionHeading title="Canvas" description="Choose output size and background."/><select value={preset} onChange={e=>choosePreset(e.target.value as MarketplacePresetId)} className="mt-3 w-full rounded border border-line bg-well px-2 py-2 text-sm">{MARKETPLACE_PRESETS.map(p=><option key={p.id} value={p.id}>{p.label} · {p.width}×{p.height}</option>)}</select><div className="mt-2 grid grid-cols-2 gap-2"><input type="number" value={doc.width} onChange={e=>{setPreset("custom");commit({...doc,width:clampCanvasDimension(Number(e.target.value))})}} className="rounded border border-line bg-well px-2 py-2"/><input type="number" value={doc.height} onChange={e=>{setPreset("custom");commit({...doc,height:clampCanvasDimension(Number(e.target.value))})}} className="rounded border border-line bg-well px-2 py-2"/></div><label className="mt-2 flex items-center gap-2 text-xs">Background <input type="color" value={doc.background} onChange={e=>commit({...doc,background:e.target.value})}/></label></Card>
+    <Card className="p-4"><SectionHeading title="Add" description="Every object is independently editable."/><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={addText}><Type className="h-4 w-4"/>Text</Button><label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-sm"><ImagePlus className="h-4 w-4"/>Image<input type="file" accept="image/*" className="sr-only" onChange={e=>addImage(e.target.files?.[0])}/></label><Button variant="secondary" onClick={()=>addShape("rectangle")}><Square className="h-4 w-4"/>Box</Button><Button variant="secondary" onClick={()=>addShape("circle")}><Circle className="h-4 w-4"/>Circle</Button><Button variant="secondary" onClick={()=>addShape("line")}><Minus className="h-4 w-4"/>Line</Button><Button variant="secondary" onClick={()=>addShape("rounded")}><Square className="h-4 w-4"/>Rounded</Button></div></Card>
+    {inspector}
+    <Card className="p-4"><SectionHeading title="Layers" description="Top item renders in front."/><div className="mt-3 space-y-1">{[...doc.elements].reverse().map(e=><button key={e.id} onClick={()=>setSelectedId(e.id)} className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs ${selectedId===e.id?"bg-accent/10 text-ink":"bg-well text-ink-2"}`}><span onClick={ev=>{ev.stopPropagation();patchElement(e.id,{visible:!e.visible})}}>{e.visible?<Eye className="h-3 w-3"/>:<EyeOff className="h-3 w-3"/>}</span><span className="min-w-0 flex-1 truncate">{e.name}</span><span onClick={ev=>{ev.stopPropagation();patchElement(e.id,{locked:!e.locked})}}>{e.locked?<Lock className="h-3 w-3"/>:<Unlock className="h-3 w-3"/>}</span></button>)}</div></Card>
   </div>;
 
-  return <PageShell accent="violet" eyebrow="Marketplace creative" title="Infographic Studio" description="Compose product photography, feature callouts, brand styling and simple shapes for different marketplace aspect ratios." rail={rail}>
-    <Card className="overflow-hidden p-4"><SectionHeading title="Live preview" description={status}/><div className="mt-4 flex min-h-[520px] items-center justify-center overflow-auto rounded-xl border border-line bg-well p-3">{hero?<canvas ref={canvasRef} className="h-auto max-h-[75vh] max-w-full bg-white shadow-raised"/>:<div className="max-w-sm text-center"><LayoutTemplate className="mx-auto h-8 w-8 text-ink-3"/><p className="mt-3 text-sm font-medium">Upload a product image to start</p></div>}</div></Card>
-    <Well className="p-4"><p className="text-sm font-medium">Image generation stays in Image Project</p><p className="mt-1 text-xs leading-relaxed text-ink-3">Create zipper close-ups, stretch demonstrations and other generated supporting visuals there, then import approved outputs here for composition. This editor does not alter garment construction.</p></Well>
+  return <PageShell accent="violet" eyebrow="Product Creative Studio" title="Infographic Canvas Editor" description="A focused e-commerce design canvas: independent layers, direct manipulation, undo/redo, marketplace sizes and export." rail={rail}>
+    <Card className="p-3"><div className="flex flex-wrap items-center gap-2 border-b border-line pb-3"><Button variant="secondary" onClick={undo} disabled={!history.past.length}><Undo2 className="h-4 w-4"/></Button><Button variant="secondary" onClick={redo} disabled={!history.future.length}><Redo2 className="h-4 w-4"/></Button><Button variant="secondary" onClick={duplicateSelected} disabled={!selected}><Copy className="h-4 w-4"/>Duplicate</Button><Button variant="secondary" onClick={removeSelected} disabled={!selected||selected.locked}><Trash2 className="h-4 w-4"/></Button><Button variant="secondary" onClick={()=>reorder("forward")} disabled={!selected}><ArrowUp className="h-4 w-4"/>Forward</Button><Button variant="secondary" onClick={()=>reorder("backward")} disabled={!selected}><ArrowDown className="h-4 w-4"/>Backward</Button><label className="ml-auto flex items-center gap-1 text-xs"><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>Snap</label><Button variant="secondary" onClick={()=>setZoom(z=>clampZoom(z-.1))}><ZoomOut className="h-4 w-4"/></Button><span className="text-xs">{Math.round(zoom*100)}%</span><Button variant="secondary" onClick={()=>setZoom(z=>clampZoom(z+.1))}><ZoomIn className="h-4 w-4"/></Button><Button onClick={()=>void exportImage()}><Download className="h-4 w-4"/>PNG</Button></div>
+      <div className="mt-3 overflow-auto rounded-xl bg-well p-8" style={{maxHeight:"78vh"}} onPointerMove={pointerMove} onPointerUp={pointerUp}>
+        <div ref={canvasRef} onPointerDown={()=>setSelectedId(null)} className="relative mx-auto origin-top-left shadow-raised" style={{width:doc.width*zoom,height:doc.height*zoom,background:doc.background}}>
+          {doc.elements.map(e=>e.visible?<div key={e.id} onPointerDown={ev=>beginPointer(ev,e.id,"move")} className={`absolute select-none ${selectedId===e.id?"outline outline-2 outline-blue-500":""} ${e.locked?"cursor-not-allowed":"cursor-move"}`} style={{left:e.x*zoom,top:e.y*zoom,width:e.width*zoom,height:e.height*zoom,opacity:e.opacity,transform:`rotate(${e.rotation}deg)`,transformOrigin:"center"}}>
+            {e.kind==="image"?<img src={e.src} alt="" draggable={false} className={`h-full w-full ${e.fit==="cover"?"object-cover":"object-contain"}`}/>:null}
+            {e.kind==="text"?<div className="h-full w-full whitespace-pre-wrap" style={{fontFamily:e.fontFamily,fontSize:e.fontSize*zoom,fontWeight:e.fontWeight,color:e.color,textAlign:e.align,lineHeight:1.05}}>{e.text}</div>:null}
+            {e.kind==="shape"?<div className="h-full w-full" style={e.shape==="circle"?{borderRadius:"50%",background:e.fill,border:`${e.strokeWidth*zoom}px solid ${e.stroke}`}:e.shape==="line"?{height:Math.max(2,e.strokeWidth*zoom),background:e.stroke,marginTop:(e.height*zoom)/2}:{borderRadius:e.shape==="rounded"?24*zoom:0,background:e.fill,border:`${e.strokeWidth*zoom}px solid ${e.stroke}`}}/>:null}
+            {selectedId===e.id&&!e.locked?<><button aria-label="Resize" onPointerDown={ev=>beginPointer(ev,e.id,"resize")} className="absolute -bottom-2 -right-2 h-4 w-4 rounded-full border-2 border-white bg-blue-500"/><button aria-label="Rotate" onPointerDown={ev=>beginPointer(ev,e.id,"rotate")} className="absolute -top-7 left-1/2 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full bg-blue-500 text-white"><RotateCw className="h-3 w-3"/></button></>:null}
+          </div>:null)}
+        </div>
+      </div><p className="mt-2 text-xs text-ink-3">{status} · Delete removes · Ctrl/Cmd+D duplicates · arrows nudge · Shift+arrows move 10px.</p>
+    </Card>
+    <Well className="p-4"><p className="text-sm font-medium">2A foundation</p><p className="mt-1 text-xs text-ink-3">This phase establishes the editable document/layer model. Next phases can add richer typography, image crop/pan, guides, grouping, templates and saved projects without returning to fixed template rendering.</p></Well>
   </PageShell>;
 }
