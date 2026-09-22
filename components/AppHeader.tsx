@@ -26,7 +26,8 @@ type CostSummary = {
 
 const navItems = [
   { href: "/", label: "Image Project", icon: ImageIcon, accent: "violet" as const },
-  { href: "/video/simple", label: "Video Project", icon: Video, accent: "cyan" as const },\n  { href: "/studio/infographic", label: "Infographic Studio", icon: PanelsTopLeft, accent: "violet" as const },
+  { href: "/video/simple", label: "Video Project", icon: Video, accent: "cyan" as const },
+  { href: "/studio/infographic", label: "Infographic Studio", icon: PanelsTopLeft, accent: "violet" as const },
   // Kept for future use:
   // { href: "/models", label: "Models" },
   // { href: "/garments", label: "Garments" },
