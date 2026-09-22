@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDown, ArrowUp, Circle, Copy, Download, Eye, EyeOff, Group, ImagePlus, Lock, Minus, MousePointer2,
+  ArrowDown, ArrowUp, Circle, Copy, Download, Eye, EyeOff, Group, ImagePlus, Lock, Minus,
   Redo2, RotateCw, Square, Trash2, Triangle, Type, Ungroup, Undo2, Unlock, ZoomIn, ZoomOut,
 } from "lucide-react";
 import PageShell from "@/components/ui/PageShell";
