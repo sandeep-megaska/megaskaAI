@@ -172,3 +172,32 @@ export function duplicateElements(elements: EditorElement[], ids: string[]) {
   });
   return { elements: [...elements, ...copies], ids: copies.map((copy) => copy.id) };
 }
+
+
+export type SelectionBounds = { x:number; y:number; width:number; height:number; centerX:number; centerY:number };
+
+export function selectionBounds(elements: EditorElement[], ids: string[]): SelectionBounds | null {
+  const chosen=selectedElements(elements,ids);
+  if(!chosen.length) return null;
+  const left=Math.min(...chosen.map(e=>e.x)), top=Math.min(...chosen.map(e=>e.y));
+  const right=Math.max(...chosen.map(e=>e.x+e.width)), bottom=Math.max(...chosen.map(e=>e.y+e.height));
+  return {x:left,y:top,width:right-left,height:bottom-top,centerX:(left+right)/2,centerY:(top+bottom)/2};
+}
+
+export function transformElements(
+  elements: EditorElement[], ids: string[], original: EditorElement[], mode:"move"|"resize"|"rotate",
+  dx:number, dy:number, rotationDelta=0
+) {
+  const wanted=new Set(ids);
+  const bounds=selectionBounds(original,ids);
+  if(!bounds) return elements;
+  const originalMap=new Map(original.map(e=>[e.id,e]));
+  if(mode==="move") return elements.map(e=>wanted.has(e.id)&&!e.locked?{...e,x:(originalMap.get(e.id)?.x??e.x)+dx,y:(originalMap.get(e.id)?.y??e.y)+dy}:e);
+  if(mode==="resize"){
+    const sx=Math.max(.05,(bounds.width+dx)/Math.max(1,bounds.width));
+    const sy=Math.max(.05,(bounds.height+dy)/Math.max(1,bounds.height));
+    return elements.map(e=>{const o=originalMap.get(e.id);if(!wanted.has(e.id)||!o||e.locked)return e;return {...e,x:bounds.x+(o.x-bounds.x)*sx,y:bounds.y+(o.y-bounds.y)*sy,width:Math.max(20,o.width*sx),height:Math.max(20,o.height*sy)};});
+  }
+  const radians=rotationDelta*Math.PI/180,cos=Math.cos(radians),sin=Math.sin(radians);
+  return elements.map(e=>{const o=originalMap.get(e.id);if(!wanted.has(e.id)||!o||e.locked)return e;const cx=o.x+o.width/2-bounds.centerX,cy=o.y+o.height/2-bounds.centerY;const rx=cx*cos-cy*sin,ry=cx*sin+cy*cos;return {...e,x:bounds.centerX+rx-o.width/2,y:bounds.centerY+ry-o.height/2,rotation:((o.rotation+rotationDelta)%360+360)%360};});
+}
