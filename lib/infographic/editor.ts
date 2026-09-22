@@ -12,6 +12,7 @@ export type EditorBaseElement = {
   opacity: number;
   visible: boolean;
   locked: boolean;
+  groupId?: string;
 };
 
 export type EditorTextElement = EditorBaseElement & {
@@ -35,7 +36,7 @@ export type EditorTextElement = EditorBaseElement & {
 
 export type EditorShapeElement = EditorBaseElement & {
   kind: "shape";
-  shape: "rectangle" | "rounded" | "circle" | "line";
+  shape: "rectangle" | "rounded" | "circle" | "line" | "arrow" | "triangle" | "badge";
   fill: string;
   stroke: string;
   strokeWidth: number;
@@ -126,4 +127,48 @@ export function alignmentGuides(element: EditorElement, doc: EditorDocument, thr
   for (const candidate of candidatesX) if (edgesX.some((value) => Math.abs(value - candidate) <= threshold)) guides.push({ axis: "x", value: candidate });
   for (const candidate of candidatesY) if (edgesY.some((value) => Math.abs(value - candidate) <= threshold)) guides.push({ axis: "y", value: candidate });
   return guides;
+}
+
+
+export function selectedElements(elements: EditorElement[], ids: string[]) {
+  const wanted = new Set(ids);
+  return elements.filter((element) => wanted.has(element.id));
+}
+
+export function groupElements(elements: EditorElement[], ids: string[], groupId = createId("group")) {
+  if (ids.length < 2) return elements;
+  const wanted = new Set(ids);
+  return elements.map((element) => wanted.has(element.id) ? { ...element, groupId } : element);
+}
+
+export function ungroupElements(elements: EditorElement[], ids: string[]) {
+  const groups = new Set(elements.filter((element) => ids.includes(element.id)).map((element) => element.groupId).filter(Boolean));
+  if (!groups.size) return elements;
+  return elements.map((element) => element.groupId && groups.has(element.groupId) ? { ...element, groupId: undefined } : element);
+}
+
+export function expandSelectionToGroups(elements: EditorElement[], ids: string[]) {
+  const selected = selectedElements(elements, ids);
+  const groups = new Set(selected.map((element) => element.groupId).filter(Boolean));
+  if (!groups.size) return ids;
+  return Array.from(new Set([...ids, ...elements.filter((element) => element.groupId && groups.has(element.groupId)).map((element) => element.id)]));
+}
+
+export function moveElements(elements: EditorElement[], ids: string[], dx: number, dy: number) {
+  const wanted = new Set(ids);
+  return elements.map((element) => wanted.has(element.id) ? moveElement(element, dx, dy) : element);
+}
+
+export function duplicateElements(elements: EditorElement[], ids: string[]) {
+  const chosen = selectedElements(elements, ids);
+  const groupMap = new Map<string, string>();
+  const copies = chosen.map((element) => {
+    const copy = duplicateElement(element);
+    if (element.groupId) {
+      if (!groupMap.has(element.groupId)) groupMap.set(element.groupId, createId("group"));
+      copy.groupId = groupMap.get(element.groupId);
+    }
+    return copy;
+  });
+  return { elements: [...elements, ...copies], ids: copies.map((copy) => copy.id) };
 }
