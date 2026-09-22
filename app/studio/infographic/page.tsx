@@ -30,7 +30,8 @@ export default function InfographicStudioPage(){
   const [zoom,setZoom]=useState(.38);
   const [snap,setSnap]=useState(true);
   const [drag,setDrag]=useState<DragState|null>(null);
-  const [status,setStatus]=useState("Add an image, text or shape to begin.");\n  const [guides,setGuides]=useState<{axis:"x"|"y";value:number}[]>([]);
+  const [status,setStatus]=useState("Add an image, text or shape to begin.");
+  const [guides,setGuides]=useState<{axis:"x"|"y";value:number}[]>([]);
   const canvasRef=useRef<HTMLDivElement>(null);
 
   const selected=useMemo(()=>doc.elements.find(e=>e.id===selectedId)??null,[doc.elements,selectedId]);
