@@ -15,6 +15,26 @@ const PROMPTS:Record<SubjectMode,string>={
 
 function asJson(status:number,body:Record<string,unknown>){return NextResponse.json(body,{status});}
 
+function inspectPngAlpha(bytes:Buffer){
+  const pngSignature=Buffer.from([137,80,78,71,13,10,26,10]);
+  if(bytes.length<33||!bytes.subarray(0,8).equals(pngSignature))return {isPng:false,hasAlphaChannel:false,transparency:"unknown" as const};
+  const colorType=bytes[25];
+  const hasAlphaChannel=colorType===4||colorType===6;
+  // PNG color types 4/6 carry a real alpha channel. Type 3 may use a tRNS
+  // transparency chunk, so scan chunks without decoding image pixels.
+  let offset=8;
+  let hasTransparencyChunk=false;
+  while(offset+12<=bytes.length){
+    const length=bytes.readUInt32BE(offset);
+    const type=bytes.toString("ascii",offset+4,offset+8);
+    if(type==="tRNS")hasTransparencyChunk=true;
+    offset+=12+length;
+    if(type==="IEND")break;
+  }
+  const transparentCapable=hasAlphaChannel||hasTransparencyChunk;
+  return {isPng:true,hasAlphaChannel,hasTransparencyChunk,transparency:transparentCapable?"present" as const:"absent" as const};
+}
+
 export async function POST(request:Request){
   try{
     const payload=(await request.json()) as Payload;
@@ -42,6 +62,8 @@ export async function POST(request:Request){
     if(!imagePart?.inlineData?.data)return asJson(502,{success:false,error:"Background removal did not return an image."});
     const outputMime=imagePart.inlineData.mimeType||"image/png";
     const output=Buffer.from(imagePart.inlineData.data,"base64");
+    const alpha=inspectPngAlpha(output);
+    const transparencyValidated=alpha.transparency==="present";
     const supabase=getSupabaseAdminClient();
     const bucket=process.env.SUPABASE_STORAGE_BUCKET??"brand-assets";
     const ext=outputMime.includes("jpeg")?"jpg":"png";
@@ -49,7 +71,7 @@ export async function POST(request:Request){
     const {error}=await supabase.storage.from(bucket).upload(path,output,{contentType:outputMime,upsert:false});
     if(error)return asJson(500,{success:false,error:`Upload failed: ${error.message}`});
     const {data}=supabase.storage.from(bucket).getPublicUrl(path);
-    return asJson(200,{success:true,outputUrl:data.publicUrl,path,subjectMode});
+    return asJson(200,{success:true,outputUrl:data.publicUrl,path,subjectMode,transparencyValidated,alphaInspection:alpha,warning:transparencyValidated?null:"The returned image does not expose a PNG alpha/transparency channel. The visible checkerboard may be baked into the pixels rather than real transparency."});
   }catch(error){
     console.error("[infographic/background-remove]",error);
     return asJson(500,{success:false,error:error instanceof Error?error.message:"Background removal failed."});
