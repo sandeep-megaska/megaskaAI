@@ -1200,7 +1200,9 @@ function HomeContent() {
                             onSelect: () => handleSendToVideo(item),
                           },
                           {
+                            key: "infographic",
                             label: "Send to Infographic Studio",
+                            icon: <FileText className="h-3.5 w-3.5" />,
                             disabled: !src,
                             onSelect: () => handleSendToInfographic(item),
                           },
