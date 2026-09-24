@@ -5,7 +5,13 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 export const maxDuration = 180;
 
-type Payload={image_url?:string;name?:string};
+type SubjectMode="product-only"|"keep-model";
+type Payload={image_url?:string;name?:string;subject_mode?:SubjectMode};
+
+const PROMPTS:Record<SubjectMode,string>={
+  "product-only":"Isolate only the primary sellable product/garment exactly as photographed. Remove the entire background AND remove the person/model/mannequin wearing or holding it. Return only the product on a transparent background. Preserve exact product colors, silhouette, construction, texture, stitching, hardware, printed graphics and logos. Do not redesign, retouch, add, crop, or invent product details.",
+  "keep-model":"Remove only the environment/background. KEEP the complete person/model and the complete product/garment exactly as photographed as one foreground subject. Do not remove, replace, reshape or regenerate the model, face, hair, hands, body, garment, accessories that belong to the subject, or any part of the product. Preserve exact pose, anatomy, skin appearance, product colors, construction, texture, printed graphics and logos. Return the model wearing/holding the product on a transparent background. Do not add scenery or text."
+};
 
 function asJson(status:number,body:Record<string,unknown>){return NextResponse.json(body,{status});}
 
@@ -13,6 +19,7 @@ export async function POST(request:Request){
   try{
     const payload=(await request.json()) as Payload;
     const imageUrl=payload.image_url?.trim();
+    const subjectMode:SubjectMode=payload.subject_mode==="keep-model"?"keep-model":"product-only";
     if(!imageUrl||!/^https?:\/\//i.test(imageUrl))return asJson(400,{success:false,error:"A public image URL is required."});
     const apiKey=process.env.GOOGLE_API_KEY??process.env.GEMINI_API_KEY;
     if(!apiKey)return asJson(503,{success:false,error:"Google image service is not configured."});
@@ -25,7 +32,7 @@ export async function POST(request:Request){
     const response=await ai.models.generateContent({
       model:"gemini-2.5-flash-image",
       contents:[{role:"user",parts:[
-        {text:"Isolate the primary product exactly as photographed. Remove the entire background and return the product on a transparent background. Preserve exact colors, shape, construction, texture, printed graphics and logos. Do not redesign, retouch, add, remove, crop, or invent product details. Output only the isolated product image."},
+        {text:PROMPTS[subjectMode]},
         {inlineData:{mimeType,data:bytes.toString("base64")}}
       ]}],
       config:{responseModalities:["IMAGE","TEXT"]},
@@ -38,11 +45,11 @@ export async function POST(request:Request){
     const supabase=getSupabaseAdminClient();
     const bucket=process.env.SUPABASE_STORAGE_BUCKET??"brand-assets";
     const ext=outputMime.includes("jpeg")?"jpg":"png";
-    const path=`infographic/background-removed/${Date.now()}-${(payload.name||"product").toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,40)||"product"}.${ext}`;
+    const path=`infographic/background-removed/${subjectMode}/${Date.now()}-${(payload.name||"product").toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,40)||"product"}.${ext}`;
     const {error}=await supabase.storage.from(bucket).upload(path,output,{contentType:outputMime,upsert:false});
     if(error)return asJson(500,{success:false,error:`Upload failed: ${error.message}`});
     const {data}=supabase.storage.from(bucket).getPublicUrl(path);
-    return asJson(200,{success:true,outputUrl:data.publicUrl,path});
+    return asJson(200,{success:true,outputUrl:data.publicUrl,path,subjectMode});
   }catch(error){
     console.error("[infographic/background-remove]",error);
     return asJson(500,{success:false,error:error instanceof Error?error.message:"Background removal failed."});
