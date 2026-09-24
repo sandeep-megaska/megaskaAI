@@ -172,6 +172,7 @@ function HomeContent() {
   const [pendingDelete, setPendingDelete] = useState<GenerationItem | null>(null);
   const [preserveScene, setPreserveScene] = useState(true);
   const [backgroundRemovingId, setBackgroundRemovingId] = useState<string | null>(null);
+  const [referenceRemovingUrl, setReferenceRemovingUrl] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -338,6 +339,46 @@ function HomeContent() {
       setModelReferenceUrls((current) => [...current, ...uploaded]);
     } finally {
       setUploadingKind(null);
+    }
+  }
+
+
+  async function handleReferenceBackgroundRemoval(
+    url: string,
+    kind: "garment" | "model",
+    subjectMode: "keep-model" | "product-only",
+  ) {
+    if (referenceRemovingUrl) return;
+    try {
+      setReferenceRemovingUrl(url);
+      setError(null);
+      setHandoffNotice(subjectMode === "keep-model" ? "Preparing uploaded image: keeping model…" : "Preparing uploaded image: isolating product…");
+      const response = await fetch("/api/infographic/background-remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_url: url, name: `${kind}-reference`, subject_mode: subjectMode }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.outputUrl) throw new Error(data.error || "Background removal failed.");
+
+      const replace = (current: string[]) => current.map((entry) => (entry === url ? data.outputUrl : entry));
+      if (kind === "garment") setGarmentReferenceUrls(replace);
+      else setModelReferenceUrls(replace);
+
+      const processed: StagedImageAsset = {
+        id: `upload-bg-${Date.now()}`,
+        url: data.outputUrl,
+        prompt: `${kind} upload — ${subjectMode === "keep-model" ? "background removed, model kept" : "background and model removed"}`,
+        createdAt: new Date().toISOString(),
+      };
+      const sent = sendAssetToInfographicStudio(processed);
+      setHandoffNotice(
+        `Uploaded reference prepared and replaced with the transparent version. Processed image also sent to Infographic Studio (${sent.length} waiting).`,
+      );
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Background removal failed.");
+    } finally {
+      setReferenceRemovingUrl(null);
     }
   }
 
@@ -901,6 +942,7 @@ function HomeContent() {
               onFiles={(files) => void uploadFiles(files, "garment")}
               onRemove={(url) => setGarmentReferenceUrls((current) => current.filter((entry) => entry !== url))}
             />
+            {garmentReferenceUrls.length ? <div className="space-y-2"><p className="text-[11px] font-medium text-ink-3">Prepare uploaded garment</p>{garmentReferenceUrls.map((url,index)=><div key={`garment-bg-${url}`} className="flex items-center gap-2 rounded-lg border border-line bg-well p-2"><MediaFrame src={url} alt={`Garment reference ${index+1}`} ratio="square" className="h-10 w-10 shrink-0 rounded-md"/><div className="grid min-w-0 flex-1 grid-cols-1 gap-1"><Button size="sm" variant="secondary" disabled={Boolean(referenceRemovingUrl)} onClick={()=>void handleReferenceBackgroundRemoval(url,"garment","keep-model")}>{referenceRemovingUrl===url?"Processing…":"Remove bg · Keep model"}</Button><Button size="sm" variant="secondary" disabled={Boolean(referenceRemovingUrl)} onClick={()=>void handleReferenceBackgroundRemoval(url,"garment","product-only")}>{referenceRemovingUrl===url?"Processing…":"Remove bg + model"}</Button></div></div>)}</div>:null}
 
             <DropZone
               label="Model references"
@@ -910,6 +952,7 @@ function HomeContent() {
               onFiles={(files) => void uploadFiles(files, "model")}
               onRemove={(url) => setModelReferenceUrls((current) => current.filter((entry) => entry !== url))}
             />
+            {modelReferenceUrls.length ? <div className="space-y-2"><p className="text-[11px] font-medium text-ink-3">Prepare uploaded model</p>{modelReferenceUrls.map((url,index)=><div key={`model-bg-${url}`} className="flex items-center gap-2 rounded-lg border border-line bg-well p-2"><MediaFrame src={url} alt={`Model reference ${index+1}`} ratio="square" className="h-10 w-10 shrink-0 rounded-md"/><div className="grid min-w-0 flex-1 grid-cols-1 gap-1"><Button size="sm" variant="secondary" disabled={Boolean(referenceRemovingUrl)} onClick={()=>void handleReferenceBackgroundRemoval(url,"model","keep-model")}>{referenceRemovingUrl===url?"Processing…":"Remove bg · Keep model"}</Button><Button size="sm" variant="secondary" disabled={Boolean(referenceRemovingUrl)} onClick={()=>void handleReferenceBackgroundRemoval(url,"model","product-only")}>{referenceRemovingUrl===url?"Processing…":"Remove bg + model"}</Button></div></div>)}</div>:null}
 
             {selectedAnchorImages.length || sentToVideoImages.length ? (
               <Well className="space-y-2 p-3">
