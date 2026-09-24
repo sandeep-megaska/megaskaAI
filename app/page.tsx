@@ -361,6 +361,11 @@ function HomeContent() {
       const data = await response.json();
       if (!response.ok || !data.outputUrl) throw new Error(data.error || "Background removal failed.");
 
+      if (!data.transparencyValidated) {
+        setHandoffNotice(data.warning || "Background removal completed, but true transparency could not be verified. The original reference was kept active.");
+        return;
+      }
+
       const replace = (current: string[]) => current.map((entry) => (entry === url ? data.outputUrl : entry));
       if (kind === "garment") setGarmentReferenceUrls(replace);
       else setModelReferenceUrls(replace);
@@ -474,6 +479,13 @@ function HomeContent() {
       });
       const data = await response.json();
       if (!response.ok || !data.outputUrl) throw new Error(data.error || "Background removal failed.");
+
+      if (!data.transparencyValidated) {
+        setHandoffNotice(data.warning || "Background removal completed, but true transparency could not be verified. The result was not auto-sent to Infographic Studio.");
+        setGalleryPage(0);
+        await loadGallery(0, true);
+        return;
+      }
 
       const processed: StagedImageAsset = {
         id: `bg-${item.id}-${subjectMode}-${Date.now()}`,
