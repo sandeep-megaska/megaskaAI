@@ -44,6 +44,7 @@ import {
   getStagedVideoAnchors,
   removeStagedImageReference,
   sendAssetToVideoProject,
+  sendAssetToInfographicStudio,
   stageImageReference,
   stageVideoAnchorCandidate,
   type StagedImageAsset,
@@ -407,6 +408,13 @@ function HomeContent() {
     const staged = stageVideoAnchorCandidate(mapped);
     setSelectedAnchorImages(staged);
     setHandoffNotice(`Staged as a video anchor. ${staged.length} anchor${staged.length === 1 ? "" : "s"} ready.`);
+  }
+
+  function handleSendToInfographic(item: GenerationItem) {
+    const mapped = mapGenerationToStagedAsset(item);
+    if (!mapped) return;
+    const sent = sendAssetToInfographicStudio(mapped);
+    setHandoffNotice(`Sent to Infographic Studio. ${sent.length} image${sent.length === 1 ? "" : "s"} waiting there.`);
   }
 
   function handleSendToVideo(item: GenerationItem) {
@@ -1190,6 +1198,13 @@ function HomeContent() {
                             icon: <Video className="h-3.5 w-3.5" />,
                             disabled: !src,
                             onSelect: () => handleSendToVideo(item),
+                          },
+                          {
+                            key: "infographic",
+                            label: "Send to Infographic Studio",
+                            icon: <FileText className="h-3.5 w-3.5" />,
+                            disabled: !src,
+                            onSelect: () => handleSendToInfographic(item),
                           },
                           {
                             key: "sku",
