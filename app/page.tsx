@@ -171,6 +171,7 @@ function HomeContent() {
   const [uploadingKind, setUploadingKind] = useState<"garment" | "model" | null>(null);
   const [pendingDelete, setPendingDelete] = useState<GenerationItem | null>(null);
   const [preserveScene, setPreserveScene] = useState(true);
+  const [backgroundRemovingId, setBackgroundRemovingId] = useState<string | null>(null);
 
   const supabase = useMemo(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
@@ -415,6 +416,41 @@ function HomeContent() {
     if (!mapped) return;
     const sent = sendAssetToInfographicStudio(mapped);
     setHandoffNotice(`Sent to Infographic Studio. ${sent.length} image${sent.length === 1 ? "" : "s"} waiting there.`);
+  }
+
+
+  async function handleRemoveBackground(item: GenerationItem, subjectMode: "keep-model" | "product-only") {
+    const src = item.asset_url || item.url;
+    if (!src || backgroundRemovingId) return;
+    try {
+      setBackgroundRemovingId(item.id);
+      setError(null);
+      setHandoffNotice(subjectMode === "keep-model" ? "Removing background and keeping the model…" : "Removing background and model…");
+      const response = await fetch("/api/infographic/background-remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_url: src, name: item.prompt || "image-project", subject_mode: subjectMode }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.outputUrl) throw new Error(data.error || "Background removal failed.");
+
+      const processed: StagedImageAsset = {
+        id: `bg-${item.id}-${subjectMode}-${Date.now()}`,
+        url: data.outputUrl,
+        prompt: `${item.prompt || "Image Project image"} — ${subjectMode === "keep-model" ? "background removed, model kept" : "background and model removed"}`,
+        createdAt: new Date().toISOString(),
+      };
+      const sent = sendAssetToInfographicStudio(processed);
+      setHandoffNotice(
+        `${subjectMode === "keep-model" ? "Background removed; model kept" : "Background and model removed"}. Processed image sent to Infographic Studio (${sent.length} waiting).`,
+      );
+      setGalleryPage(0);
+      await loadGallery(0, true);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Background removal failed.");
+    } finally {
+      setBackgroundRemovingId(null);
+    }
   }
 
   function handleSendToVideo(item: GenerationItem) {
@@ -1205,6 +1241,20 @@ function HomeContent() {
                             icon: <FileText className="h-3.5 w-3.5" />,
                             disabled: !src,
                             onSelect: () => handleSendToInfographic(item),
+                          },
+                          {
+                            key: "bg-keep-model",
+                            label: backgroundRemovingId === item.id ? "Removing background…" : "Remove background · Keep model",
+                            icon: <Wand2 className="h-3.5 w-3.5" />,
+                            disabled: !src || Boolean(backgroundRemovingId),
+                            onSelect: () => void handleRemoveBackground(item, "keep-model"),
+                          },
+                          {
+                            key: "bg-product-only",
+                            label: backgroundRemovingId === item.id ? "Removing background…" : "Remove background + model",
+                            icon: <Wand2 className="h-3.5 w-3.5" />,
+                            disabled: !src || Boolean(backgroundRemovingId),
+                            onSelect: () => void handleRemoveBackground(item, "product-only"),
                           },
                           {
                             key: "sku",
