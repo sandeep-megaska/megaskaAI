@@ -49,6 +49,7 @@ export default function InfographicStudioPage(){
   const [imageProjectAssets,setImageProjectAssets]=useState<ImageGenerationAsset[]>([]);
   const [incomingAssets,setIncomingAssets]=useState<StagedImageAsset[]>([]);
   const [loadingImageProject,setLoadingImageProject]=useState(false);
+  const [removingBackground,setRemovingBackground]=useState(false);
   const canvasRef=useRef<HTMLDivElement>(null);
 
   useEffect(()=>{setSavedProjects(readStorage(STORAGE_KEYS.projects,[]));setCustomTemplates(readStorage(STORAGE_KEYS.templates,[]));setSavedAssets(readStorage(STORAGE_KEYS.assets,[]));setIncomingAssets(getIncomingInfographicAssets());},[]);
@@ -102,6 +103,7 @@ export default function InfographicStudioPage(){
     }catch(error){setStatus(error instanceof Error?error.message:"Could not generate the supporting visual.");}
     finally{setGeneratingConcept(null);}
   };
+  const removeSelectedBackground=async()=>{if(!selected||selected.kind!=="image")return;if(!/^https?:\/\//i.test(selected.src)){setStatus("Background removal currently requires an Image Project/public asset. Upload-only browser images can be supported after storage upload is added.");return;}setRemovingBackground(true);setStatus("Removing background while preserving product details…");try{const response=await fetch("/api/infographic/background-remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({image_url:selected.src,name:selected.name})});const data=await response.json();if(!response.ok||!data.outputUrl)throw new Error(data.error||"Background removal failed.");patchElement(selected.id,{src:data.outputUrl});const asset:SavedAsset={id:`asset-${Date.now()}`,name:`${selected.name} — background removed`,src:data.outputUrl,createdAt:new Date().toISOString()};const next=upsertAsset(savedAssets,asset);setSavedAssets(next);writeStorage(STORAGE_KEYS.assets,next);setStatus("Background removed. Transparent result replaced the selected image and was saved to Asset Library.");}catch(error){setStatus(error instanceof Error?error.message:"Background removal failed.");}finally{setRemovingBackground(false);}};
   const removeSelected=()=>{if(!selectedIds.length)return;const ids=new Set(expandSelectionToGroups(doc.elements,selectedIds));commit({...doc,elements:doc.elements.filter(e=>!ids.has(e.id)||e.locked)});setSelectedIds([]);};
   const duplicateSelected=()=>{if(!selectedIds.length)return;const ids=expandSelectionToGroups(doc.elements,selectedIds);const result=duplicateElements(doc.elements,ids);commit({...doc,elements:result.elements});setSelectedIds(result.ids);};
   const groupSelected=()=>{if(selectedIds.length<2)return;commit({...doc,elements:groupElements(doc.elements,selectedIds)});};
