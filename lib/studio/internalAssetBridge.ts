@@ -9,6 +9,7 @@ const STORAGE_KEYS = {
   imageReferences: "megaska:image:reference-tray:v1",
   videoAnchors: "megaska:video:anchor-tray:v1",
   videoIncoming: "megaska:video:incoming-from-image:v1",
+  infographicIncoming: "megaska:infographic:incoming-from-image:v1",
 } as const;
 
 type StorageBucket = keyof typeof STORAGE_KEYS;
@@ -101,4 +102,25 @@ export function removeIncomingVideoAsset(assetId: string) {
 
 export function clearIncomingVideoAssets() {
   writeBucket("videoIncoming", []);
+}
+
+
+export function getIncomingInfographicAssets() {
+  return readBucket("infographicIncoming");
+}
+
+export function sendAssetToInfographicStudio(asset: StagedImageAsset) {
+  const next = upsertAsset(readBucket("infographicIncoming"), asset);
+  writeBucket("infographicIncoming", next);
+  return next;
+}
+
+export function removeIncomingInfographicAsset(assetId: string) {
+  const next = readBucket("infographicIncoming").filter((item) => item.id !== assetId);
+  writeBucket("infographicIncoming", next);
+  return next;
+}
+
+export function clearIncomingInfographicAssets() {
+  writeBucket("infographicIncoming", []);
 }
