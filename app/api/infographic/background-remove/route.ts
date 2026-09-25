@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { withProviderResilience } from "@/lib/ai/providerResilience";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -49,14 +50,17 @@ export async function POST(request:Request){
     const mimeType=source.headers.get("content-type")||"image/png";
     const bytes=Buffer.from(await source.arrayBuffer());
     const ai=new GoogleGenAI({apiKey});
-    const response=await ai.models.generateContent({
-      model:"gemini-2.5-flash-image",
-      contents:[{role:"user",parts:[
-        {text:PROMPTS[subjectMode]},
-        {inlineData:{mimeType,data:bytes.toString("base64")}}
-      ]}],
-      config:{responseModalities:["IMAGE","TEXT"]},
-    });
+    const response=await withProviderResilience(
+      {provider:"gemini",model:"gemini-2.5-flash-image",operation:"background-removal"},
+      ()=>ai.models.generateContent({
+        model:"gemini-2.5-flash-image",
+        contents:[{role:"user",parts:[
+          {text:PROMPTS[subjectMode]},
+          {inlineData:{mimeType,data:bytes.toString("base64")}}
+        ]}],
+        config:{responseModalities:["IMAGE","TEXT"]},
+      }),
+    );
     const parts=response.candidates?.[0]?.content?.parts??[];
     const imagePart=parts.find(part=>part.inlineData?.data);
     if(!imagePart?.inlineData?.data)return asJson(502,{success:false,error:"Background removal did not return an image."});
