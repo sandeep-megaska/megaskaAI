@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import { withProviderResilience } from "@/lib/ai/providerResilience";
 
 type ImagenInput = {
   apiKey?: string;
@@ -33,14 +34,14 @@ export async function runImagenImageGeneration(input: ImagenInput): Promise<Imag
   const ai = new GoogleGenAI({ apiKey });
 
   try {
-    const response = await ai.models.generateImages({
+    const response = await withProviderResilience({provider:"gemini",model:input.model,operation:"imagen-generation"},()=>ai.models.generateImages({
       model: input.model,
       prompt: buildPrompt(input.prompt, input.referenceUrls ?? []),
       config: {
         numberOfImages: 1,
         aspectRatio: input.aspectRatio ?? "1:1",
       },
-    });
+    }));
 
     const image = response.generatedImages?.[0]?.image;
     if (!image?.imageBytes) {
