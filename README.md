@@ -42,7 +42,7 @@ Megaska AI Studio image and try-on generation requires:
 - `GOOGLE_API_KEY` (Gemini/Imagen/Nano Banana backends)
 - `LAOZHANG_API_KEY` (required only when `laozhang_gemini` is selected)
 - `LAOZHANG_BASE_URL` (optional, default: `https://api.laozhang.ai/v1`)
-- `LAOZHANG_IMAGE_MODEL` (optional, default: `gemini-3-pro-image-preview`)
+- `LAOZHANG_IMAGE_MODEL` (optional, default: `gemini-3-pro-image-preview`)\n- `REMOVE_BG_API_KEY` (required for deterministic PNG-alpha background removal in Image Project / Infographic Studio)
 
 If your environment still uses `GEMINI_API_KEY`, `/api/generate` supports it as a fallback, but `GOOGLE_API_KEY` is the recommended canonical variable.
 
