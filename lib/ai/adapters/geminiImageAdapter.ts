@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { mapGeminiProviderError } from "@/lib/ai/providerErrors";
 import { type StudioAspectRatio } from "@/lib/studio/aspectRatios";
+import { withProviderResilience } from "@/lib/ai/providerResilience";
 
 type GeminiImageInput = {
   apiKey?: string;
@@ -77,40 +78,22 @@ export async function runGeminiImageGeneration(input: GeminiImageInput): Promise
     },
   ];
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await ai.models.generateContent({
-        model: input.model,
-        contents,
-        config: {
-          responseModalities: ["IMAGE"],
-        },
-      });
-
-      const inlineImageData =
-        response.candidates?.flatMap((candidate) => candidate.content?.parts ?? []).find((part) => part.inlineData)?.inlineData ?? null;
-
-      if (!inlineImageData?.data) {
-        throw new Error("Gemini image generation returned no image bytes.");
-      }
-
-      return {
-        bytes: Buffer.from(inlineImageData.data, "base64"),
-        mimeType: inlineImageData.mimeType ?? "image/png",
-        model: input.model,
-      };
-    } catch (error) {
-      if (attempt === 0) {
-        const message = String((error as { message?: string })?.message ?? "").toUpperCase();
-        if (message.includes("UNAVAILABLE") || message.includes("503")) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          continue;
-        }
-      }
-
-      mapGeminiProviderError(error);
-    }
+  try {
+    return await withProviderResilience(
+      { provider: "gemini", model: input.model, operation: "image-generation" },
+      async () => {
+        const response = await ai.models.generateContent({
+          model: input.model,
+          contents,
+          config: { responseModalities: ["IMAGE"] },
+        });
+        const inlineImageData =
+          response.candidates?.flatMap((candidate) => candidate.content?.parts ?? []).find((part) => part.inlineData)?.inlineData ?? null;
+        if (!inlineImageData?.data) throw new Error("Gemini image generation returned no image bytes.");
+        return { bytes: Buffer.from(inlineImageData.data, "base64"), mimeType: inlineImageData.mimeType ?? "image/png", model: input.model };
+      },
+    );
+  } catch (error) {
+    mapGeminiProviderError(error);
   }
-
-  throw new Error("Gemini image generation failed after retry.");
 }
